@@ -62,6 +62,12 @@ static void skip_st_ref_pic_set(heic_bs *bs, int stRpsIdx, int num_short_term_re
         uint32_t num_neg = heic_bs_ue(bs);
         uint32_t num_pos = heic_bs_ue(bs);
         uint32_t i;
+        /* H.265: num_negative/positive_pics ≤ max_dec_pic_buffering (≤16).
+         * Uncapped UE values turn this into a multi-second/infinite loop. */
+        if (num_neg > 16 || num_pos > 16 || num_neg + num_pos > 16) {
+            bs->error = 1;
+            return;
+        }
         for (i = 0; i < num_neg; i++) {
             (void)heic_bs_ue(bs);
             (void)heic_bs_bit(bs);
@@ -174,6 +180,11 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
     if (out->long_term_ref_pics_present_flag) {
         uint32_t num_lt = heic_bs_ue(&bs);
         uint32_t k;
+        /* Spec: num_long_term_ref_pics_sps in 0..32. */
+        if (num_lt > 32) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR, "SPS num_long_term_ref_pics_sps out of range");
+            return -1;
+        }
         for (k = 0; k < num_lt; k++) {
             (void)heic_bs_bits(&bs, out->log2_max_pic_order_cnt_lsb_minus4 + 4);
             (void)heic_bs_bit(&bs);
