@@ -388,12 +388,15 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
     if (shift == 0 && !has_a && !is_bgr && matrix != 0
         && f->cb && f->cr
         && (f->chroma_format == 1 || f->chroma_format == 3)) {
-        ycc_lut lut;
-        ycc_build_lut(&cc, &lut);
+        /* Heap: ycc_lut is ~5KB; keep it off the ASan stack. */
+        ycc_lut *lut = (ycc_lut *)malloc(sizeof(ycc_lut));
+        if (!lut) return -1;
+        ycc_build_lut(&cc, lut);
         if (f->chroma_format == 3)
-            convert_444_8_rgb(f, &lut, x0, y0, w, h, dst, stride);
+            convert_444_8_rgb(f, lut, x0, y0, w, h, dst, stride);
         else
-            convert_420_8_rgb(f, &lut, x0, y0, w, h, dst, stride);
+            convert_420_8_rgb(f, lut, x0, y0, w, h, dst, stride);
+        free(lut);
         return 0;
     }
 

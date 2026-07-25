@@ -797,6 +797,8 @@ void heic_idct4(const int16_t *coeffs, int16_t *out, int bit_depth);
 void heic_idct8(const int16_t *coeffs /*64*/, int16_t *out, int bit_depth);
 void heic_idct16(const int16_t *coeffs /*256*/, int16_t *out, int bit_depth);
 void heic_idct32(const int16_t *coeffs /*1024*/, int16_t *out, int bit_depth);
+/* Thread-local 32×32 int32 scratch for separable IDCT (not re-entrant / recursive). */
+int32_t *heic_idct_scratch_buf(void);
 void heic_dequantize(int16_t *coeffs, int n, int qp, int bit_depth,
                      uint8_t log2_tr_size);
 void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,

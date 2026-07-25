@@ -42,6 +42,7 @@ typedef struct {
     uint32_t deblock_n;
 
     int16_t *residual_buf; /* HEIC_MAX_COEFF, heap (keep CTU frame small for ASan) */
+    heic_coeff_buf *coeff; /* residual decode scratch (2KB; not on recursive stack) */
 } heic_slice_ctx;
 
 static int bit_depth_y(const heic_sps *s) { return 8 + s->bit_depth_luma_minus8; }
@@ -368,20 +369,21 @@ static uint32_t decode_cu_qp_delta_abs(heic_slice_ctx *sc)
 static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                                      uint8_t log2_size, uint8_t c_idx, int scan_order)
 {
-    heic_coeff_buf coeff;
+    heic_coeff_buf *coeff = sc->coeff;
     int transform_skip = 0;
     int size, num, qp, bd, is_intra_4x4, max_val;
     uint16_t *plane;
     int stride, plane_w, plane_h;
 
+    if (!coeff) return -1;
     if (heic_decode_residual(&sc->cabac, sc->models, log2_size, c_idx, scan_order,
                              sc->pps->sign_data_hiding_enabled_flag,
                              sc->cu_transquant_bypass,
                              sc->pps->transform_skip_enabled_flag,
-                             &coeff, &transform_skip)
+                             coeff, &transform_skip)
         != 0)
         return -1;
-    if (coeff.num_nonzero == 0) return 0;
+    if (coeff->num_nonzero == 0) return 0;
 
     size = 1 << log2_size;
     num = size * size;
@@ -412,7 +414,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
 
     if (sc->cu_transquant_bypass) {
         int py, px;
-        memcpy(sc->residual_buf, coeff.coeffs, (size_t)num * sizeof(int16_t));
+        memcpy(sc->residual_buf, coeff->coeffs, (size_t)num * sizeof(int16_t));
         for (py = 0; py < size; py++) {
             if ((int)y0 + py >= plane_h) break;
             for (px = 0; px < size; px++) {
@@ -428,7 +430,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         return 0;
     }
 
-    heic_dequantize(coeff.coeffs, num, qp, bd, log2_size);
+    heic_dequantize(coeff->coeffs, num, qp, bd, log2_size);
 
     if (transform_skip) {
         int ts_shift = 5 + (int)log2_size;
@@ -437,12 +439,12 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         if (bd_shift < 0) bd_shift = 0;
         rnd = bd_shift > 0 ? (1 << (bd_shift - 1)) : 0;
         for (i = 0; i < num; i++) {
-            int32_t c = ((int32_t)coeff.coeffs[i] << ts_shift);
+            int32_t c = ((int32_t)coeff->coeffs[i] << ts_shift);
             sc->residual_buf[i] = (int16_t)((c + rnd) >> bd_shift);
         }
     } else {
         is_intra_4x4 = (log2_size == 2 && c_idx == 0);
-        heic_inverse_transform(coeff.coeffs, sc->residual_buf, size, bd, is_intra_4x4);
+        heic_inverse_transform(coeff->coeffs, sc->residual_buf, size, bd, is_intra_4x4);
     }
 
     /* Clip add if block may extend past plane edge. */
@@ -976,7 +978,8 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     }
     sc->residual_buf =
         (int16_t *)heic_zalloc(ctx, (size_t)HEIC_MAX_COEFF * sizeof(int16_t));
-    if (!sc->residual_buf) return -1;
+    sc->coeff = (heic_coeff_buf *)heic_zalloc(ctx, sizeof(heic_coeff_buf));
+    if (!sc->residual_buf || !sc->coeff) return -1;
     return 0;
 }
 
@@ -991,6 +994,7 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->deblock_flags);
     heic_free_buf(sc->hctx, sc->deblock_qp);
     heic_free_buf(sc->hctx, sc->residual_buf);
+    heic_free_buf(sc->hctx, sc->coeff);
     memset(sc, 0, sizeof(*sc));
 }
 

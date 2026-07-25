@@ -689,7 +689,7 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
     int rc = -1;
 
     /* Grids/overlays/iden chains: keep shallow to bound stack under ASan. */
-    if (depth > 6) {
+    if (depth > 4) {
         heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "derived item recursion too deep");
         return -1;
     }

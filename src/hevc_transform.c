@@ -1,6 +1,22 @@
 /* hevc_transform.c -- inverse transform + dequant (port of imazen/heic transform.rs) */
 #include "heic_internal.h"
 
+/* Separable IDCT is not recursive; one TLS intermediate is enough for 8/16/32. */
+#if defined(_MSC_VER)
+#define HEIC_TLS __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+#define HEIC_TLS __thread
+#else
+#define HEIC_TLS
+#endif
+
+static HEIC_TLS int32_t heic_idct_scratch[1024];
+
+int32_t *heic_idct_scratch_buf(void)
+{
+    return heic_idct_scratch;
+}
+
 static const int16_t HEIC_DST4[4][4] = {
     {29, 55, 74, 84},
     {74, 74, 0, -74},
@@ -197,7 +213,7 @@ static void htx_idct16_1d(const int32_t src[16], int32_t dst[16], int shift)
 void heic_idct16(const int16_t *coeffs, int16_t *output, int bit_depth)
 {
     int shift1 = 7, shift2 = 20 - bit_depth;
-    int32_t tmp[256];
+    int32_t *tmp = heic_idct_scratch_buf();
     int col, row, k, last_col;
     if (heic_simd_idct16(coeffs, output, bit_depth)) return;
     if (htx_only_dc(coeffs, 16)) {
@@ -206,7 +222,7 @@ void heic_idct16(const int16_t *coeffs, int16_t *output, int bit_depth)
     }
     last_col = 15;
     while (last_col > 0 && htx_col_zero(coeffs, 16, last_col)) last_col--;
-    memset(tmp, 0, sizeof(tmp));
+    memset(tmp, 0, 256 * sizeof(int32_t));
     for (col = 0; col <= last_col; col++) {
         int32_t src[16], d[16];
         if (htx_col_zero(coeffs, 16, col)) continue;
@@ -327,17 +343,11 @@ static void htx_idct32_1d(const int32_t src[32], int32_t dst[32], int shift)
 void heic_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
 {
     int shift1 = 7, shift2 = 20 - bit_depth;
-    int32_t *tmp;
+    int32_t *tmp = heic_idct_scratch_buf();
     int col, row, k, last_col;
     if (heic_simd_idct32(coeffs, output, bit_depth)) return;
     if (htx_only_dc(coeffs, 32)) {
         htx_idct_dc_fill(output, 32, coeffs[0], bit_depth);
-        return;
-    }
-    /* Heap: 4KB stack temp under ASan + nested TT/CQT is expensive. */
-    tmp = (int32_t *)malloc(1024 * sizeof(int32_t));
-    if (!tmp) {
-        memset(output, 0, 1024 * sizeof(int16_t));
         return;
     }
     /* Rightmost non-zero column; skip IDCT on trailing zero columns. */
@@ -369,7 +379,6 @@ void heic_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
         htx_idct32_1d(src, d, shift2);
         for (k = 0; k < 32; k++) output[base + k] = (int16_t)d[k];
     }
-    free(tmp);
 }
 
 void heic_dequantize(int16_t *coeffs, int n, int qp, int bit_depth,

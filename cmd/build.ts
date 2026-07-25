@@ -833,7 +833,10 @@ export async function buildFuzz(clean = false): Promise<string> {
     if (!isWindows) linkLibs.push("-lpthread", "-lm");
     const linkExtra = linkLibs.length ? ` ${linkLibs.join(" ")}` : "";
     if (needsRebuild(FUZZ_EXE, ...objs, ...(dav1d ? [dav1d.lib] : []), ...comp.libs)) {
-      await $`${cc} -fsanitize=address,fuzzer ${{ raw: objs.join(" ") }}${{ raw: linkExtra }} -o ${FUZZ_EXE}`.cwd(
+      /* ASan inflates stack frames; Windows default 1MB is tight for nested
+       * HEVC TT/CQT + residual under fuzz REDUCE. Give the fuzzer 8MB. */
+      const stackFlag = isWindows ? " -Wl,/STACK:8388608" : "";
+      await $`${cc} -fsanitize=address,fuzzer ${{ raw: objs.join(" ") }}${{ raw: linkExtra }}${{ raw: stackFlag }} -o ${FUZZ_EXE}`.cwd(
         ROOT,
       );
     }
