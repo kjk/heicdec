@@ -20,11 +20,14 @@ typedef struct {
 
     uint8_t *ct_depth_map;
     uint32_t ct_depth_stride;
+    size_t   ct_depth_n;
     uint8_t *intra_mode_map;
     uint8_t *intra_chroma_mode_map;
     uint32_t intra_mode_stride;
+    size_t   intra_mode_n;
     int8_t *qp_map;
     uint32_t qp_map_stride;
+    size_t   qp_map_n;
     int current_qpy;
     int last_qpy_in_prev_qg;
     int current_qg_x, current_qg_y;
@@ -85,6 +88,7 @@ static uint8_t get_ct_depth(const heic_slice_ctx *sc, uint32_t x, uint32_t y)
     size_t idx;
     if (mx >= sc->ct_depth_stride) return 0xFF;
     idx = (size_t)my * sc->ct_depth_stride + mx;
+    if (idx >= sc->ct_depth_n) return 0xFF;
     return sc->ct_depth_map[idx];
 }
 
@@ -100,6 +104,7 @@ static void set_ct_depth(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
             size_t idx;
             if (mx >= sc->ct_depth_stride) continue;
             idx = (size_t)my * sc->ct_depth_stride + mx;
+            if (idx >= sc->ct_depth_n) continue;
             sc->ct_depth_map[idx] = depth;
         }
 }
@@ -115,7 +120,8 @@ static void store_intra_mode(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     for (dy = 0; dy < count; dy++)
         for (dx = 0; dx < count; dx++) {
             size_t idx = (size_t)(sy + dy) * sc->intra_mode_stride + (sx + dx);
-            map[idx] = mode;
+            /* CU may extend past pic edge (partial last CTB); clip to map. */
+            if (idx < sc->intra_mode_n) map[idx] = mode;
         }
 }
 
@@ -124,6 +130,7 @@ static uint8_t get_intra_mode(const heic_slice_ctx *sc, uint32_t x, uint32_t y, 
     uint32_t mpu = min_pu_size(sc->sps);
     size_t idx = (size_t)(y / mpu) * sc->intra_mode_stride + (x / mpu);
     const uint8_t *map = chroma ? sc->intra_chroma_mode_map : sc->intra_mode_map;
+    if (idx >= sc->intra_mode_n) return 1; /* DC */
     return map[idx];
 }
 
@@ -153,7 +160,8 @@ static void store_qpy(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     for (dy = 0; dy < count; dy++)
         for (dx = 0; dx < count; dx++) {
             size_t idx = (size_t)(sy + dy) * sc->qp_map_stride + (sx + dx);
-            sc->qp_map[idx] = (int8_t)qpy;
+            /* Partial last CTB: CU footprint can extend past pic (and map). */
+            if (idx < sc->qp_map_n) sc->qp_map[idx] = (int8_t)qpy;
         }
 }
 
@@ -161,6 +169,7 @@ static int get_qpy_at(const heic_slice_ctx *sc, uint32_t x, uint32_t y)
 {
     uint32_t min_tb = 1u << sc->sps->log2_min_tb_size;
     size_t idx = (size_t)(y / min_tb) * sc->qp_map_stride + (x / min_tb);
+    if (idx >= sc->qp_map_n) return sc->sh->slice_qp_y;
     return sc->qp_map[idx];
 }
 
@@ -906,6 +915,7 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     ct_h = (sps->pic_height_in_luma_samples + min_cb - 1) / min_cb;
     sc->ct_depth_stride = ct_w;
     ct_n = (size_t)ct_w * ct_h;
+    sc->ct_depth_n = ct_n;
     sc->ct_depth_map = (uint8_t *)heic_zalloc(ctx, ct_n);
     if (!sc->ct_depth_map) return -1;
     memset(sc->ct_depth_map, 0xFF, ct_n);
@@ -914,6 +924,7 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     pu_h = (sps->pic_height_in_luma_samples + min_pu - 1) / min_pu;
     sc->intra_mode_stride = pu_w;
     pu_n = (size_t)pu_w * pu_h;
+    sc->intra_mode_n = pu_n;
     sc->intra_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
     sc->intra_chroma_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
     if (!sc->intra_mode_map || !sc->intra_chroma_mode_map) return -1;
@@ -924,6 +935,7 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     qp_h = (sps->pic_height_in_luma_samples + min_tb - 1) / min_tb;
     sc->qp_map_stride = qp_w;
     qp_n = (size_t)qp_w * qp_h;
+    sc->qp_map_n = qp_n;
     sc->qp_map = (int8_t *)heic_zalloc(ctx, qp_n);
     if (!sc->qp_map) return -1;
     {

@@ -492,8 +492,14 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
         plane_n = frame->c_width * frame->c_height;
     }
     if (!plane) return 0;
+    /* Reject blocks that would write past the plane (corrupt/partial CTB). */
+    {
+        size_t last;
+        if (size == 0 || stride <= 0) return -1;
+        last = ((size_t)y + (size_t)size - 1) * (size_t)stride + (size_t)x + (size_t)size;
+        if (last > (size_t)plane_n) return -1;
+    }
     max_val = (1 << frame->bit_depth) - 1;
-    (void)plane_n;
 
     if (mode == 0)
         predict_planar(plane, stride, x, y, size, log2_size, max_val, border, center);

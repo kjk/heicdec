@@ -110,7 +110,15 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
 
     out->bit_depth_luma_minus8 = (uint8_t)heic_bs_ue(&bs);
     out->bit_depth_chroma_minus8 = (uint8_t)heic_bs_ue(&bs);
+    if (out->bit_depth_luma_minus8 > 8 || out->bit_depth_chroma_minus8 > 8) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "SPS bit_depth_minus8 out of range");
+        return -1;
+    }
     out->log2_max_pic_order_cnt_lsb_minus4 = (uint8_t)heic_bs_ue(&bs);
+    if (out->log2_max_pic_order_cnt_lsb_minus4 > 12) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "SPS log2_max_poc_lsb_minus4 out of range");
+        return -1;
+    }
 
     {
         int sublayer_ordering_info = heic_bs_bit(&bs);
@@ -126,8 +134,21 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
     out->log2_diff_max_min_luma_coding_block_size = (uint8_t)heic_bs_ue(&bs);
     out->log2_min_luma_transform_block_size_minus2 = (uint8_t)heic_bs_ue(&bs);
     out->log2_diff_max_min_luma_transform_block_size = (uint8_t)heic_bs_ue(&bs);
+    /* Spec ranges: min_cb 8..64, ctb ≤ 64, min_tb 4..32 (H.265 7.4.3.2). */
+    if (out->log2_min_luma_coding_block_size_minus3 > 3
+        || out->log2_diff_max_min_luma_coding_block_size > 3
+        || out->log2_min_luma_transform_block_size_minus2 > 3
+        || out->log2_diff_max_min_luma_transform_block_size > 3) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "SPS coding/transform size fields out of range");
+        return -1;
+    }
     out->max_transform_hierarchy_depth_inter = (uint8_t)heic_bs_ue(&bs);
     out->max_transform_hierarchy_depth_intra = (uint8_t)heic_bs_ue(&bs);
+    if (out->max_transform_hierarchy_depth_inter > 5
+        || out->max_transform_hierarchy_depth_intra > 5) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "SPS max_transform_hierarchy_depth out of range");
+        return -1;
+    }
 
     out->scaling_list_enabled_flag = heic_bs_bit(&bs);
     if (out->scaling_list_enabled_flag) {
@@ -195,15 +216,26 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
     out->log2_min_tb_size = (uint8_t)(out->log2_min_luma_transform_block_size_minus2 + 2);
     out->log2_max_tb_size =
         (uint8_t)(out->log2_min_tb_size + out->log2_diff_max_min_luma_transform_block_size);
-    if (out->log2_max_tb_size > 5) return -1;
+    /* H.265: MaxTbSizeY ≤ min(CtbSizeY, 32); MinTbSizeY ≤ MinCbSizeY. */
+    if (out->log2_max_tb_size > 5 || out->log2_min_tb_size > out->log2_min_cb_size
+        || out->log2_max_tb_size > out->log2_ctb_size || out->log2_ctb_size > 6) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "SPS derived coding/transform sizes invalid");
+        return -1;
+    }
 
     min_cb = 1u << out->log2_min_cb_size;
     ctb = 1u << out->log2_ctb_size;
     min_tb = 1u << out->log2_min_tb_size;
     max_tb = 1u << out->log2_max_tb_size;
-    (void)min_cb;
     (void)min_tb;
     (void)max_tb;
+    /* pic_width/height_in_luma_samples shall be integer multiples of MinCbSizeY. */
+    if ((out->pic_width_in_luma_samples % min_cb) != 0
+        || (out->pic_height_in_luma_samples % min_cb) != 0) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "SPS dimensions not multiple of MinCbSizeY");
+        return -1;
+    }
     out->ctb_width = ctb;
     out->ctb_height = ctb;
     out->pic_width_in_ctbs = (out->pic_width_in_luma_samples + ctb - 1) / ctb;
