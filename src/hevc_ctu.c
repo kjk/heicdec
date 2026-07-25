@@ -176,8 +176,11 @@ static int get_qpy_at(const heic_slice_ctx *sc, uint32_t x, uint32_t y)
 static void decode_quant_params(heic_slice_ctx *sc, uint32_t x0,
                                 uint32_t x_cu, uint32_t y_cu)
 {
-    uint8_t log2_min_qg = (uint8_t)(sc->sps->log2_ctb_size
-                                    - sc->pps->diff_cu_qp_delta_depth);
+    /* saturating: crafted PPS can set diff_cu_qp_delta_depth > log2_ctb_size */
+    uint8_t log2_min_qg =
+        sc->sps->log2_ctb_size > sc->pps->diff_cu_qp_delta_depth
+            ? (uint8_t)(sc->sps->log2_ctb_size - sc->pps->diff_cu_qp_delta_depth)
+            : 0;
     uint32_t qg_mask = (1u << log2_min_qg) - 1;
     int x_qg = (int)(x_cu & ~qg_mask);
     int y_qg = (int)(y_cu & ~qg_mask);
@@ -561,13 +564,21 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     uint8_t log2_max = sc->sps->log2_max_tb_size;
     int split, cbf_cb, cbf_cr, cat;
 
+    /* TB size is 4..32 (log2 2..5); refuse wrap / absurd depth. */
+    if (log2_size < 2 || log2_size > 6 || trafo_depth > 8) return -1;
+    if (log2_min < 2) log2_min = 2;
+    if (log2_max > 5) log2_max = 5;
+    if (log2_max < log2_min) log2_max = log2_min;
+
     if (log2_size <= log2_max && log2_size > log2_min && trafo_depth < max_depth
         && !(intra_split && trafo_depth == 0)) {
         int ctx = HEIC_CTX_SPLIT_TRANSFORM_FLAG
                   + ((5 - (int)log2_size) < 2 ? (5 - (int)log2_size) : 2);
         if (ctx < HEIC_CTX_SPLIT_TRANSFORM_FLAG) ctx = HEIC_CTX_SPLIT_TRANSFORM_FLAG;
         split = heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx]) != 0;
-    } else if (log2_size > log2_max || (intra_split && trafo_depth == 0)) {
+    } else if ((log2_size > log2_max || (intra_split && trafo_depth == 0))
+               && log2_size > log2_min) {
+        /* Force split only while we can still shrink without underflow. */
         split = 1;
     } else {
         split = 0;
@@ -727,11 +738,17 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
 static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                       uint8_t log2_cb, uint8_t ct_depth)
 {
-    uint32_t cb = 1u << log2_cb;
+    uint32_t cb;
     uint32_t pw = sc->sps->pic_width_in_luma_samples;
     uint32_t ph = sc->sps->pic_height_in_luma_samples;
     uint8_t log2_min = sc->sps->log2_min_cb_size;
+    uint8_t log2_qg;
     int split;
+
+    /* Hard bounds: prevent log2_cb-1 wrap (255) infinite recursion. */
+    if (log2_cb < 3 || log2_cb > 6 || log2_cb < log2_min || ct_depth > 6)
+        return -1;
+    cb = 1u << log2_cb;
 
     if (x0 + cb <= pw && y0 + cb <= ph && log2_cb > log2_min)
         split = decode_split_cu(sc, x0, y0, ct_depth);
@@ -740,9 +757,10 @@ static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     else
         split = 0;
 
-    if (sc->pps->cu_qp_delta_enabled_flag
-        && log2_cb
-               >= sc->sps->log2_ctb_size - sc->pps->diff_cu_qp_delta_depth) {
+    log2_qg = sc->sps->log2_ctb_size > sc->pps->diff_cu_qp_delta_depth
+                  ? (uint8_t)(sc->sps->log2_ctb_size - sc->pps->diff_cu_qp_delta_depth)
+                  : 0;
+    if (sc->pps->cu_qp_delta_enabled_flag && log2_cb >= log2_qg) {
         sc->is_cu_qp_delta_coded = 0;
         sc->cu_qp_delta = 0;
     }
@@ -750,17 +768,12 @@ static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     if (split) {
         uint32_t half = cb / 2;
         uint32_t x1 = x0 + half, y1 = y0 + half;
-        if (decode_cqt(sc, x0, y0, (uint8_t)(log2_cb - 1), (uint8_t)(ct_depth + 1)) != 0)
-            return -1;
-        if (x1 < pw
-            && decode_cqt(sc, x1, y0, (uint8_t)(log2_cb - 1), (uint8_t)(ct_depth + 1)) != 0)
-            return -1;
-        if (y1 < ph
-            && decode_cqt(sc, x0, y1, (uint8_t)(log2_cb - 1), (uint8_t)(ct_depth + 1)) != 0)
-            return -1;
-        if (x1 < pw && y1 < ph
-            && decode_cqt(sc, x1, y1, (uint8_t)(log2_cb - 1), (uint8_t)(ct_depth + 1)) != 0)
-            return -1;
+        uint8_t child = (uint8_t)(log2_cb - 1);
+        uint8_t nd = (uint8_t)(ct_depth + 1);
+        if (decode_cqt(sc, x0, y0, child, nd) != 0) return -1;
+        if (x1 < pw && decode_cqt(sc, x1, y0, child, nd) != 0) return -1;
+        if (y1 < ph && decode_cqt(sc, x0, y1, child, nd) != 0) return -1;
+        if (x1 < pw && y1 < ph && decode_cqt(sc, x1, y1, child, nd) != 0) return -1;
     } else {
         if (decode_coding_unit(sc, x0, y0, log2_cb, ct_depth) != 0) return -1;
     }
@@ -987,13 +1000,16 @@ static uint32_t ebsp_to_rbsp(const uint32_t *eps, int n_ep, uint32_t ebsp_off)
     return ebsp_off - (uint32_t)count;
 }
 
-static void compute_tile_bd(const heic_pps *pps, uint32_t pic_w, uint32_t pic_h,
-                            uint32_t *col_bd, uint32_t *row_bd,
-                            int *n_cols, int *n_rows)
+/* col_bd/row_bd must hold nc+1 / nr+1 entries (caller: arrays of size ≥ 65). */
+static int compute_tile_bd(const heic_pps *pps, uint32_t pic_w, uint32_t pic_h,
+                           uint32_t *col_bd, uint32_t *row_bd,
+                           int *n_cols, int *n_rows)
 {
     uint32_t nc = (uint32_t)pps->num_tile_columns_minus1 + 1;
     uint32_t nr = (uint32_t)pps->num_tile_rows_minus1 + 1;
     uint32_t i;
+    if (nc == 0 || nr == 0 || nc > 64 || nr > 64) return -1;
+    if (pic_w == 0 || pic_h == 0) return -1;
     *n_cols = (int)nc;
     *n_rows = (int)nr;
     if (pps->uniform_spacing_flag) {
@@ -1017,6 +1033,7 @@ static void compute_tile_bd(const heic_pps *pps, uint32_t pic_w, uint32_t pic_h,
         }
         row_bd[nr] = pic_h;
     }
+    return 0;
 }
 
 static uint32_t get_tile_id(const uint32_t *col_bd, int n_cols,
@@ -1114,7 +1131,11 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
     wpp = pps->entropy_coding_sync_enabled_flag;
 
     if (tiles) {
-        compute_tile_bd(pps, pic_w, pic_h, col_bd, row_bd, &n_cols, &n_rows);
+        if (compute_tile_bd(pps, pic_w, pic_h, col_bd, row_bd, &n_cols, &n_rows) != 0) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR, "invalid tile grid");
+            slice_ctx_free(&sc);
+            return -1;
+        }
         if (build_tile_scan(ctx, col_bd, n_cols, row_bd, n_rows, &tile_scan, &tile_scan_n) != 0) {
             slice_ctx_free(&sc);
             return -1;

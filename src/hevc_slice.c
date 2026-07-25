@@ -141,7 +141,8 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
         if (out->num_entry_point_offsets > 0) {
             uint32_t offset_len_minus1 = heic_bs_ue(&bs);
             uint32_t e;
-            if (offset_len_minus1 > 31 || out->num_entry_point_offsets > 100000)
+            /* Cap entry points: stack entry_cum[4096] and fuzz budget. */
+            if (offset_len_minus1 > 31 || out->num_entry_point_offsets > 4096)
                 return -1;
             out->entry_point_offsets = (uint32_t *)heic_zalloc(
                 ctx, out->num_entry_point_offsets * sizeof(uint32_t));

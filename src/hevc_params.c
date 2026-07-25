@@ -264,8 +264,15 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
     out->constrained_intra_pred_flag = heic_bs_bit(&bs);
     out->transform_skip_enabled_flag = heic_bs_bit(&bs);
     out->cu_qp_delta_enabled_flag = heic_bs_bit(&bs);
-    if (out->cu_qp_delta_enabled_flag)
-        out->diff_cu_qp_delta_depth = (uint8_t)heic_bs_ue(&bs);
+    if (out->cu_qp_delta_enabled_flag) {
+        uint32_t d = heic_bs_ue(&bs);
+        /* Must not exceed log2_ctb_size (≤6); unbounded UE underflows qg math. */
+        if (d > 6) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR, "PPS diff_cu_qp_delta_depth out of range");
+            return -1;
+        }
+        out->diff_cu_qp_delta_depth = (uint8_t)d;
+    }
     out->pps_cb_qp_offset = (int8_t)heic_bs_se(&bs);
     out->pps_cr_qp_offset = (int8_t)heic_bs_se(&bs);
     out->pps_slice_chroma_qp_offsets_present_flag = heic_bs_bit(&bs);
@@ -275,15 +282,25 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
     out->tiles_enabled_flag = heic_bs_bit(&bs);
     out->entropy_coding_sync_enabled_flag = heic_bs_bit(&bs);
     if (out->tiles_enabled_flag) {
-        out->num_tile_columns_minus1 = (uint16_t)heic_bs_ue(&bs);
-        out->num_tile_rows_minus1 = (uint16_t)heic_bs_ue(&bs);
+        uint32_t nc = heic_bs_ue(&bs);
+        uint32_t nr = heic_bs_ue(&bs);
+        /* H.265 Table A.1: at most 20 columns / 22 rows. Fixed col_bd[65] /
+         * row_bd[65] on the CTU stack also require this. */
+        if (nc > 19 || nr > 21) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR, "PPS tile grid exceeds HEVC max 20x22");
+            return -1;
+        }
+        out->num_tile_columns_minus1 = (uint16_t)nc;
+        out->num_tile_rows_minus1 = (uint16_t)nr;
         out->uniform_spacing_flag = heic_bs_bit(&bs);
         if (!out->uniform_spacing_flag) {
             uint16_t i;
             out->column_width_minus1 =
-                (uint16_t *)heic_zalloc(ctx, (out->num_tile_columns_minus1) * sizeof(uint16_t));
+                (uint16_t *)heic_zalloc(ctx, (size_t)nc * sizeof(uint16_t));
             out->row_height_minus1 =
-                (uint16_t *)heic_zalloc(ctx, (out->num_tile_rows_minus1) * sizeof(uint16_t));
+                (uint16_t *)heic_zalloc(ctx, (size_t)nr * sizeof(uint16_t));
+            if ((!out->column_width_minus1 && nc) || (!out->row_height_minus1 && nr))
+                return -1;
             for (i = 0; i < out->num_tile_columns_minus1; i++)
                 out->column_width_minus1[i] = (uint16_t)heic_bs_ue(&bs);
             for (i = 0; i < out->num_tile_rows_minus1; i++)
