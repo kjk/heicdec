@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>heic — HEIC/HEIF viewer (WebAssembly)</title>
+<style>
+  :root {
+    --bg: #1e1f22;
+    --panel: #2b2d31;
+    --border: #3a3d42;
+    --fg: #e6e6e6;
+    --muted: #9aa0a6;
+    --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 12px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto; flex-wrap: wrap;
+  }
+  header .title { font-weight: 600; margin-right: 4px; }
+  header .spacer { flex: 1 1 auto; }
+  button {
+    font: inherit; color: var(--fg); background: #363a40;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #40454c; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); }
+  .fname { color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #stage {
+    flex: 1 1 auto; overflow: auto; position: relative;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 20px;
+  }
+  #canvas { background: #fff; box-shadow: 0 2px 16px rgba(0,0,0,.5); max-width: 100%; height: auto; }
+  #hint {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); text-align: center; pointer-events: none; padding: 24px;
+  }
+  #hint .big { font-size: 18px; color: var(--fg); }
+  #drop {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(79,140,255,.18); border: 3px dashed var(--accent);
+    font-size: 22px; color: #fff; z-index: 10;
+  }
+  #drop.show { display: flex; }
+  #status { color: var(--muted); }
+  #status.err { color: #ff6b6b; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="title">heic</span>
+    <button id="open" class="primary">Open .heic…</button>
+    <span class="fname" id="fname"></span>
+    <span class="meta" id="meta"></span>
+    <span class="spacer"></span>
+    <span id="status">loading decoder…</span>
+    <input type="file" id="file" accept=".heic,.heif,.avif,.avifs,image/heic,image/heif,image/avif" />
+  </header>
+
+  <div id="stage">
+    <canvas id="canvas" width="0" height="0"></canvas>
+    <div id="hint"><div>
+      <div class="big">Open or drop a HEIC / HEIF file</div>
+      <div>decoded entirely in your browser via WebAssembly (HEVC + unci)</div>
+      <div style="margin-top:8px;font-size:12px">AVIF (AV1) is not in this drop — needs dav1d linked separately</div>
+    </div></div>
+  </div>
+
+  <div id="drop">Drop the image file to open</div>
+
+  <script src="heic.js"></script>
+  <script>
+  (function () {
+    "use strict";
+
+    // heic_image (wasm32): uint32 width, height; int format, stride; uint8_t *data
+    const IMG_WIDTH = 0, IMG_HEIGHT = 4, IMG_FORMAT = 8, IMG_STRIDE = 12, IMG_DATA = 16;
+    // heic_image_info: width@0 height@4 bit_depth@8 has_alpha@12 …
+    const INFO_BYTES = 48;
+    const FMT_RGB = 3, FMT_RGBA = 4;
+    const KIND = { 0: "unknown", 1: "heic", 2: "avif", 3: "heif", 4: "sequence" };
+
+    let M = null;
+    let ctx = 0;
+    let doc = 0;
+    let docBuf = 0;
+    let decoding = false;
+
+    const $ = (id) => document.getElementById(id);
+    const els = {
+      open: $("open"), file: $("file"), fname: $("fname"), meta: $("meta"),
+      status: $("status"), canvas: $("canvas"), hint: $("hint"), drop: $("drop"),
+    };
+
+    function setStatus(msg, isErr) {
+      els.status.textContent = msg || "";
+      els.status.className = isErr ? "err" : "";
+    }
+    function ptrI32(p, off) { return M.HEAP32[(p + off) >> 2]; }
+    function ptrU32(p, off) { return M.HEAPU32[(p + off) >> 2]; }
+
+    createHeicModule().then((mod) => {
+      M = mod;
+      M._heic_init();
+      ctx = M._heic_ctx_new(0, 0, 0, 0);
+      setStatus("ready");
+    }).catch((e) => {
+      console.error(e);
+      setStatus("failed to load decoder", true);
+    });
+
+    function closeDoc() {
+      if (doc) { M._heic_doc_close(doc); doc = 0; }
+      if (docBuf) { M._free(docBuf); docBuf = 0; }
+    }
+
+    function openBuffer(arrayBuf, name) {
+      if (!M) { setStatus("decoder still loading…", true); return; }
+      closeDoc();
+      const bytes = new Uint8Array(arrayBuf);
+      docBuf = M._malloc(bytes.length);
+      if (!docBuf) { setStatus("out of memory", true); return; }
+      M.HEAPU8.set(bytes, docBuf);
+      doc = M._heic_doc_open(ctx, docBuf, bytes.length);
+      if (!doc) {
+        M._free(docBuf); docBuf = 0;
+        setStatus("not a valid HEIC/HEIF file", true);
+        els.fname.textContent = name || "";
+        els.meta.textContent = "";
+        return;
+      }
+      els.fname.textContent = name || "";
+      els.hint.style.display = "none";
+      decodePrimary();
+    }
+
+    function decodePrimary() {
+      if (!doc || decoding) return;
+      decoding = true;
+      setStatus("decoding…");
+      requestAnimationFrame(() => {
+        try {
+          drawImage();
+          setStatus("ready");
+        } catch (e) {
+          console.error(e);
+          setStatus("decode failed: " + (e && e.message ? e.message : e), true);
+        } finally {
+          decoding = false;
+        }
+      });
+    }
+
+    function drawImage() {
+      const infoPtr = M._malloc(INFO_BYTES);
+      let iw = 0, ih = 0, bd = 8, alpha = 0, kind = 0;
+      if (M._heic_doc_info(doc, infoPtr) === 0) {
+        iw = ptrU32(infoPtr, 0);
+        ih = ptrU32(infoPtr, 4);
+        bd = ptrI32(infoPtr, 8);
+        alpha = ptrI32(infoPtr, 12);
+      }
+      M._free(infoPtr);
+      kind = M._heic_doc_kind(doc);
+
+      const fmt = alpha ? FMT_RGBA : FMT_RGB;
+      const t0 = performance.now();
+      const img = M._heic_doc_decode(doc, fmt);
+      const ms = performance.now() - t0;
+      if (!img) {
+        throw new Error(
+          kind === 2
+            ? "AVIF/AV1 needs dav1d (not linked in this wasm drop)"
+            : "heic_doc_decode returned null"
+        );
+      }
+      try {
+        const w = ptrU32(img, IMG_WIDTH);
+        const h = ptrU32(img, IMG_HEIGHT);
+        const f = ptrI32(img, IMG_FORMAT);
+        const stride = ptrI32(img, IMG_STRIDE);
+        const data = ptrU32(img, IMG_DATA);
+        els.meta.textContent =
+          `${w}×${h} · ${KIND[kind] || kind} · ${bd}-bit` +
+          (alpha ? " · alpha" : "") +
+          ` · ${ms.toFixed(0)} ms`;
+
+        const cv = els.canvas;
+        cv.width = w; cv.height = h;
+        const g2d = cv.getContext("2d");
+        const out = g2d.createImageData(w, h);
+        const dst = out.data;
+        const heap = M.HEAPU8;
+        let o = 0;
+        if (f === FMT_RGBA) {
+          for (let y = 0; y < h; y++) {
+            let s = data + y * stride;
+            for (let x = 0; x < w; x++) {
+              dst[o++] = heap[s++]; dst[o++] = heap[s++];
+              dst[o++] = heap[s++]; dst[o++] = heap[s++];
+            }
+          }
+        } else if (f === FMT_RGB) {
+          for (let y = 0; y < h; y++) {
+            let s = data + y * stride;
+            for (let x = 0; x < w; x++) {
+              dst[o++] = heap[s++]; dst[o++] = heap[s++];
+              dst[o++] = heap[s++]; dst[o++] = 255;
+            }
+          }
+        } else {
+          throw new Error("unexpected pixel format " + f);
+        }
+        g2d.putImageData(out, 0, 0);
+      } finally {
+        M._heic_image_destroy(ctx, img);
+      }
+    }
+
+    function pickFile(file) {
+      if (!file) return;
+      file.arrayBuffer().then((buf) => openBuffer(buf, file.name));
+    }
+
+    els.open.onclick = () => els.file.click();
+    els.file.onchange = (e) => pickFile(e.target.files[0]);
+
+    let dragDepth = 0;
+    window.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      if (dragDepth++ === 0) els.drop.classList.add("show");
+    });
+    window.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    window.addEventListener("dragleave", (e) => {
+      e.preventDefault();
+      if (--dragDepth <= 0) {
+        dragDepth = 0;
+        els.drop.classList.remove("show");
+      }
+    });
+    window.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      els.drop.classList.remove("show");
+      pickFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+    });
+  })();
+  </script>
+</body>
+</html>

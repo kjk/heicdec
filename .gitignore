@@ -1,0 +1,38 @@
+# build outputs (harness objects + exes)
+out/
+# render mismatch dumps
+verify_diffs/
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.obj
+*.o
+# reference tools rebuilt from oracles by build.ts
+ref_build/
+# upstream reference checkouts (cloned by cmd/get-deps.ts)
+deps/
+# local test corpora (not part of the repo)
+testfiles/
+# verifier failure list
+failures.txt
+# feature scan output
+features.jsonl
+features_summary.txt
+# scratch decode outputs
+*.pnm
+*.pgm
+*.ppm
+*.pbm
+*.png
+*.jpg
+/terminals
+# fuzzing: corpus is generated/large. fuzz/crashes/ IS tracked.
+fuzz/corpus/
+fuzz/corpus.min/
+fuzz/*.log
+# amalgamated dist is regenerated; agents do not commit it
+# (user commits dist/ manually when publishing)
+
+dist/
+

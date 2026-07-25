@@ -1,0 +1,125 @@
+// get-deps.ts -- fetch reference checkouts (corpus + oracles) and local fixtures.
+//
+//   bun cmd/get-deps.ts
+//
+// Clones into deps/ (skipped if present). deps/ is gitignored.
+// Also fills deps/testimages/ by downloading AVIF samples and regenerating
+// grid/alpha + unci block fixtures (no checked-in binary images).
+import { $ } from "bun";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { join } from "path";
+import { generateAvifFixtures } from "./gen_avif_fixtures";
+import { generateUnciBlockFixtures } from "./gen_unci_block_fixtures";
+
+const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
+export const DEPS_DIR = join(ROOT, "deps");
+
+export const HEIC_RUST_DIR = join(DEPS_DIR, "heic");
+export const DAV1D_DIR = join(DEPS_DIR, "dav1d");
+export const LIBHEIF_DIR = join(DEPS_DIR, "libheif");
+export const LIBDE265_DIR = join(DEPS_DIR, "libde265");
+export const ZLIB_DIR = join(DEPS_DIR, "zlib");
+export const BROTLI_DIR = join(DEPS_DIR, "brotli");
+export const HEIF_CONFORMANCE_DIR = join(DEPS_DIR, "heif_conformance");
+/** Downloaded + generated test images (AVIF grid/alpha, unci block). */
+export const TESTIMAGES_DIR = join(DEPS_DIR, "testimages");
+
+const REPOS = [
+  // Rust source being ported + primary test corpus (testdata/)
+  { url: "https://github.com/imazen/heic", dir: "heic" },
+  // AV1 decoder we link (C). Not re-ported.
+  { url: "https://code.videolan.org/videolan/dav1d.git", dir: "dav1d" },
+  // Pixel/oracle + API inspiration (needs libde265 + dav1d)
+  { url: "https://github.com/strukturag/libheif", dir: "libheif" },
+  // HEVC decoder plugin for libheif oracle
+  { url: "https://github.com/strukturag/libde265", dir: "libde265" },
+  // unci zlib/deflate (ISO 23001-17 generic compression)
+  { url: "https://github.com/madler/zlib.git", dir: "zlib" },
+  // unci brotli
+  { url: "https://github.com/google/brotli.git", dir: "brotli" },
+  // Nokia HEIF conformance candidates (C001.heic …) — HEVC-era HEIF
+  {
+    url: "https://github.com/nokiatech/heif_conformance.git",
+    dir: "heif_conformance",
+  },
+];
+
+const FOX_BASE =
+  "https://raw.githubusercontent.com/link-u/avif-sample-images/master";
+const FOX_SAMPLES = [
+  "fox.profile0.8bpc.yuv420.avif",
+  "fox.profile0.10bpc.yuv420.avif",
+  "fox.profile0.8bpc.yuv420.monochrome.avif",
+];
+
+const STAMP = ".heic_testimages_stamp";
+const STAMP_WANT = "v1-avif-fox+grid+alpha;unci-block";
+
+async function download(url: string, dest: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`GET ${url} → ${res.status}`);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  writeFileSync(dest, buf);
+  console.log(`deps/testimages: downloaded ${dest} (${buf.length} bytes)`);
+}
+
+/** Download link-u fox AVIFs and regenerate grid/alpha + unci block fixtures. */
+export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<void> {
+  const root = TESTIMAGES_DIR;
+  const avifDir = join(root, "avif");
+  const unciDir = join(root, "unci_block");
+  const stampPath = join(root, STAMP);
+  if (
+    !opts.force &&
+    existsSync(stampPath) &&
+    existsSync(join(avifDir, "grid_2x2.avif")) &&
+    existsSync(join(avifDir, "alpha.avif")) &&
+    existsSync(join(unciDir, "rgb8_block_pixel_le.heif"))
+  ) {
+    const prev = (await Bun.file(stampPath).text()).trim();
+    if (prev === STAMP_WANT) {
+      console.log(`deps/testimages: up to date (${STAMP_WANT})`);
+      return;
+    }
+  }
+
+  mkdirSync(join(avifDir, "_src"), { recursive: true });
+  mkdirSync(unciDir, { recursive: true });
+
+  for (const name of FOX_SAMPLES) {
+    const dest =
+      name.includes("monochrome")
+        ? join(avifDir, "_src", name)
+        : join(avifDir, name);
+    if (!existsSync(dest) || opts.force) {
+      console.log(`deps/testimages: fetching ${name}…`);
+      await download(`${FOX_BASE}/${name}`, dest);
+    }
+  }
+
+  console.log("deps/testimages: generating grid/alpha AVIFs…");
+  generateAvifFixtures(avifDir);
+  console.log("deps/testimages: generating unci block HEIFs…");
+  generateUnciBlockFixtures(unciDir);
+  writeFileSync(stampPath, STAMP_WANT);
+  console.log(`deps/testimages: ready (${STAMP_WANT})`);
+}
+
+export async function getDeps(opts: { forceTestImages?: boolean } = {}): Promise<void> {
+  mkdirSync(DEPS_DIR, { recursive: true });
+  for (const { url, dir } of REPOS) {
+    const path = join(DEPS_DIR, dir);
+    if (existsSync(path)) continue;
+    console.log(`deps: cloning ${url}`);
+    await $`git clone --depth 1 ${url} ${path}`;
+  }
+  await ensureTestImages({ force: !!opts.forceTestImages });
+}
+
+if (import.meta.main) {
+  const force = process.argv.includes("-force");
+  await getDeps({ forceTestImages: force });
+  console.log(
+    "deps: ready (heic, dav1d, libheif, libde265, zlib, brotli, heif_conformance, testimages)",
+  );
+}
