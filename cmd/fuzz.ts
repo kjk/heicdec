@@ -106,30 +106,16 @@ async function run(argv: string[]): Promise<number> {
 
 // Optional codecs expand surface (AVIF via dav1d, unci deflate/brotli).
 // Skip with -no-deps for a pure-C HEVC-only harness.
+// Missing build tools (meson/cmake/ninja) exit with winget install hints —
+// we do not dig through install dirs for them.
 if (!noDeps) {
   await getDeps();
   if (!dav1dPaths()) {
     console.log("building dav1d for AVIF fuzz coverage...");
-    try {
-      await buildDav1d();
-    } catch (e) {
-      console.warn("warning: dav1d build failed; continuing without AVIF:", e);
-    }
+    await buildDav1d();
   }
-  if (!zlibPaths()) {
-    try {
-      await buildZlib();
-    } catch (e) {
-      console.warn("warning: zlib build failed; unci deflate may be stubbed:", e);
-    }
-  }
-  if (!brotliPaths()) {
-    try {
-      await buildBrotli();
-    } catch (e) {
-      console.warn("warning: brotli build failed; unci brot may be stubbed:", e);
-    }
-  }
+  if (!zlibPaths()) await buildZlib();
+  if (!brotliPaths()) await buildBrotli();
 }
 
 const exe = await buildFuzz(true); // always clean-build (see header comment)

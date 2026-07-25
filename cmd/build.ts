@@ -481,9 +481,41 @@ async function hasNasm(): Promise<boolean> {
   }
 }
 
+/**
+ * Require an external tool on PATH. Do not search install dirs — if the user
+ * has not put it on PATH, exit with a winget one-liner (Windows) or package name.
+ * Does not return when missing (process.exit).
+ */
+async function requireTool(
+  name: string,
+  wingetId: string,
+  extraHint?: string,
+): Promise<void> {
+  try {
+    await $`${name} --version`.quiet();
+  } catch {
+    console.error(`${name} not found on PATH.`);
+    if (isWindows) {
+      console.error(`Install with:  winget install -e --id ${wingetId}`);
+      console.error("Then open a new terminal so PATH is updated.");
+    } else {
+      console.error(`Install ${name} (e.g. brew/apt) and ensure it is on PATH.`);
+    }
+    if (extraHint) console.error(extraHint);
+    process.exit(1);
+  }
+}
+
+async function requireCmakeNinja(): Promise<void> {
+  await requireTool("cmake", "Kitware.CMake");
+  await requireTool("ninja", "Ninja-build.Ninja");
+}
+
 /** Build static libdav1d into out/dav1d_build (meson + ninja). */
 export async function buildDav1d(opts: { force?: boolean; asm?: boolean } = {}): Promise<string> {
   await getDeps();
+  await requireTool("meson", "mesonbuild.meson");
+  await requireTool("ninja", "Ninja-build.Ninja");
   const src = `${ROOT}/deps/dav1d`;
   const buildDir = `${ROOT}/out/dav1d_build`;
   const libA = `${buildDir}/src/libdav1d.a`;
@@ -518,30 +550,10 @@ export async function buildDav1d(opts: { force?: boolean; asm?: boolean } = {}):
   throw new Error("dav1d build finished but libdav1d not found under out/dav1d_build/src");
 }
 
-async function ensureNinjaOnPath(): Promise<void> {
-  /* Prefer user-installed ninja; VS ships one under CMake extensions. */
-  try {
-    await $`ninja --version`.quiet();
-    return;
-  } catch {
-    /* fall through */
-  }
-  const candidates = [
-    `${process.env.LOCALAPPDATA}/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts`,
-    `C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja`,
-  ];
-  for (const d of candidates) {
-    if (existsSync(`${d}/ninja.exe`) || existsSync(`${d}/ninja`)) {
-      process.env.PATH = `${d};${process.env.PATH ?? ""}`;
-      return;
-    }
-  }
-}
-
 /** Build static libde265 (HEVC oracle backend for libheif). */
 export async function buildLibDe265(): Promise<string> {
   await getDeps();
-  await ensureNinjaOnPath();
+  await requireCmakeNinja();
   const src = `${ROOT}/deps/libde265`;
   const buildDir = `${ROOT}/out/libde265_build`;
   const lib = `${buildDir}/libde265/libde265.lib`;
@@ -570,7 +582,7 @@ export async function buildLibDe265(): Promise<string> {
 /** Build static zlib for unci deflate/zlib (and libheif oracle). */
 export async function buildZlib(): Promise<string> {
   await getDeps();
-  await ensureNinjaOnPath();
+  await requireCmakeNinja();
   const src = `${ROOT}/deps/zlib`;
   const buildDir = `${ROOT}/out/zlib_build`;
   const existing = zlibPaths();
@@ -596,7 +608,7 @@ export async function buildZlib(): Promise<string> {
 /** Build static brotli for unci brot + libheif oracle. */
 export async function buildBrotli(): Promise<BrotliPaths> {
   await getDeps();
-  await ensureNinjaOnPath();
+  await requireCmakeNinja();
   const src = `${ROOT}/deps/brotli`;
   const buildDir = `${ROOT}/out/brotli_build`;
   const existing = brotliPaths();
@@ -618,7 +630,7 @@ export async function buildBrotli(): Promise<BrotliPaths> {
 /** Build static libheif with libde265 + dav1d backends (no plugins). */
 export async function buildLibHeif(): Promise<string> {
   await getDeps();
-  await ensureNinjaOnPath();
+  await requireCmakeNinja();
   await buildDav1d();
   await buildLibDe265();
   await buildZlib();
@@ -755,6 +767,8 @@ export const FUZZ_EXE = `${FUZZ_DIR}/${isWindows ? "heic_fuzz.exe" : "heic_fuzz"
 export async function buildFuzz(clean = false): Promise<string> {
   mkdirSync(FUZZ_DIR, { recursive: true });
   const testSrc = `${ROOT}/test/fuzz_target.c`;
+  /* Windows: MSVC /MD deps need __imp__aligned_malloc; see fuzz_win_md_shim.c. */
+  const winShimSrc = `${ROOT}/test/fuzz_win_md_shim.c`;
   const units: { src: string; obj: string }[] = [
     ...SRCS.map((s) => ({
       src: `${ROOT}/${s}`,
@@ -764,6 +778,9 @@ export async function buildFuzz(clean = false): Promise<string> {
       src: testSrc,
       obj: `${FUZZ_DIR}/fuzz_target.o`,
     },
+    ...(isWindows
+      ? [{ src: winShimSrc, obj: `${FUZZ_DIR}/fuzz_win_md_shim.o` }]
+      : []),
   ];
   if (clean) {
     for (const u of units) rmSync(u.obj, { force: true });
