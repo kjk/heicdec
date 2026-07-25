@@ -53,13 +53,6 @@ static int32_t inv_angle(uint8_t mode)
     return 0;
 }
 
-static uint16_t plane_get(const uint16_t *p, int stride, int x, int y, int n)
-{
-    int idx = y * stride + x;
-    if (idx >= 0 && idx < n) return p[idx];
-    return 0;
-}
-
 /* Predict writes always land inside the PB (caller guarantees). */
 static inline void plane_put(uint16_t *p, int stride, int x, int y, uint16_t v)
 {

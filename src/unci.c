@@ -119,6 +119,7 @@ static uint16_t expand8(int val, int bit_depth)
     return (uint16_t)((val * 255 + maxv / 2) / maxv);
 }
 
+#if defined(HEIC_HAVE_ZLIB) || defined(HEIC_HAVE_BROTLI)
 /* Growable append of decompressed bytes; *dst may be reallocated. */
 static int unci_append_bytes(heic_ctx *ctx, uint8_t **dst, size_t *dst_len, size_t *dst_cap,
                              const uint8_t *src, size_t n)
@@ -143,6 +144,7 @@ static int unci_append_bytes(heic_ctx *ctx, uint8_t **dst, size_t *dst_len, size
     *dst_len = need;
     return 0;
 }
+#endif
 
 #ifdef HEIC_HAVE_ZLIB
 static int inflate_zlib_or_deflate(heic_ctx *ctx, const uint8_t *src, size_t src_len,
@@ -246,6 +248,9 @@ static int unci_decompress_unit(heic_ctx *ctx, heic_fourcc ct, const uint8_t *sr
 #else
         (void)src;
         (void)src_len;
+        (void)dst;
+        (void)dst_len;
+        (void)dst_cap;
         heic_error(ctx, HEIC_SEVERITY_ERROR, "unci: zlib needs HEIC_HAVE_ZLIB");
         return -1;
 #endif
@@ -254,6 +259,11 @@ static int unci_decompress_unit(heic_ctx *ctx, heic_fourcc ct, const uint8_t *sr
 #ifdef HEIC_HAVE_ZLIB
         return inflate_zlib_or_deflate(ctx, src, src_len, dst, dst_len, dst_cap, 1);
 #else
+        (void)src;
+        (void)src_len;
+        (void)dst;
+        (void)dst_len;
+        (void)dst_cap;
         heic_error(ctx, HEIC_SEVERITY_ERROR, "unci: deflate needs HEIC_HAVE_ZLIB");
         return -1;
 #endif
@@ -262,6 +272,11 @@ static int unci_decompress_unit(heic_ctx *ctx, heic_fourcc ct, const uint8_t *sr
 #ifdef HEIC_HAVE_BROTLI
         return inflate_brotli(ctx, src, src_len, dst, dst_len, dst_cap);
 #else
+        (void)src;
+        (void)src_len;
+        (void)dst;
+        (void)dst_len;
+        (void)dst_cap;
         heic_error(ctx, HEIC_SEVERITY_ERROR, "unci: brotli needs HEIC_HAVE_BROTLI");
         return -1;
 #endif

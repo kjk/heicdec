@@ -91,10 +91,27 @@ bun cmd/build.ts -clang  # clang harness
 bun cmd/tests.ts -all    # decode + RGB mse vs libheif (fail if we can't / differ)
 bun cmd/tests.ts -info -all  # open/probe only
 bun cmd/bench.ts -rand 5
+bun cmd/fuzz.ts          # libFuzzer + ASan (seeds fuzz/corpus from deps/)
 bun cmd/build-dist.ts    # amalgamation → dist/heic.h + dist/heic.c (+ wasm/heic.js)
 bun cmd/build-wasm.ts    # WebAssembly drop only (deps/emsdk if emcc missing)
 bun cmd/verify-wasm.ts <file.heic>
 ```
+
+### Fuzzing (memory-safety)
+
+- `bun cmd/fuzz.ts` — coverage-guided fuzzing (libFuzzer + ASan).
+  `test/fuzz_target.c` opens each input as a HEIC/HEIF/AVIF, probes info,
+  decodes primary (+ thumbnail), and pulls EXIF/XMP/ICC, with a budgeted
+  allocator (256 MB live). Builds into `out/fuzz/heic_fuzz.exe` via
+  `buildFuzz()`. First run seeds `fuzz/corpus/` from the deps/ corpus (files
+  over `-max-len` skipped); the corpus dir **is** the checkpoint — kill to
+  stop, rerun to resume. Auto-builds dav1d/zlib/brotli when missing so AVIF +
+  unci compression are covered (`-no-deps` for pure-C HEVC only).
+- Flags: `-jobs N`, `-repro FILE`, `-minimize` (`-merge=1` corpus shrink),
+  `-max-len N`, `-no-deps`.
+- `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so crash inputs
+  become regression seeds. Reproduce with
+  `bun cmd/fuzz.ts -repro fuzz/crashes/<artifact>`.
 
 WASM: pure-C HEVC + unci only (no `HEIC_HAVE_DAV1D` / zlib / brotli).
 `bun cmd/build-dist.ts` also rebuilds `wasm/heic.js` from the amalgamation.

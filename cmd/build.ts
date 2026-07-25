@@ -14,6 +14,7 @@ import {
   statSync,
   writeFileSync,
 } from "fs";
+import { resolve as resolvePath } from "path";
 import { getDeps } from "./get-deps";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
@@ -89,11 +90,15 @@ export const HEIC_CLANG_C_WARN =
   "-Wall -Wextra -Wuninitialized -Winit-self -Werror";
 const HEIC_CLANG_C_STD = "-std=c11";
 
-/** Debug info: DWARF on *nix; CodeView PDB on Windows (samply). */
+/** Debug info: DWARF on *nix; CodeView PDB on Windows (samply).
+ *  hevc_simd.c uses SSE4.1/SSSE3 intrinsics; clang requires -msse4.1 so
+ *  always_inline intrinsics may be inlined into the TU (MSVC does not). */
 export function clangCFlags(opt = "-g -O3", win = isWindows): string {
   const crt = win ? " -D_CRT_SECURE_NO_WARNINGS" : "";
   const pdb = win ? " -gcodeview" : "";
-  return `${HEIC_CLANG_C_STD} ${opt}${pdb} ${HEIC_CLANG_C_WARN}${crt}`;
+  const sse =
+    process.arch === "x64" || process.arch === "ia32" ? " -msse4.1" : "";
+  return `${HEIC_CLANG_C_STD} ${opt}${pdb}${sse} ${HEIC_CLANG_C_WARN}${crt}`;
 }
 
 type CompileUnit = { src: string; obj: string; label: string };
@@ -702,6 +707,131 @@ export async function buildRef(): Promise<void> {
   await buildBrotli();
   await buildLibHeif();
   console.log("ref: libheif oracle ready");
+}
+
+/* ----- libFuzzer + ASan target (driven by cmd/fuzz.ts) ----- */
+
+// The exe links the DYNAMIC asan runtime (clang_rt.asan_dynamic-x86_64.dll),
+// which lives in clang's resource dir, not on PATH; without a copy next to
+// the exe the loader fails before main (STATUS_DLL_NOT_FOUND).
+export async function copyAsanRuntimeDll(dir: string): Promise<void> {
+  if (!isWindows) return;
+  const dllName = "clang_rt.asan_dynamic-x86_64.dll";
+  // Normalize: CopyFileW fails ENOENT on a path with a mixed-slash ".."
+  // segment even when it resolves.
+  const dst = resolvePath(dir, dllName);
+  if (existsSync(dst)) return;
+  const proc = Bun.spawnSync(["clang", "-print-resource-dir"]);
+  const resDir = proc.stdout.toString().trim();
+  const src = resolvePath(resDir, "lib/windows", dllName);
+  if (!existsSync(src)) {
+    console.warn(`warning: ${src} not found; ${dllName} must be on PATH`);
+    return;
+  }
+  copyFileSync(src, dst);
+}
+
+/** Prefer Homebrew LLVM on macOS (Apple clang has no libFuzzer). */
+function findFuzzClang(): string {
+  const env = process.env.CLANG || process.env.CC || process.env.FUZZ_CC;
+  if (env && existsSync(env)) return env;
+  if (isMac) {
+    for (const c of [
+      "/opt/homebrew/opt/llvm/bin/clang",
+      "/usr/local/opt/llvm/bin/clang",
+    ]) {
+      if (existsSync(c)) return c;
+    }
+  }
+  return "clang";
+}
+
+const FUZZ_DIR = `${OUT_ROOT}/fuzz`;
+export const FUZZ_EXE = `${FUZZ_DIR}/${isWindows ? "heic_fuzz.exe" : "heic_fuzz"}`;
+
+// libFuzzer target: SRCS + test/fuzz_target.c, ASan + fuzzer (-O1 for readable
+// traces). No main() — libFuzzer provides it. Links dav1d/zlib/brotli when
+// present so AVIF + unci compression paths are under coverage.
+export async function buildFuzz(clean = false): Promise<string> {
+  mkdirSync(FUZZ_DIR, { recursive: true });
+  const testSrc = `${ROOT}/test/fuzz_target.c`;
+  const units: { src: string; obj: string }[] = [
+    ...SRCS.map((s) => ({
+      src: `${ROOT}/${s}`,
+      obj: `${FUZZ_DIR}/${objBase(s)}.o`,
+    })),
+    {
+      src: testSrc,
+      obj: `${FUZZ_DIR}/fuzz_target.o`,
+    },
+  ];
+  if (clean) {
+    for (const u of units) rmSync(u.obj, { force: true });
+    rmSync(FUZZ_EXE, { force: true });
+  }
+
+  const dav1d = dav1dPaths();
+  const zlib = zlibPaths();
+  const brotli = brotliPaths();
+  const comp = compressFeatureFlags(zlib, brotli);
+  let def = comp.def;
+  let inc = ` -I${ROOT}/src` + comp.inc;
+  if (dav1d) {
+    def += " -DHEIC_HAVE_DAV1D";
+    inc += dav1dIncFlags(dav1d);
+  }
+
+  const headers = [INTERNAL_H, PUBLIC_H];
+  const objStale = (u: { src: string; obj: string }) =>
+    needsRebuild(u.obj, u.src, ...headers);
+  const staleObj = units.some(objStale);
+  const staleExe = needsRebuild(
+    FUZZ_EXE,
+    ...units.map((u) => u.obj),
+    ...(dav1d ? [dav1d.lib] : []),
+    ...comp.libs,
+  );
+  if (!staleObj && !staleExe && existsSync(FUZZ_EXE)) {
+    if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
+    console.log("heic_fuzz up to date");
+    return FUZZ_EXE;
+  }
+
+  const cc = findFuzzClang();
+  // -O1 for readable ASan traces (same as djvudec fuzz).
+  const cflags = `-fsanitize=address,fuzzer ${clangCFlags("-g -O1")}${def}${inc}`;
+  console.log(
+    `building heic_fuzz (clang+asan+fuzzer` +
+      `${dav1d ? "+dav1d" : ""}${zlib ? "+zlib" : ""}${brotli ? "+brotli" : ""})...`,
+  );
+  try {
+    for (const u of units) {
+      if (!objStale(u)) continue;
+      await $`${cc} ${{ raw: cflags }} -c -o ${u.obj} ${u.src}`.cwd(ROOT);
+    }
+    const objs = units.map((u) => u.obj);
+    const linkLibs: string[] = [];
+    if (dav1d) linkLibs.push(dav1d.lib);
+    linkLibs.push(...comp.libs);
+    if (!isWindows) linkLibs.push("-lpthread", "-lm");
+    const linkExtra = linkLibs.length ? ` ${linkLibs.join(" ")}` : "";
+    if (needsRebuild(FUZZ_EXE, ...objs, ...(dav1d ? [dav1d.lib] : []), ...comp.libs)) {
+      await $`${cc} -fsanitize=address,fuzzer ${{ raw: objs.join(" ") }}${{ raw: linkExtra }} -o ${FUZZ_EXE}`.cwd(
+        ROOT,
+      );
+    }
+  } catch (e) {
+    if (isMac && cc === "clang") {
+      console.error("\nfuzz build failed: Apple's clang does not include libFuzzer.");
+      console.error("Install LLVM from Homebrew which provides a clang with fuzzer support:");
+      console.error("  brew install llvm");
+      console.error("Then re-run. The script will auto-detect /opt/homebrew/opt/llvm/bin/clang.\n");
+    }
+    throw e;
+  }
+  if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
+  console.log("built heic_fuzz");
+  return FUZZ_EXE;
 }
 
 if (import.meta.main) {

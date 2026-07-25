@@ -41,10 +41,16 @@ bun cmd/tests.ts -all            # decode all corpus files; RGB mse vs libheif
 bun cmd/tests.ts -info -all      # open/probe only
 bun cmd/build.ts -libheif        # also link strukturag libheif oracle
 bun cmd/bench.ts -rand 5         # open/decode/close timing vs libheif
+bun cmd/fuzz.ts                  # libFuzzer + ASan (seeded from deps corpus)
 bun cmd/build-dist.ts            # amalgamation → dist/ (+ wasm/heic.js demo)
 bun cmd/build-wasm.ts            # WebAssembly drop only (bootstraps emsdk if needed)
 bun cmd/verify-wasm.ts single.heic
 ```
+
+Fuzzing notes: first run builds optional dav1d/zlib/brotli when missing, seeds
+`fuzz/corpus/` from the corpus, then mutates until you Ctrl-C (rerun resumes).
+Crashes land in `fuzz/crashes/` (commit them). Useful flags: `-jobs N`,
+`-repro FILE`, `-minimize`, `-no-deps` (HEVC-only, skip codec builds).
 
 ### WebAssembly demo
 

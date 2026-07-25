@@ -30,6 +30,7 @@
 - [x] `cmd/{get-deps,build,tests,build-dist,build-wasm,verify-wasm,corpus,gen-cabac-init}.ts` + harness
 - [x] WebAssembly drop: `wasm/heic.js` + `wasm/index.html` (HEVC/unci; no dav1d)
 - [x] Nokia `heif_conformance` in get-deps + corpus (`tests.ts` / `bench.ts` -all)
+- [x] Fuzzing: `cmd/fuzz.ts` + `test/fuzz_target.c` (libFuzzer+ASan; `fuzz/corpus/` checkpoint, `fuzz/crashes/` tracked)
 
 - [x] SAO filter apply (`hevc_sao.c`) after I-slice CTU loop
 - [x] Deblocking filter (`hevc_deblock.c`) I-slice bS=2; TU edges marked in CTU path; order deblock→SAO
