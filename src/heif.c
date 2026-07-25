@@ -141,6 +141,40 @@ static void free_property(heic_ctx *ctx, heic_property *p)
     p->kind = HEIC_PROP_UNKNOWN;
 }
 
+static void free_property_associations(heic_ctx *ctx, heic_container *c)
+{
+    int i;
+    for (i = 0; i < c->n_property_associations; i++) {
+        heic_free_buf(ctx, c->property_associations[i].prop_indices);
+        heic_free_buf(ctx, c->property_associations[i].essential);
+    }
+    heic_free_buf(ctx, c->property_associations);
+    c->property_associations = NULL;
+    c->n_property_associations = 0;
+}
+
+static void free_item_locations(heic_ctx *ctx, heic_container *c)
+{
+    int i;
+    for (i = 0; i < c->n_item_locations; i++)
+        heic_free_buf(ctx, c->item_locations[i].extents);
+    heic_free_buf(ctx, c->item_locations);
+    c->item_locations = NULL;
+    c->n_item_locations = 0;
+}
+
+static void free_item_infos(heic_ctx *ctx, heic_container *c)
+{
+    int i;
+    for (i = 0; i < c->n_item_infos; i++) {
+        heic_free_buf(ctx, c->item_infos[i].item_name);
+        heic_free_buf(ctx, c->item_infos[i].content_type);
+    }
+    heic_free_buf(ctx, c->item_infos);
+    c->item_infos = NULL;
+    c->n_item_infos = 0;
+}
+
 void heic_container_free(heic_container *c)
 {
     int i;
@@ -148,21 +182,11 @@ void heic_container_free(heic_container *c)
     if (!c || !c->ctx) return;
     ctx = c->ctx;
     heic_free_buf(ctx, c->compatible_brands);
-    for (i = 0; i < c->n_item_locations; i++)
-        heic_free_buf(ctx, c->item_locations[i].extents);
-    heic_free_buf(ctx, c->item_locations);
-    for (i = 0; i < c->n_item_infos; i++) {
-        heic_free_buf(ctx, c->item_infos[i].item_name);
-        heic_free_buf(ctx, c->item_infos[i].content_type);
-    }
-    heic_free_buf(ctx, c->item_infos);
+    free_item_locations(ctx, c);
+    free_item_infos(ctx, c);
     for (i = 0; i < c->n_properties; i++) free_property(ctx, &c->properties[i]);
     heic_free_buf(ctx, c->properties);
-    for (i = 0; i < c->n_property_associations; i++) {
-        heic_free_buf(ctx, c->property_associations[i].prop_indices);
-        heic_free_buf(ctx, c->property_associations[i].essential);
-    }
-    heic_free_buf(ctx, c->property_associations);
+    free_property_associations(ctx, c);
     for (i = 0; i < c->n_item_references; i++)
         heic_free_buf(ctx, c->item_references[i].to_item_ids);
     heic_free_buf(ctx, c->item_references);
@@ -246,6 +270,9 @@ static int parse_iloc(heic_ctx *ctx, const heic_box *b, heic_container *c,
     }
     if (item_count > HEIC_MAX_ITEMS) return -1;
 
+    /* Replace prior iloc (duplicate box / second meta) — index only into the
+     * freshly allocated buffer so a stale n_item_locations cannot OOB. */
+    free_item_locations(ctx, c);
     c->item_locations = (heic_item_loc *)heic_zalloc(ctx, item_count * sizeof(heic_item_loc));
     if (!c->item_locations && item_count) return -1;
 
@@ -254,7 +281,7 @@ static int parse_iloc(heic_ctx *ctx, const heic_box *b, heic_container *c,
         uint16_t extent_count;
         uint32_t e;
         if (heic_abort_check(ab)) return -1;
-        loc = &c->item_locations[c->n_item_locations];
+        loc = &c->item_locations[i];
         if (version < 2) {
             if (pos + 2 > len) break;
             loc->item_id = heic_rb16(content + pos);
@@ -285,7 +312,7 @@ static int parse_iloc(heic_ctx *ctx, const heic_box *b, heic_container *c,
             loc->extents[e].offset = read_sized_int(content, len, &pos, offset_size);
             loc->extents[e].length = read_sized_int(content, len, &pos, length_size);
         }
-        c->n_item_locations++;
+        c->n_item_locations = (int)(i + 1);
     }
     return 0;
 }
@@ -366,6 +393,7 @@ static int parse_iinf(heic_ctx *ctx, const heic_box *b, heic_container *c,
         pos += 4;
     }
     if (entry_count > HEIC_MAX_ITEMS) return -1;
+    free_item_infos(ctx, c);
     c->item_infos = (heic_item_info *)heic_zalloc(ctx, entry_count * sizeof(heic_item_info));
     if (!c->item_infos && entry_count) return -1;
 
@@ -830,6 +858,11 @@ static int parse_ipma(heic_ctx *ctx, const heic_box *b, heic_container *c,
     entry_count = heic_rb32(content + pos);
     pos += 4;
     if (entry_count > HEIC_MAX_ITEMS) return -1;
+
+    /* Replace prior associations (duplicate ipma / second meta). Always index
+     * into a freshly allocated [0, entry_count) buffer — never append using a
+     * stale n_property_associations (heap OOB on re-entry). */
+    free_property_associations(ctx, c);
     c->property_associations =
         (heic_ipma *)heic_zalloc(ctx, entry_count * sizeof(heic_ipma));
     if (!c->property_associations && entry_count) return -1;
@@ -838,7 +871,7 @@ static int parse_ipma(heic_ctx *ctx, const heic_box *b, heic_container *c,
         heic_ipma *a;
         uint8_t assoc_count, k;
         if (heic_abort_check(ab)) return -1;
-        a = &c->property_associations[c->n_property_associations];
+        a = &c->property_associations[e];
         if (version < 1) {
             if (pos + 2 > len) break;
             a->item_id = heic_rb16(content + pos);
@@ -871,7 +904,7 @@ static int parse_ipma(heic_ctx *ctx, const heic_box *b, heic_container *c,
             }
             a->n_props++;
         }
-        c->n_property_associations++;
+        c->n_property_associations = (int)(e + 1);
     }
     return 0;
 }
@@ -1013,6 +1046,9 @@ int heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
                 return -1;
             }
         } else if (top.type == HEIC_BOX_META) {
+            /* HEIF still-image files have a single meta; ignore extras so a
+             * fuzzer-crafted second meta cannot clobber half-built state. */
+            if (out->has_meta) continue;
             if (parse_meta(ctx, &top, out, ab) != 0) {
                 heic_container_free(out);
                 return -1;
