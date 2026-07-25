@@ -254,19 +254,14 @@ static void convert_420_8_rgb(const heic_frame *f, const ycc_lut *lut, int x0, i
                               int w, int h, uint8_t *dst, int stride)
 {
     int y, x;
-    uint16_t stack_chr[4096 * 2];
     uint16_t *cb_row = NULL, *cr_row = NULL;
     uint16_t *heap_chr = NULL;
+    /* Always heap: a 16KB stack temp + HEVC decode frames trips ASan stack limits. */
     if (heic_simd_enabled() && w >= 4) {
-        if (w <= 4096) {
-            cb_row = stack_chr;
-            cr_row = stack_chr + w;
-        } else {
-            heap_chr = (uint16_t *)malloc((size_t)w * 2u * sizeof(uint16_t));
-            if (heap_chr) {
-                cb_row = heap_chr;
-                cr_row = heap_chr + w;
-            }
+        heap_chr = (uint16_t *)malloc((size_t)w * 2u * sizeof(uint16_t));
+        if (heap_chr) {
+            cb_row = heap_chr;
+            cr_row = heap_chr + w;
         }
     }
     for (y = 0; y < h; y++) {

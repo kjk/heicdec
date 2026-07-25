@@ -41,7 +41,7 @@ typedef struct {
     uint32_t deblock_stride;
     uint32_t deblock_n;
 
-    int16_t residual_buf[HEIC_MAX_COEFF];
+    int16_t *residual_buf; /* HEIC_MAX_COEFF, heap (keep CTU frame small for ASan) */
 } heic_slice_ctx;
 
 static int bit_depth_y(const heic_sps *s) { return 8 + s->bit_depth_luma_minus8; }
@@ -974,6 +974,9 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
             for (i = 0; i < db_n; i++) sc->deblock_qp[i] = (int8_t)sh->slice_qp_y;
         }
     }
+    sc->residual_buf =
+        (int16_t *)heic_zalloc(ctx, (size_t)HEIC_MAX_COEFF * sizeof(int16_t));
+    if (!sc->residual_buf) return -1;
     return 0;
 }
 
@@ -987,6 +990,7 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->sao_map);
     heic_free_buf(sc->hctx, sc->deblock_flags);
     heic_free_buf(sc->hctx, sc->deblock_qp);
+    heic_free_buf(sc->hctx, sc->residual_buf);
     memset(sc, 0, sizeof(*sc));
 }
 
@@ -1089,22 +1093,30 @@ static int build_tile_scan(heic_ctx *ctx, const uint32_t *col_bd, int n_cols,
     return 0;
 }
 
+/* Heavy scratch lives on the heap: under ASan a ~20KB stack frame here plus
+ * nested iden/grid/HEVC decode blows the default stack during fuzz REDUCE. */
+typedef struct {
+    heic_slice_ctx   sc;
+    uint32_t         col_bd[65];
+    uint32_t         row_bd[65];
+    uint32_t         entry_cum[4096];
+    heic_ctx_model   wpp_saved[HEIC_NUM_CONTEXTS];
+} heic_slice_work;
+
 int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
                              const heic_pps *pps, const heic_slice_header *sh,
                              const uint8_t *data, size_t len,
                              const uint32_t *ep_positions, int n_ep,
                              heic_frame *out, const heic_abort *ab)
 {
-    heic_slice_ctx sc;
+    heic_slice_work *work;
+    heic_slice_ctx *sc;
     uint32_t ctb = 0, total, start, pic_w, pic_h, ctb_sz;
     int tiles, wpp;
-    uint32_t col_bd[65], row_bd[65];
     int n_cols = 1, n_rows = 1;
     uint32_t *tile_scan = NULL;
     int tile_scan_n = 0, tile_scan_pos = 0;
-    uint32_t entry_cum[4096];
     int n_entry = 0, entry_idx = 0;
-    heic_ctx_model wpp_saved[HEIC_NUM_CONTEXTS];
     int wpp_have_saved = 0;
     int i;
 
@@ -1119,8 +1131,14 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
         heic_error(ctx, HEIC_SEVERITY_ERROR, "slice_segment_address out of range");
         return -1;
     }
-    if (slice_ctx_init(&sc, ctx, sps, pps, sh, data, len, out) != 0) {
-        slice_ctx_free(&sc);
+
+    work = (heic_slice_work *)heic_zalloc(ctx, sizeof(*work));
+    if (!work) return -1;
+    sc = &work->sc;
+
+    if (slice_ctx_init(sc, ctx, sps, pps, sh, data, len, out) != 0) {
+        slice_ctx_free(sc);
+        heic_free_buf(ctx, work);
         return -1;
     }
 
@@ -1131,13 +1149,17 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
     wpp = pps->entropy_coding_sync_enabled_flag;
 
     if (tiles) {
-        if (compute_tile_bd(pps, pic_w, pic_h, col_bd, row_bd, &n_cols, &n_rows) != 0) {
+        if (compute_tile_bd(pps, pic_w, pic_h, work->col_bd, work->row_bd, &n_cols,
+                            &n_rows) != 0) {
             heic_error(ctx, HEIC_SEVERITY_ERROR, "invalid tile grid");
-            slice_ctx_free(&sc);
+            slice_ctx_free(sc);
+            heic_free_buf(ctx, work);
             return -1;
         }
-        if (build_tile_scan(ctx, col_bd, n_cols, row_bd, n_rows, &tile_scan, &tile_scan_n) != 0) {
-            slice_ctx_free(&sc);
+        if (build_tile_scan(ctx, work->col_bd, n_cols, work->row_bd, n_rows, &tile_scan,
+                            &tile_scan_n) != 0) {
+            slice_ctx_free(sc);
+            heic_free_buf(ctx, work);
             return -1;
         }
         /* find start in tile scan */
@@ -1148,11 +1170,11 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
                 break;
             }
         }
-        sc.ctb_x = tile_scan[tile_scan_pos * 2];
-        sc.ctb_y = tile_scan[tile_scan_pos * 2 + 1];
+        sc->ctb_x = tile_scan[tile_scan_pos * 2];
+        sc->ctb_y = tile_scan[tile_scan_pos * 2 + 1];
     } else {
-        sc.ctb_y = start / pic_w;
-        sc.ctb_x = start % pic_w;
+        sc->ctb_y = start / pic_w;
+        sc->ctb_x = start % pic_w;
     }
 
     /* cumulative entry offsets (EBSP, relative to slice_data start) */
@@ -1162,119 +1184,125 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
         if (n_entry > 4096) n_entry = 4096;
         for (i = 0; i < n_entry; i++) {
             cum += sh->entry_point_offsets[i];
-            entry_cum[i] = cum;
+            work->entry_cum[i] = cum;
         }
     }
 
     for (;;) {
-        uint32_t x = sc.ctb_x * ctb_sz;
-        uint32_t y = sc.ctb_y * ctb_sz;
+        uint32_t x = sc->ctb_x * ctb_sz;
+        uint32_t y = sc->ctb_y * ctb_sz;
         int end_flag;
-        uint32_t prev_x = sc.ctb_x, prev_y = sc.ctb_y;
+        uint32_t prev_x = sc->ctb_x, prev_y = sc->ctb_y;
 
         if (heic_abort_check(ab)) {
             heic_free_buf(ctx, tile_scan);
-            slice_ctx_free(&sc);
+            slice_ctx_free(sc);
+            heic_free_buf(ctx, work);
             return -1;
         }
-        if (heic_cabac_overread(&sc.cabac)) {
+        if (heic_cabac_overread(&sc->cabac)) {
             heic_error(ctx, HEIC_SEVERITY_ERROR, "CABAC overread during CTU decode");
             heic_free_buf(ctx, tile_scan);
-            slice_ctx_free(&sc);
+            slice_ctx_free(sc);
+            heic_free_buf(ctx, work);
             return -1;
         }
-        if (decode_ctu(&sc, x, y) != 0 || sc.cabac.error) {
+        if (decode_ctu(sc, x, y) != 0 || sc->cabac.error) {
             heic_error(ctx, HEIC_SEVERITY_ERROR, "CTU decode failed at (%u,%u) ctu=%u",
-                       sc.ctb_x, sc.ctb_y, ctb);
+                       sc->ctb_x, sc->ctb_y, ctb);
             heic_free_buf(ctx, tile_scan);
-            slice_ctx_free(&sc);
+            slice_ctx_free(sc);
+            heic_free_buf(ctx, work);
             return -1;
         }
         ctb++;
 
         /* WPP: save contexts after CTB column 1 (for next row restore) */
-        if (wpp && sc.ctb_x == 1 && sc.ctb_y + 1 < pic_h) {
-            memcpy(wpp_saved, sc.models, sizeof(wpp_saved));
+        if (wpp && sc->ctb_x == 1 && sc->ctb_y + 1 < pic_h) {
+            memcpy(work->wpp_saved, sc->models, sizeof(work->wpp_saved));
             wpp_have_saved = 1;
         }
 
-        end_flag = heic_cabac_decode_terminate(&sc.cabac);
+        end_flag = heic_cabac_decode_terminate(&sc->cabac);
         if (end_flag) break;
 
         /* advance CTB */
         if (tiles) {
             tile_scan_pos++;
             if (tile_scan_pos >= tile_scan_n) break;
-            sc.ctb_x = tile_scan[tile_scan_pos * 2];
-            sc.ctb_y = tile_scan[tile_scan_pos * 2 + 1];
+            sc->ctb_x = tile_scan[tile_scan_pos * 2];
+            sc->ctb_y = tile_scan[tile_scan_pos * 2 + 1];
             {
-                uint32_t pt = get_tile_id(col_bd, n_cols, row_bd, n_rows, prev_x, prev_y);
-                uint32_t ct = get_tile_id(col_bd, n_cols, row_bd, n_rows, sc.ctb_x, sc.ctb_y);
+                uint32_t pt =
+                    get_tile_id(work->col_bd, n_cols, work->row_bd, n_rows, prev_x, prev_y);
+                uint32_t ct = get_tile_id(work->col_bd, n_cols, work->row_bd, n_rows,
+                                          sc->ctb_x, sc->ctb_y);
                 if (ct != pt) {
-                    (void)heic_cabac_decode_terminate(&sc.cabac);
+                    (void)heic_cabac_decode_terminate(&sc->cabac);
                     if (entry_idx < n_entry) {
-                        uint32_t ebsp = entry_cum[entry_idx];
+                        uint32_t ebsp = work->entry_cum[entry_idx];
                         uint32_t rbsp = ep_positions && n_ep > 0
                                            ? ebsp_to_rbsp(ep_positions, n_ep, ebsp)
                                            : ebsp;
-                        heic_cabac_seek(&sc.cabac, rbsp);
-                        heic_cabac_reinit(&sc.cabac);
+                        heic_cabac_seek(&sc->cabac, rbsp);
+                        heic_cabac_reinit(&sc->cabac);
                         entry_idx++;
                     }
-                    heic_cabac_init_contexts(sc.models, sh->slice_type, sh->cabac_init_flag,
+                    heic_cabac_init_contexts(sc->models, sh->slice_type, sh->cabac_init_flag,
                                              sh->slice_qp_y);
-                    sc.current_qpy = sh->slice_qp_y;
-                    sc.last_qpy_in_prev_qg = sh->slice_qp_y;
-                    sc.current_qg_x = -1;
-                    sc.current_qg_y = -1;
-                    sc.is_cu_qp_delta_coded = 0;
-                    sc.cu_qp_delta = 0;
+                    sc->current_qpy = sh->slice_qp_y;
+                    sc->last_qpy_in_prev_qg = sh->slice_qp_y;
+                    sc->current_qg_x = -1;
+                    sc->current_qg_y = -1;
+                    sc->is_cu_qp_delta_coded = 0;
+                    sc->cu_qp_delta = 0;
                 }
             }
         } else {
-            sc.ctb_x++;
-            if (sc.ctb_x >= pic_w) {
-                sc.ctb_x = 0;
-                sc.ctb_y++;
+            sc->ctb_x++;
+            if (sc->ctb_x >= pic_w) {
+                sc->ctb_x = 0;
+                sc->ctb_y++;
                 /* WPP: new row — restore contexts from prev row col1 + seek entry */
-                if (wpp && sc.ctb_y < pic_h && pic_w > 1) {
-                    (void)heic_cabac_decode_terminate(&sc.cabac); /* end_of_subset */
+                if (wpp && sc->ctb_y < pic_h && pic_w > 1) {
+                    (void)heic_cabac_decode_terminate(&sc->cabac); /* end_of_subset */
                     if (wpp_have_saved)
-                        memcpy(sc.models, wpp_saved, sizeof(sc.models));
+                        memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
                     if (entry_idx < n_entry) {
-                        uint32_t ebsp = entry_cum[entry_idx];
+                        uint32_t ebsp = work->entry_cum[entry_idx];
                         uint32_t rbsp = ep_positions && n_ep > 0
                                            ? ebsp_to_rbsp(ep_positions, n_ep, ebsp)
                                            : ebsp;
-                        heic_cabac_seek(&sc.cabac, rbsp);
-                        heic_cabac_reinit(&sc.cabac);
+                        heic_cabac_seek(&sc->cabac, rbsp);
+                        heic_cabac_reinit(&sc->cabac);
                         entry_idx++;
                     }
                 }
             }
-            if (sc.ctb_y >= pic_h) break;
+            if (sc->ctb_y >= pic_h) break;
         }
     }
 
     heic_error(ctx, HEIC_SEVERITY_INFO, "I-slice decoded %u CTUs", (unsigned)ctb);
 
     /* Loop filters: deblock then SAO (H.265 8.7). */
-    if (!sh->slice_deblocking_filter_disabled_flag && sc.deblock_flags &&
-        sc.deblock_qp) {
+    if (!sh->slice_deblocking_filter_disabled_flag && sc->deblock_flags &&
+        sc->deblock_qp) {
         int beta = (int)sh->slice_beta_offset_div2 * 2;
         int tc = (int)sh->slice_tc_offset_div2 * 2;
         int cb_off = (int)pps->pps_cb_qp_offset + (int)sh->slice_cb_qp_offset;
         int cr_off = (int)pps->pps_cr_qp_offset + (int)sh->slice_cr_qp_offset;
-        heic_apply_deblock(out, sc.deblock_flags, sc.deblock_qp, sc.deblock_stride,
+        heic_apply_deblock(out, sc->deblock_flags, sc->deblock_qp, sc->deblock_stride,
                            beta, tc, cb_off, cr_off);
     }
     if (sps->sample_adaptive_offset_enabled_flag &&
-        (sh->slice_sao_luma_flag || sh->slice_sao_chroma_flag) && sc.sao_map) {
-        heic_apply_sao(ctx, out, sc.sao_map, sps->pic_width_in_ctbs,
+        (sh->slice_sao_luma_flag || sh->slice_sao_chroma_flag) && sc->sao_map) {
+        heic_apply_sao(ctx, out, sc->sao_map, sps->pic_width_in_ctbs,
                        sps->pic_height_in_ctbs, ctb_sz);
     }
 
     heic_free_buf(ctx, tile_scan);
-    slice_ctx_free(&sc);
+    slice_ctx_free(sc);
+    heic_free_buf(ctx, work);
     return 0;
 }

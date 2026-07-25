@@ -153,7 +153,7 @@ static int inflate_zlib_or_deflate(heic_ctx *ctx, const uint8_t *src, size_t src
 {
     z_stream z;
     int rc;
-    uint8_t chunk[8192];
+    uint8_t chunk[1024]; /* small stack buffer (ASan stack is tight under fuzz) */
 
     memset(&z, 0, sizeof(z));
     z.next_in = (Bytef *)src;
@@ -201,7 +201,7 @@ static int inflate_brotli(heic_ctx *ctx, const uint8_t *src, size_t src_len,
     BrotliDecoderResult res;
     const uint8_t *next_in = src;
     size_t avail_in = src_len;
-    uint8_t chunk[8192];
+    uint8_t chunk[1024];
     uint8_t *next_out = chunk;
     size_t avail_out = sizeof(chunk);
 

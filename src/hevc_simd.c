@@ -407,7 +407,7 @@ int heic_simd_idct16(const int16_t *coeffs, int16_t *output, int bit_depth)
 int heic_simd_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
 {
     int shift1 = 7, shift2 = 20 - bit_depth;
-    int32_t tmp[1024];
+    int32_t *tmp;
     int col, row;
     __m128i s[32], d[32];
     if (!g_simd) return 0;
@@ -415,7 +415,9 @@ int heic_simd_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
         dc_fill_n(output, 32, coeffs[0], bit_depth);
         return 1;
     }
-    memset(tmp, 0, sizeof(tmp));
+    tmp = (int32_t *)malloc(1024 * sizeof(int32_t));
+    if (!tmp) return 0;
+    memset(tmp, 0, 1024 * sizeof(int32_t));
     for (col = 0; col < 32; col += 4) {
         /* Skip all-zero column groups. */
         {
@@ -435,6 +437,7 @@ int heic_simd_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
         idct32_1d_x4(s, d, shift2);
         store4_rows_i16(output, 32, row, d, 32);
     }
+    free(tmp);
     return 1;
 }
 

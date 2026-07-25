@@ -327,17 +327,23 @@ static void htx_idct32_1d(const int32_t src[32], int32_t dst[32], int shift)
 void heic_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
 {
     int shift1 = 7, shift2 = 20 - bit_depth;
-    int32_t tmp[1024];
+    int32_t *tmp;
     int col, row, k, last_col;
     if (heic_simd_idct32(coeffs, output, bit_depth)) return;
     if (htx_only_dc(coeffs, 32)) {
         htx_idct_dc_fill(output, 32, coeffs[0], bit_depth);
         return;
     }
+    /* Heap: 4KB stack temp under ASan + nested TT/CQT is expensive. */
+    tmp = (int32_t *)malloc(1024 * sizeof(int32_t));
+    if (!tmp) {
+        memset(output, 0, 1024 * sizeof(int16_t));
+        return;
+    }
     /* Rightmost non-zero column; skip IDCT on trailing zero columns. */
     last_col = 31;
     while (last_col > 0 && htx_col_zero(coeffs, 32, last_col)) last_col--;
-    memset(tmp, 0, sizeof(tmp));
+    memset(tmp, 0, 1024 * sizeof(int32_t));
     for (col = 0; col <= last_col; col++) {
         int32_t src[32], d[32];
         if (htx_col_zero(coeffs, 32, col)) continue;
@@ -363,6 +369,7 @@ void heic_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
         htx_idct32_1d(src, d, shift2);
         for (k = 0; k < 32; k++) output[base + k] = (int16_t)d[k];
     }
+    free(tmp);
 }
 
 void heic_dequantize(int16_t *coeffs, int n, int qp, int bit_depth,
