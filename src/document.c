@@ -88,9 +88,20 @@ static void apply_transform_dims(uint32_t *w, uint32_t *h, const heic_item *item
     }
 }
 
+/* Max dimg chain length (cycle / pathological iden stacks). */
+#define HEIC_RESOLVE_MAX_DEPTH 8
+
+static int resolve_seen(const uint32_t *seen, int n_seen, uint32_t id)
+{
+    int i;
+    for (i = 0; i < n_seen; i++)
+        if (seen[i] == id) return 1;
+    return 0;
+}
+
 /* Resolve display dimensions for grid/iden by following dimg. */
-static int resolve_dims(const heic_doc *doc, const heic_item *item,
-                        uint32_t *w, uint32_t *h)
+static int resolve_dims_r(const heic_doc *doc, const heic_item *item, uint32_t *w,
+                          uint32_t *h, uint32_t *seen, int n_seen)
 {
     if (item->has_dims) {
         *w = item->width;
@@ -98,19 +109,31 @@ static int resolve_dims(const heic_doc *doc, const heic_item *item,
         apply_transform_dims(w, h, item);
         return 0;
     }
+    if (n_seen >= HEIC_RESOLVE_MAX_DEPTH || resolve_seen(seen, n_seen, item->id))
+        return -1;
     if (item->item_type == HEIC_TYPE_IDEN || item->item_type == HEIC_TYPE_TMAP ||
         item->item_type == HEIC_TYPE_GRID) {
         uint32_t refs[4];
         int n = heic_container_find_refs(&doc->container, item->id, HEIC_REF_DIMG, refs, 4);
         heic_item child;
-        if (n >= 1 && heic_container_get_item(&doc->container, refs[0], &child) == 0)
-            return resolve_dims(doc, &child, w, h);
+        if (n >= 1 && heic_container_get_item(&doc->container, refs[0], &child) == 0) {
+            seen[n_seen] = item->id;
+            return resolve_dims_r(doc, &child, w, h, seen, n_seen + 1);
+        }
     }
     return -1;
 }
 
+static int resolve_dims(const heic_doc *doc, const heic_item *item, uint32_t *w,
+                        uint32_t *h)
+{
+    uint32_t seen[HEIC_RESOLVE_MAX_DEPTH];
+    return resolve_dims_r(doc, item, w, h, seen, 0);
+}
+
 /* First dimg child with codec config (grid/iden primary often has ispe only). */
-static int resolve_codec_item(const heic_doc *doc, const heic_item *item, heic_item *out)
+static int resolve_codec_item_r(const heic_doc *doc, const heic_item *item,
+                                heic_item *out, uint32_t *seen, int n_seen)
 {
     uint32_t refs[8];
     int n, i;
@@ -118,16 +141,25 @@ static int resolve_codec_item(const heic_doc *doc, const heic_item *item, heic_i
         *out = *item;
         return 0;
     }
+    if (n_seen >= HEIC_RESOLVE_MAX_DEPTH || resolve_seen(seen, n_seen, item->id))
+        return -1;
     if (item->item_type != HEIC_TYPE_GRID && item->item_type != HEIC_TYPE_IDEN &&
         item->item_type != HEIC_TYPE_TMAP)
         return -1;
+    seen[n_seen] = item->id;
     n = heic_container_find_refs(&doc->container, item->id, HEIC_REF_DIMG, refs, 8);
     for (i = 0; i < n; i++) {
         heic_item child;
         if (heic_container_get_item(&doc->container, refs[i], &child) != 0) continue;
-        if (resolve_codec_item(doc, &child, out) == 0) return 0;
+        if (resolve_codec_item_r(doc, &child, out, seen, n_seen + 1) == 0) return 0;
     }
     return -1;
+}
+
+static int resolve_codec_item(const heic_doc *doc, const heic_item *item, heic_item *out)
+{
+    uint32_t seen[HEIC_RESOLVE_MAX_DEPTH];
+    return resolve_codec_item_r(doc, item, out, seen, 0);
 }
 
 static int bit_depth_from_item(const heic_item *item)
