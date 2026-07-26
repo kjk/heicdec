@@ -988,7 +988,8 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         int cb_qp_offset, int cr_qp_offset,
                         const uint8_t *pred_mode, const heic_pb_motion *mv_info,
                         uint32_t pu_stride, uint32_t min_pu,
-                        const uint8_t *cbf_map);
+                        const uint8_t *cbf_map,
+                        const int ref_poc[2][HEIC_MAX_REF_PICS]);
 
 /* ---- inter prediction / CTU decode (hevc_inter.c, hevc_ctu.c) ---- */
 

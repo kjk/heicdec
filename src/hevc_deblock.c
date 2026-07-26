@@ -49,11 +49,22 @@ static int mv_diff_ge4(heic_mv a, heic_mv b)
            iabs((int)a.y - (int)b.y) >= 4;
 }
 
+static int resolve_ref_poc(const int ref_poc[2][HEIC_MAX_REF_PICS],
+                           heic_pb_motion motion, int list)
+{
+    int ref = motion.ref_idx[list];
+    if (!motion.pred_flag[list] || !ref_poc ||
+        ref < 0 || ref >= HEIC_MAX_REF_PICS)
+        return INT_MIN;
+    return ref_poc[list][ref];
+}
+
 static int compute_bs(uint32_t x, uint32_t y, int vertical,
                       int is_transform_edge, const uint8_t *pred_mode,
                       const heic_pb_motion *mv_info, uint32_t pu_stride,
                       uint32_t min_pu, const uint8_t *cbf_map,
-                      uint32_t cbf_stride)
+                      uint32_t cbf_stride,
+                      const int ref_poc[2][HEIC_MAX_REF_PICS])
 {
     uint32_t px = vertical ? x - 1 : x;
     uint32_t py = vertical ? y : y - 1;
@@ -61,6 +72,9 @@ static int compute_bs(uint32_t x, uint32_t y, int vertical,
     size_t pi, qi;
     heic_pb_motion mp, mq;
     int count_p, count_q;
+    int rp0, rp1, rq0, rq1;
+    heic_mv mp0 = {0, 0}, mp1 = {0, 0};
+    heic_mv mq0 = {0, 0}, mq1 = {0, 0};
     if (!pred_mode || !mv_info || !min_pu) return 2;
     pi = (size_t)(py / min_pu) * pu_stride + px / min_pu;
     qi = (size_t)(qy / min_pu) * pu_stride + qx / min_pu;
@@ -75,14 +89,34 @@ static int compute_bs(uint32_t x, uint32_t y, int vertical,
     count_p = mp.pred_flag[0] + mp.pred_flag[1];
     count_q = mq.pred_flag[0] + mq.pred_flag[1];
     if (count_p != count_q) return 1;
-    if (mp.pred_flag[0] != mq.pred_flag[0] ||
-        mp.pred_flag[1] != mq.pred_flag[1] ||
-        mp.ref_idx[0] != mq.ref_idx[0] ||
-        mp.ref_idx[1] != mq.ref_idx[1])
+
+    rp0 = resolve_ref_poc(ref_poc, mp, 0);
+    rp1 = resolve_ref_poc(ref_poc, mp, 1);
+    rq0 = resolve_ref_poc(ref_poc, mq, 0);
+    rq1 = resolve_ref_poc(ref_poc, mq, 1);
+    if (!((rp0 == rq0 && rp1 == rq1) ||
+          (rp0 == rq1 && rp1 == rq0)))
         return 1;
-    if ((mp.pred_flag[0] && mv_diff_ge4(mp.mv[0], mq.mv[0])) ||
-        (mp.pred_flag[1] && mv_diff_ge4(mp.mv[1], mq.mv[1])))
-        return 1;
+
+    if (mp.pred_flag[0]) mp0 = mp.mv[0];
+    if (mp.pred_flag[1]) mp1 = mp.mv[1];
+    if (mq.pred_flag[0]) mq0 = mq.mv[0];
+    if (mq.pred_flag[1]) mq1 = mq.mv[1];
+    if (rp0 != rp1) {
+        if (rp0 == rq0) {
+            if (mv_diff_ge4(mp0, mq0) || mv_diff_ge4(mp1, mq1))
+                return 1;
+        } else {
+            if (mv_diff_ge4(mp0, mq1) || mv_diff_ge4(mp1, mq0))
+                return 1;
+        }
+    } else {
+        int same_order_diff =
+            mv_diff_ge4(mp0, mq0) || mv_diff_ge4(mp1, mq1);
+        int cross_order_diff =
+            mv_diff_ge4(mp0, mq1) || mv_diff_ge4(mp1, mq0);
+        if (same_order_diff && cross_order_diff) return 1;
+    }
     return 0;
 }
 
@@ -234,7 +268,8 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                                     const uint8_t *pred_mode,
                                     const heic_pb_motion *mv_info,
                                     uint32_t pu_stride, uint32_t min_pu,
-                                    const uint8_t *cbf_map)
+                                    const uint8_t *cbf_map,
+                                    const int ref_poc[2][HEIC_MAX_REF_PICS])
 {
     int w = frame->width, h = frame->height;
     int bit_depth_c = frame->bit_depth;
@@ -274,7 +309,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             bs = compute_bs(x, y, 1,
                             (flags[idx] & HEIC_DEBLOCK_FLAG_VERT) != 0,
                             pred_mode, mv_info, pu_stride, min_pu, cbf_map,
-                            deblock_stride);
+                            deblock_stride, ref_poc);
             if (bs < 2) continue;
             qp_q = (int)qp_map[idx];
             qp_p = bx > 0 ? (int)qp_map[(size_t)by * deblock_stride + (bx - 1)] : qp_q;
@@ -335,7 +370,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             bs = compute_bs(x, y, 0,
                             (flags[idx] & HEIC_DEBLOCK_FLAG_HORIZ) != 0,
                             pred_mode, mv_info, pu_stride, min_pu, cbf_map,
-                            deblock_stride);
+                            deblock_stride, ref_poc);
             if (bs < 2) continue;
             qp_q = (int)qp_map[idx];
             qp_p = by > 0 ? (int)qp_map[(size_t)(by - 1) * deblock_stride + bx] : qp_q;
@@ -392,7 +427,8 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         int cb_qp_offset, int cr_qp_offset,
                         const uint8_t *pred_mode,
                         const heic_pb_motion *mv_info, uint32_t pu_stride,
-                        uint32_t min_pu, const uint8_t *cbf_map)
+                        uint32_t min_pu, const uint8_t *cbf_map,
+                        const int ref_poc[2][HEIC_MAX_REF_PICS])
 {
     uint32_t w, h, x, y;
     int vert_edge_mask = HEIC_DEBLOCK_FLAG_VERT | HEIC_DEBLOCK_PB_EDGE_VERT;
@@ -416,7 +452,7 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
             bs = compute_bs(x, y, 1,
                             (flags_v & HEIC_DEBLOCK_FLAG_VERT) != 0,
                             pred_mode, mv_info, pu_stride, min_pu, cbf_map,
-                            deblock_stride);
+                            deblock_stride, ref_poc);
             if (bs > 0)
                 filter_edge_luma(frame, x, y, 1, qp_p, qp_q, beta_offset, tc_offset, bs);
         }
@@ -435,7 +471,7 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
             bs = compute_bs(x, y, 0,
                             (flags_h & HEIC_DEBLOCK_FLAG_HORIZ) != 0,
                             pred_mode, mv_info, pu_stride, min_pu, cbf_map,
-                            deblock_stride);
+                            deblock_stride, ref_poc);
             if (bs > 0)
                 filter_edge_luma(frame, x, y, 0, qp_p, qp_q, beta_offset, tc_offset, bs);
         }
@@ -443,7 +479,7 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
 
     apply_chroma_deblocking(frame, flags, qp_map, deblock_stride, tc_offset,
                             cb_qp_offset, cr_qp_offset, pred_mode, mv_info,
-                            pu_stride, min_pu, cbf_map);
+                            pu_stride, min_pu, cbf_map, ref_poc);
 }
 
 void heic_mark_tu_boundary(uint8_t *flags, uint32_t deblock_stride, uint32_t map_n,

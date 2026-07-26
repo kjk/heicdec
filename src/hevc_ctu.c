@@ -594,14 +594,36 @@ static heic_pb_coding decode_inter_pu(heic_slice_ctx *sc, int skip,
     return c;
 }
 
-static int motion_eq(heic_pb_motion a, heic_pb_motion b)
+static int same_ref_picture(const heic_slice_ctx *sc,
+                            int list_a, int ref_a, int list_b, int ref_b)
 {
-    return a.pred_flag[0] == b.pred_flag[0] &&
-           a.pred_flag[1] == b.pred_flag[1] &&
-           a.ref_idx[0] == b.ref_idx[0] &&
-           a.ref_idx[1] == b.ref_idx[1] &&
-           a.mv[0].x == b.mv[0].x && a.mv[0].y == b.mv[0].y &&
-           a.mv[1].x == b.mv[1].x && a.mv[1].y == b.mv[1].y;
+    const heic_frame *a, *b;
+    if (list_a < 0 || list_a > 1 || list_b < 0 || list_b > 1 ||
+        ref_a < 0 || ref_a >= sc->n_refs[list_a] ||
+        ref_b < 0 || ref_b >= sc->n_refs[list_b])
+        return 0;
+    a = sc->refs[list_a][ref_a];
+    b = sc->refs[list_b][ref_b];
+    if (!a || !b) return 0;
+    return a == b || (a->poc_valid && b->poc_valid && a->poc == b->poc);
+}
+
+static int motion_eq(const heic_slice_ctx *sc,
+                     heic_pb_motion a, heic_pb_motion b)
+{
+    int list;
+    if (a.pred_flag[0] != b.pred_flag[0] ||
+        a.pred_flag[1] != b.pred_flag[1])
+        return 0;
+    for (list = 0; list < 2; list++) {
+        if (!a.pred_flag[list]) continue;
+        if (!same_ref_picture(sc, list, a.ref_idx[list],
+                              list, b.ref_idx[list]) ||
+            a.mv[list].x != b.mv[list].x ||
+            a.mv[list].y != b.mv[list].y)
+            return 0;
+    }
+    return 1;
 }
 
 static int same_merge_region(const heic_slice_ctx *sc, uint32_t x, uint32_t y,
@@ -769,23 +791,25 @@ static heic_pb_motion derive_merge(heic_slice_ctx *sc, const heic_pu *pu,
                   part_mode == HEIC_PART_2NXND));
     if (b1_avail && count < max) {
         heic_pb_motion m = get_motion(sc, b1x, b1y);
-        if (!a1_avail || !motion_eq(cand[0], m)) cand[count++] = m;
+        if (!a1_avail || !motion_eq(sc, cand[0], m)) cand[count++] = m;
     }
     if (inter_at(sc, b0x, b0y) &&
         !same_merge_region(sc, pu->x, pu->y, b0x, b0y) && count < max) {
         heic_pb_motion m = get_motion(sc, b0x, b0y);
-        if (!b1_avail || !motion_eq(cand[count - 1], m)) cand[count++] = m;
+        if (!b1_avail || !motion_eq(sc, cand[count - 1], m))
+            cand[count++] = m;
     }
     if (inter_at(sc, a0x, a0y) &&
         !same_merge_region(sc, pu->x, pu->y, a0x, a0y) && count < max) {
         heic_pb_motion m = get_motion(sc, a0x, a0y);
-        if (!a1_avail || !motion_eq(cand[0], m)) cand[count++] = m;
+        if (!a1_avail || !motion_eq(sc, cand[0], m)) cand[count++] = m;
     }
     if (count < 4 && count < max && inter_at(sc, b2x, b2y) &&
         !same_merge_region(sc, pu->x, pu->y, b2x, b2y)) {
         heic_pb_motion m = get_motion(sc, b2x, b2y);
-        int dup = (a1_avail && motion_eq(cand[0], m));
-        if (!dup && b1_avail && count > 1) dup = motion_eq(cand[1], m);
+        int dup = (a1_avail && motion_eq(sc, cand[0], m));
+        if (!dup && b1_avail && count > 1)
+            dup = motion_eq(sc, cand[1], m);
         if (!dup) cand[count++] = m;
     }
     if (count < max) {
@@ -821,7 +845,8 @@ static heic_pb_motion derive_merge(heic_slice_ctx *sc, const heic_pu *pu,
             if (a >= orig || b >= orig
                 || !cand[a].pred_flag[0] || !cand[b].pred_flag[1])
                 continue;
-            if (cand[a].ref_idx[0] == cand[b].ref_idx[1]
+            if (same_ref_picture(sc, 0, cand[a].ref_idx[0],
+                                 1, cand[b].ref_idx[1])
                 && cand[a].mv[0].x == cand[b].mv[1].x
                 && cand[a].mv[0].y == cand[b].mv[1].y)
                 continue;
@@ -2409,6 +2434,17 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
     heic_error(ctx, HEIC_SEVERITY_INFO, "%c-slice decoded %u CTUs",
                sh->slice_type == HEIC_SLICE_I ? 'I' : 'P', (unsigned)ctb);
 
+    if (sh->slice_type != HEIC_SLICE_I) {
+        int list;
+        for (list = 0; list < 2; list++) {
+            for (i = 0; i < HEIC_MAX_REF_PICS; i++)
+                out->ref_poc[list][i] = INT_MIN;
+            for (i = 0; i < sc->n_refs[list] && i < HEIC_MAX_REF_PICS; i++)
+                if (sc->refs[list][i] && sc->refs[list][i]->poc_valid)
+                    out->ref_poc[list][i] = sc->refs[list][i]->poc;
+        }
+    }
+
     /* Loop filters: deblock then SAO (H.265 8.7). */
     if (!sh->slice_deblocking_filter_disabled_flag && sc->deblock_flags &&
         sc->deblock_qp) {
@@ -2422,7 +2458,9 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
                                                         : sc->pred_mode_map,
                            sh->slice_type == HEIC_SLICE_I ? NULL : sc->mv_info,
                            sc->intra_mode_stride, min_pu_size(sps),
-                           sh->slice_type == HEIC_SLICE_I ? NULL : sc->cbf_map);
+                           sh->slice_type == HEIC_SLICE_I ? NULL : sc->cbf_map,
+                           sh->slice_type == HEIC_SLICE_I ? NULL
+                                                        : out->ref_poc);
     }
     if (sps->sample_adaptive_offset_enabled_flag &&
         (sh->slice_sao_luma_flag || sh->slice_sao_chroma_flag) && sc->sao_map) {
@@ -2438,12 +2476,6 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
         out->motion_min_pu = min_pu_size(sps);
         sc->mv_info = NULL;
         sc->pred_mode_map = NULL;
-        int list;
-        for (list = 0; list < 2; list++)
-            for (i = 0; i < sc->n_refs[list]
-                        && i < HEIC_MAX_REF_PICS; i++)
-                if (sc->refs[list][i] && sc->refs[list][i]->poc_valid)
-                    out->ref_poc[list][i] = sc->refs[list][i]->poc;
     }
 
     heic_free_buf(ctx, tile_scan);

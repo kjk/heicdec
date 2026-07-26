@@ -186,6 +186,8 @@
 - [x] Raw Annex B HEVC sequence regression path with `dec265` pixel oracle;
       FATE fixtures cover long-term RPS, RPLM, TMVP, weighted P/B, and B merge
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
+- [x] HEVC merge deduplication and deblocking compare resolved reference
+      pictures, including cross-list B prediction order
 - [x] HEVC image sequences (`moov`): first sync sample from `pict` (`vide`
       fallback), `stsd`/`stsz`/`stsc`/`stco`/`co64`/`stss`, and a smaller
       `pict` thumbnail track; Nokia `C026`–`C032`, `C036`–`C038`, and `C041`
