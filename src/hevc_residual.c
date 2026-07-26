@@ -1,6 +1,14 @@
 /* hevc_residual.c -- residual_coding CABAC path (port of imazen/heic residual.rs) */
 #include "heic_internal.h"
 
+#if defined(_MSC_VER)
+#define HEIC_RESIDUAL_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define HEIC_RESIDUAL_INLINE inline __attribute__((always_inline))
+#else
+#define HEIC_RESIDUAL_INLINE inline
+#endif
+
 /* 4x4 scan tables (H.265 Table 6-7 etc.) */
 static const uint8_t HEIC_SCAN_4X4_DIAG[16][2] = {
     {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0}, {0, 3}, {1, 2},
@@ -173,8 +181,9 @@ static int decode_coded_sb_flag(heic_cabac *cabac, heic_ctx_model *ctx,
     return heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
 }
 
-static int calc_sig_ctx(uint8_t x_c, uint8_t y_c, uint8_t log2_size, uint8_t c_idx,
-                        uint8_t scan_idx, uint8_t prev_csbf)
+static HEIC_RESIDUAL_INLINE int
+calc_sig_ctx(uint8_t x_c, uint8_t y_c, uint8_t log2_size, uint8_t c_idx,
+             uint8_t scan_idx, uint8_t prev_csbf)
 {
     uint8_t sb_width = (uint8_t)(1u << (log2_size - 2));
     int sig_ctx;
@@ -221,10 +230,11 @@ static int calc_sig_ctx(uint8_t x_c, uint8_t y_c, uint8_t log2_size, uint8_t c_i
     return HEIC_CTX_SIG_COEFF_FLAG + (c_idx > 0 ? 27 : 0) + sig_ctx;
 }
 
-static int decode_sig_flag(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t c_idx,
-                           uint8_t pos, uint8_t log2_size, uint8_t scan_idx,
-                           uint8_t sb_x, uint8_t sb_y, uint8_t prev_csbf,
-                           const uint8_t (*scan_pos)[2])
+static HEIC_RESIDUAL_INLINE int
+decode_sig_flag(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t c_idx,
+                uint8_t pos, uint8_t log2_size, uint8_t scan_idx,
+                uint8_t sb_x, uint8_t sb_y, uint8_t prev_csbf,
+                const uint8_t (*scan_pos)[2])
 {
     uint8_t x_c = (uint8_t)(sb_x * 4 + scan_pos[pos][0]);
     uint8_t y_c = (uint8_t)(sb_y * 4 + scan_pos[pos][1]);
@@ -339,21 +349,20 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         int prev_csbf;
         uint8_t start_pos, last_coeff;
         int16_t coeff_values[16];
-        int coeff_flags[16];
-        uint8_t num_coeffs = 0;
+        uint8_t sig_positions[16];
+        uint8_t needs_remaining[16];
+        int n_sig = 0;
         int can_infer_dc;
         int n;
         int base_cs, ctx_set, this_subblock_had_gt1;
         uint8_t greater1_ctx, last_greater1_flag;
         int first_g1_idx;
-        int g1_positions[16];
-        int needs_remaining[16];
         int max_g1, g1_count;
         uint8_t first_sig_pos, last_sig_pos;
         int sign_hidden;
-        uint8_t sig_positions[16];
-        int n_sig, i;
-        uint8_t coeff_signs[16];
+        int n_signs;
+        uint32_t sign_bits;
+        int i;
         uint8_t rice_param;
         int32_t sum_abs_level;
 
@@ -377,14 +386,10 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         if (!sb_coded) continue;
 
         start_pos = (sb_idx == last_sb_idx) ? last_pos_in_sb : 15;
-        memset(coeff_values, 0, sizeof(coeff_values));
-        memset(coeff_flags, 0, sizeof(coeff_flags));
         can_infer_dc = infer_sb_dc_sig;
 
         if (sb_idx == last_sb_idx) {
-            coeff_flags[start_pos] = 1;
-            coeff_values[start_pos] = 1;
-            num_coeffs = 1;
+            sig_positions[n_sig++] = start_pos;
             can_infer_dc = 0;
             last_coeff = start_pos > 0 ? (uint8_t)(start_pos - 1) : 0;
         } else {
@@ -397,9 +402,7 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                                           (uint8_t)scan_idx, sb_x, sb_y,
                                           (uint8_t)prev_csbf, scan_pos);
                 if (sig) {
-                    coeff_flags[n] = 1;
-                    coeff_values[n] = 1;
-                    num_coeffs++;
+                    sig_positions[n_sig++] = (uint8_t)n;
                     can_infer_dc = 0;
                 }
             }
@@ -407,22 +410,20 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
 
         if (start_pos > 0) {
             if (can_infer_dc) {
-                coeff_flags[0] = 1;
-                coeff_values[0] = 1;
-                num_coeffs++;
+                sig_positions[n_sig++] = 0;
             } else {
                 int sig = decode_sig_flag(cabac, ctx, c_idx, 0, log2_size,
                                           (uint8_t)scan_idx, sb_x, sb_y,
                                           (uint8_t)prev_csbf, scan_pos);
-                if (sig) {
-                    coeff_flags[0] = 1;
-                    coeff_values[0] = 1;
-                    num_coeffs++;
-                }
+                if (sig) sig_positions[n_sig++] = 0;
             }
         }
 
-        if (num_coeffs == 0) continue;
+        if (n_sig == 0) continue;
+        for (i = 0; i < n_sig; i++) {
+            coeff_values[i] = 1;
+            needs_remaining[i] = 0;
+        }
 
         base_cs = (sb_idx == 0 || c_idx > 0) ? 0 : 2;
         ctx_set = base_cs + (prev_subblock_had_gt1 ? 1 : 0);
@@ -430,16 +431,13 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         greater1_ctx = 1;
         last_greater1_flag = 0;
         first_g1_idx = -1;
-        memset(g1_positions, 0, sizeof(g1_positions));
-        memset(needs_remaining, 0, sizeof(needs_remaining));
-        max_g1 = num_coeffs < 8 ? num_coeffs : 8;
+        max_g1 = n_sig < 8 ? n_sig : 8;
         g1_count = 0;
 
-        for (n = (int)start_pos; n >= 0; n--) {
+        for (i = 0; i < n_sig; i++) {
             int g1;
-            if (!coeff_flags[n]) continue;
             if (g1_count >= max_g1) {
-                needs_remaining[n] = 1;
+                needs_remaining[i] = 1;
                 continue;
             }
             if (g1_count > 0 && greater1_ctx > 0) {
@@ -451,13 +449,12 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
             g1 = decode_greater1(cabac, ctx, c_idx, (uint8_t)ctx_set, greater1_ctx);
             last_greater1_flag = (uint8_t)g1;
             if (g1) {
-                coeff_values[n] = 2;
-                g1_positions[n] = 1;
+                coeff_values[i] = 2;
                 this_subblock_had_gt1 = 1;
                 if (first_g1_idx < 0)
-                    first_g1_idx = n;
+                    first_g1_idx = i;
                 else
-                    needs_remaining[n] = 1;
+                    needs_remaining[i] = 1;
             }
             g1_count++;
         }
@@ -469,43 +466,31 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
             }
         }
 
-        /* One reverse pass: sig list high→low (matches prior order) + first/last. */
-        n_sig = 0;
-        for (n = (int)start_pos; n >= 0; n--) {
-            if (coeff_flags[n]) sig_positions[n_sig++] = (uint8_t)n;
-        }
-        if (n_sig == 0) {
-            prev_subblock_had_gt1 = this_subblock_had_gt1;
-            continue;
-        }
         /* Highest scan index first in array, lowest last. */
         last_sig_pos = sig_positions[0];
         first_sig_pos = sig_positions[n_sig - 1];
         sign_hidden = sign_data_hiding && !cu_transquant_bypass
                       && (last_sig_pos - first_sig_pos) > 3;
 
-        memset(coeff_signs, 0, sizeof(coeff_signs));
-        for (i = 0; i < n_sig - 1; i++)
-            coeff_signs[i] = (uint8_t)heic_cabac_decode_bypass(cabac);
-        if (!sign_hidden)
-            coeff_signs[n_sig - 1] = (uint8_t)heic_cabac_decode_bypass(cabac);
+        n_signs = n_sig - (sign_hidden ? 1 : 0);
+        sign_bits = heic_cabac_decode_bypass_bits(cabac, n_signs);
 
         rice_param = 0;
         sum_abs_level = 0;
         for (i = 0; i < n_sig; i++) {
             int pos = sig_positions[i];
-            int16_t v = coeff_values[pos];
-            if (needs_remaining[pos]) {
+            int16_t v = coeff_values[i];
+            if (needs_remaining[i]) {
                 int16_t rem = decode_abs_remaining(cabac, &rice_param, v);
                 int32_t sum = (int32_t)v + (int32_t)rem;
                 if (sum > 32767) sum = 32767;
                 v = (int16_t)sum;
             }
-            if (coeff_signs[i]) v = (int16_t)(-v);
+            if (i < n_signs && ((sign_bits >> (n_signs - 1 - i)) & 1u))
+                v = (int16_t)(-v);
             sum_abs_level += v;
             if (i == n_sig - 1 && sign_hidden && (sum_abs_level & 1) != 0)
                 v = (int16_t)(-v);
-            coeff_values[pos] = v;
             {
                 int x = (int)sb_x * 4 + scan_pos[pos][0];
                 int y = (int)sb_y * 4 + scan_pos[pos][1];

@@ -73,6 +73,15 @@
   - Residual: one-pass sig list / signs / remaining / store.
   - CABAC: inline `decode_bypass_bits`; color: stack chroma expand (no malloc).
   - `example.heic` ~1.20× → **~1.04×**; `example.avif` ~1.5× → **~1.03×**; `nokia_444` still ≈/≤ libheif.
+- **Full-corpus winperf pass** (188 files; HDR + C022 profiled against libheif):
+  - CABAC bin renormalization: one-shift MPS fast path + table-driven LPS shift.
+  - Residual: record significant positions once, index level state by sig-list position,
+    batch coefficient signs through `decode_bypass_bits`, inline sig-context helpers.
+  - `hdr-sample.heic` 43.5ms → **37.5ms** (-13.7%; libheif 33.0ms).
+  - `C022.heic` 122.6ms → **111.1ms** (-9.4%; libheif 109.5ms);
+    `C050` -10.6%, `example.heic` -5.7%.
+  - After: 166 comparable files / 22 skips / 0 bench failures; pixel oracle
+    183 ok / 5 no-oracle skips / 0 failures.
 
 ## Next
 
@@ -113,4 +122,3 @@
 - When the header landed on a byte boundary, CABAC started one byte early → first `split_cu` wrong (0 vs 1), whole CTB desynced, ~half the slice unread.
 - Fix (match imazen): always read `alignment_bit_equal_to_one`, then `heic_bs_byte_align` (discard rest of byte).
 - After fix: mse≈2.5 maxdiff≈6 vs libheif (loop-filter / SAO residual).
-

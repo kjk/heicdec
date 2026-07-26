@@ -558,8 +558,16 @@ export async function buildLibDe265(): Promise<string> {
   const buildDir = `${ROOT}/out/libde265_build`;
   const lib = `${buildDir}/libde265/libde265.lib`;
   const libA = `${buildDir}/libde265/libde265.a`;
+  const syncVersionHeader = () => {
+    /* de265.h includes this CMake-generated header. Use resolved paths because
+     * Bun's Windows copyFileSync does not reliably handle a "/../" source. */
+    const ver = resolvePath(buildDir, "libde265/de265-version.h");
+    const verDst = resolvePath(src, "libde265/de265-version.h");
+    if (existsSync(ver)) copyFileSync(ver, verDst);
+  };
   if (existsSync(lib) || existsSync(libA)) {
     const p = existsSync(lib) ? lib : libA;
+    syncVersionHeader();
     console.log(`libde265 already built: ${p}`);
     return p;
   }
@@ -570,10 +578,7 @@ export async function buildLibDe265(): Promise<string> {
       `-DENABLE_SDL=OFF -DENABLE_ENCODER=OFF -DENABLE_DECODER=ON`,
   );
   await runCmd(`ninja -C "${buildDir}"`);
-  /* de265.h includes <libde265/de265-version.h>; copy version next to source. */
-  const ver = `${buildDir}/libde265/de265-version.h`;
-  const verDst = `${ROOT}/deps/libde265/libde265/de265-version.h`;
-  if (existsSync(ver)) copyFileSync(ver, verDst);
+  syncVersionHeader();
   if (existsSync(lib)) return lib;
   if (existsSync(libA)) return libA;
   throw new Error("libde265 build finished but library not found");

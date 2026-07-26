@@ -42,6 +42,11 @@ static const uint8_t HEIC_STATE_TRANS_LPS[64] = {
     33, 33, 34, 34, 35, 35, 35, 36, 36, 36, 37, 37, 37, 38, 38, 63,
 };
 
+static const uint8_t HEIC_RENORM_SHIFT[32] = {
+    6, 5, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+};
+
 #include "hevc_cabac_init.inc"
 
 void heic_ctx_model_init(heic_ctx_model *m, uint8_t init_value, int slice_qp)
@@ -180,14 +185,39 @@ int heic_cabac_decode_bin(heic_cabac *c, heic_ctx_model *ctx)
     if (c->value < scaled_range) {
         bin_val = ctx->mps;
         ctx->state = HEIC_STATE_TRANS_MPS[ctx->state];
+        /* The MPS range needs at most one renormalization shift. */
+        if (c->range < 256) {
+            c->range <<= 1;
+            c->value <<= 1;
+            c->bits_needed++;
+            if (c->bits_needed >= 0) {
+                c->bits_needed -= 8;
+                if (c->byte_pos < c->len)
+                    c->value |= c->data[c->byte_pos++];
+                else
+                    c->overread_bytes++;
+            }
+        }
     } else {
+        uint8_t shift;
         bin_val = 1 - ctx->mps;
         c->value -= scaled_range;
-        c->range = lps_range;
         if (ctx->state == 0) ctx->mps = (uint8_t)(1 - ctx->mps);
         ctx->state = HEIC_STATE_TRANS_LPS[ctx->state];
+        shift = HEIC_RENORM_SHIFT[lps_range >> 3];
+        /* RangeLPS=2 or 3 is outside the table's usual valid-stream states. */
+        while ((lps_range << shift) < 256) shift++;
+        c->range = lps_range << shift;
+        c->value <<= shift;
+        c->bits_needed += shift;
+        if (c->bits_needed >= 0) {
+            if (c->byte_pos < c->len)
+                c->value |= (uint32_t)c->data[c->byte_pos++] << c->bits_needed;
+            else
+                c->overread_bytes++;
+            c->bits_needed -= 8;
+        }
     }
-    if (cabac_renorm(c) != 0) return 0;
     return bin_val;
 }
 
