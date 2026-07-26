@@ -475,7 +475,6 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
 
     if (!frame || log2_size > 5) return -1;
     size = 1u << log2_size;
-    memset(border, 0, sizeof(border));
     fill_border(frame, x, y, size, c_idx, border, center);
 
     if (c_idx == 0 || frame->chroma_format == 3)

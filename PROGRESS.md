@@ -142,6 +142,13 @@
     66.5 → **62.8** (-5.6%), with residual self-samples down 7.1%.
   - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
     183 ok / 5 no-oracle skips / 0 failures.
+- **No redundant intra border clear**:
+  - Stop zeroing the full intra border scratch array before `fill_border`,
+    which already writes or substitutes every active reference sample.
+  - HDR repeated median 32.33ms → **30.93ms** (-4.3%); winperf eliminated
+    the separate small-`memset` entry (186 samples across 200 decodes).
+  - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
+    183 ok / 5 no-oracle skips / 0 failures.
 
 ## Next
 
