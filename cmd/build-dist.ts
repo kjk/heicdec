@@ -27,12 +27,28 @@ export const DIST_MODULES = SRCS.map((s) => s.replace(/^src\//, ""));
 export const DIST_H = join(DIST, "heic.h");
 export const DIST_C = join(DIST, "heic.c");
 
+/* Source fragments included by a module must be embedded too: dist/heic.c is
+ * deliberately standalone and cannot depend on files left under src/. */
+const EMBEDDED_INCLUDES = ["hevc_cabac_init.inc"];
+
 function stripIncludes(text: string, headers: string[]): string {
   const re = new RegExp(
     `^[ \\t]*#[ \\t]*include[ \\t]+"(?:${headers.join("|")})"[ \\t]*\\r?\\n`,
     "gm",
   );
   return text.replace(re, "");
+}
+
+function embedIncludes(text: string): string {
+  for (const name of EMBEDDED_INCLUDES) {
+    const re = new RegExp(
+      `^[ \\t]*#[ \\t]*include[ \\t]+"${name.replace(".", "\\.")}"[ \\t]*$`,
+      "gm",
+    );
+    const included = readFileSync(join(SRC, name), "utf8").trimEnd();
+    text = text.replace(re, included);
+  }
+  return text;
 }
 
 function stripTrailingWhitespace(code: string): string {
@@ -123,7 +139,8 @@ export async function buildDist(): Promise<void> {
   for (const name of DIST_MODULES) {
     const code = readFileSync(join(SRC, name), "utf8");
     parts.push(
-      stripIncludes(code, ["heic_internal\\.h", "heic\\.h"]).trimEnd() + "\n",
+      embedIncludes(stripIncludes(code, ["heic_internal\\.h", "heic\\.h"])).trimEnd() +
+        "\n",
     );
   }
 

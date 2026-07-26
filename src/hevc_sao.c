@@ -20,7 +20,7 @@ static int isignum(int v)
     return 0;
 }
 
-static int clampi(int v, int lo, int hi)
+static int heic_sao_clampi(int v, int lo, int hi)
 {
     if (v < lo) return lo;
     if (v > hi) return hi;
@@ -52,7 +52,7 @@ static void apply_sao_band(uint16_t *plane, int stride, int x0, int y0, int x1,
                 int band = sample >> band_shift;
                 int offset = (int)band_table[band & 31];
                 if (offset)
-                    row[x] = (uint16_t)clampi(sample + offset, 0, max_val);
+                    row[x] = (uint16_t)heic_sao_clampi(sample + offset, 0, max_val);
             }
         }
     }
@@ -79,7 +79,7 @@ static void apply_sao_edge_pixel(const uint16_t *src, uint16_t *dst, int stride,
     if (edge_idx < 0 || edge_idx > 4) return;
     offset = offset_table[edge_idx];
     if (offset)
-        dst[idx] = (uint16_t)clampi(sample + offset, 0, max_val);
+        dst[idx] = (uint16_t)heic_sao_clampi(sample + offset, 0, max_val);
 }
 
 static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
@@ -151,7 +151,7 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
             int edge_idx = 2 + isignum(sample - n0) + isignum(sample - n1);
             int offset = offset_table[edge_idx];
             if (offset)
-                drow[x] = (uint16_t)clampi(sample + offset, 0, max_val);
+                drow[x] = (uint16_t)heic_sao_clampi(sample + offset, 0, max_val);
         }
     }
 

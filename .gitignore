@@ -33,6 +33,3 @@ fuzz/corpus.min/
 fuzz/*.log
 # amalgamated dist is regenerated; agents do not commit it
 # (user commits dist/ manually when publishing)
-
-dist/
-
