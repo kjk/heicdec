@@ -998,6 +998,15 @@ int heic_mc_luma(const heic_frame *ref, heic_frame *dst, heic_mv mv,
 int heic_mc_chroma(const heic_frame *ref, heic_frame *dst, heic_mv mv,
                    uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                    int32_t *scratch, size_t scratch_n);
+int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
+                          uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                          int16_t *out, uint32_t out_stride,
+                          int32_t *scratch, size_t scratch_n);
+int heic_mc_chroma_internal(const heic_frame *ref, heic_mv mv,
+                            uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                            int16_t *out_cb, int16_t *out_cr,
+                            uint32_t out_stride,
+                            int32_t *scratch, size_t scratch_n);
 
 int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
                            const heic_pps *pps, const heic_slice_header *sh,

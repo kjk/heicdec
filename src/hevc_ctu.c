@@ -51,6 +51,7 @@ typedef struct {
     heic_coeff_buf *coeff; /* residual decode scratch (2KB; not on recursive stack) */
     int32_t *mc_scratch; /* max 64x(64+8), shared by luma/chroma MC */
     uint16_t *mc_pred; /* L0 copy for bidirectional blend: Y + Cb + Cr */
+    int16_t *mc_internal; /* two lists of internal-precision Y + Cb + Cr */
 } heic_slice_ctx;
 
 enum {
@@ -1161,11 +1162,89 @@ static int predict_from_list(heic_slice_ctx *sc, const heic_pu *pu,
     return 0;
 }
 
+static int predict_internal_from_list(heic_slice_ctx *sc, const heic_pu *pu,
+                                      heic_pb_motion motion, int list)
+{
+    const heic_frame *ref;
+    int16_t *pred = sc->mc_internal + (size_t)list * 3u * 64u * 64u;
+    int idx = motion.ref_idx[list];
+    if (!motion.pred_flag[list] || idx < 0 || idx >= sc->n_refs[list])
+        return -1;
+    ref = sc->refs[list][idx];
+    if (!ref) return -1;
+    if (heic_mc_luma_internal(ref, motion.mv[list],
+                              pu->x, pu->y, pu->w, pu->h,
+                              pred, 64, sc->mc_scratch, 72u * 72u) != 0)
+        return -1;
+    if (heic_mc_chroma_internal(ref, motion.mv[list],
+                                pu->x, pu->y, pu->w, pu->h,
+                                pred + 64u * 64u,
+                                pred + 2u * 64u * 64u, 64,
+                                sc->mc_scratch, 72u * 72u) != 0)
+        return -1;
+    return 0;
+}
+
+static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
+{
+    int16_t *p0 = sc->mc_internal;
+    int16_t *p1 = p0 + 3u * 64u * 64u;
+    uint32_t x, y;
+    int shift_y = 15 - bit_depth_y(sc->sps);
+    int max_y = (1 << bit_depth_y(sc->sps)) - 1;
+    if (shift_y < 3) shift_y = 3;
+    for (y = 0; y < pu->h
+                && pu->y + y < (uint32_t)sc->frame->height; y++)
+        for (x = 0; x < pu->w
+                    && pu->x + x < (uint32_t)sc->frame->width; x++) {
+            size_t pos =
+                (size_t)(pu->y + y) * sc->frame->y_stride + pu->x + x;
+            int v = (p0[y * 64u + x] + p1[y * 64u + x]
+                     + (1 << (shift_y - 1))) >> shift_y;
+            sc->frame->y[pos] = (uint16_t)clip_int(v, 0, max_y);
+        }
+    if (sc->frame->chroma_format != 0) {
+        int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
+        int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
+        uint32_t cx = pu->x / (uint32_t)sub_x;
+        uint32_t cy = pu->y / (uint32_t)sub_y;
+        uint32_t cw = pu->w / (uint32_t)sub_x;
+        uint32_t ch = pu->h / (uint32_t)sub_y;
+        int shift_c = 15 - bit_depth_c(sc->sps);
+        int max_c = (1 << bit_depth_c(sc->sps)) - 1;
+        uint16_t *planes[2] = {sc->frame->cb, sc->frame->cr};
+        int c;
+        if (shift_c < 3) shift_c = 3;
+        for (c = 0; c < 2; c++) {
+            int16_t *a = p0 + (size_t)(c + 1) * 64u * 64u;
+            int16_t *b = p1 + (size_t)(c + 1) * 64u * 64u;
+            for (y = 0; y < ch
+                        && cy + y < (uint32_t)sc->frame->c_height; y++)
+                for (x = 0; x < cw
+                            && cx + x < (uint32_t)sc->frame->c_width; x++) {
+                    size_t pos =
+                        (size_t)(cy + y) * sc->frame->c_stride + cx + x;
+                    int v = (a[y * 64u + x] + b[y * 64u + x]
+                             + (1 << (shift_c - 1))) >> shift_c;
+                    planes[c][pos] = (uint16_t)clip_int(v, 0, max_c);
+                }
+        }
+    }
+}
+
 static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
                         heic_pb_motion motion)
 {
     int list = motion.pred_flag[0] ? 0 : 1;
     if (!motion.pred_flag[0] && !motion.pred_flag[1]) return -1;
+    if (motion.pred_flag[0] && motion.pred_flag[1] &&
+        !sc->sh->has_pred_weight_table) {
+        if (predict_internal_from_list(sc, pu, motion, 0) != 0 ||
+            predict_internal_from_list(sc, pu, motion, 1) != 0)
+            return -1;
+        blend_internal_block(sc, pu);
+        return 0;
+    }
     if (predict_from_list(sc, pu, motion, list) != 0) return -1;
     if (motion.pred_flag[0] && motion.pred_flag[1]) {
         save_pred_block(sc, pu);
@@ -2043,7 +2122,10 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
         (int32_t *)heic_zalloc(ctx, 72u * 72u * sizeof(int32_t));
     sc->mc_pred =
         (uint16_t *)heic_zalloc(ctx, 3u * 64u * 64u * sizeof(uint16_t));
-    if (!sc->residual_buf || !sc->coeff || !sc->mc_scratch || !sc->mc_pred)
+    sc->mc_internal =
+        (int16_t *)heic_zalloc(ctx, 6u * 64u * 64u * sizeof(int16_t));
+    if (!sc->residual_buf || !sc->coeff || !sc->mc_scratch || !sc->mc_pred ||
+        !sc->mc_internal)
         return -1;
     return 0;
 }
@@ -2065,6 +2147,7 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->coeff);
     heic_free_buf(sc->hctx, sc->mc_scratch);
     heic_free_buf(sc->hctx, sc->mc_pred);
+    heic_free_buf(sc->hctx, sc->mc_internal);
     memset(sc, 0, sizeof(*sc));
 }
 
