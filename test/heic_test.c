@@ -611,7 +611,8 @@ int main(int argc, char **argv)
 {
     const char *path = NULL;
     const char *out_path = NULL;
-    int do_info = 0, do_exif = 0, do_decode = 0, do_bench_mode = 0, do_verify_mode = 0;
+    int do_info = 0, do_exif = 0, do_decode = 0, do_thumbnail = 0;
+    int do_bench_mode = 0, do_verify_mode = 0;
     int profile_heic_loops = 0, profile_libheif_loops = 0;
     int want_rgba = 0;
     int i;
@@ -624,6 +625,7 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-info") == 0) do_info = 1;
         else if (strcmp(argv[i], "-exif") == 0) do_exif = 1;
+        else if (strcmp(argv[i], "-thumbnail") == 0) do_thumbnail = 1;
         else if (strcmp(argv[i], "-rgba") == 0) want_rgba = 1;
         else if (strcmp(argv[i], "-bench") == 0) do_bench_mode = 1;
         else if (strcmp(argv[i], "-verify") == 0) do_verify_mode = 1;
@@ -643,7 +645,7 @@ int main(int argc, char **argv)
         (!do_info && !do_exif && !do_decode && !do_bench_mode && !do_verify_mode &&
          !profile_heic_loops && !profile_libheif_loops)) {
         fprintf(stderr,
-                "usage: heic_test [-info] [-exif] [-rgba] [-bench] [-verify] "
+                "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bench] [-verify] "
                 "[-profile-heic N] [-profile-libheif N] [-out out.ppm] file.heic\n");
         return 2;
     }
@@ -736,7 +738,9 @@ int main(int argc, char **argv)
 
     if (do_decode) {
         heic_format fmt = want_rgba ? HEIC_FORMAT_RGBA : HEIC_FORMAT_RGB;
-        heic_image *img = heic_doc_decode(doc, fmt);
+        heic_image *img = do_thumbnail
+            ? heic_doc_decode_thumbnail(doc, fmt)
+            : heic_doc_decode(doc, fmt);
         if (!img) {
             fprintf(stderr, "decode failed\n");
             rc = 1;

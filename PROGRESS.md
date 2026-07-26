@@ -171,12 +171,15 @@
       official `hevc32-mini.heif` and `avif32-mini.heif` fixtures
 - [x] HEVC predictive image items: single-reference P pictures with merge/AMVP,
       fractional motion compensation, residuals, deblock, and SAO; Nokia `C044.heic`
+- [x] HEVC image sequences (`moov`): first sync sample from `pict` (`vide`
+      fallback), `stsd`/`stsz`/`stsc`/`stco`/`co64`/`stss`, and a smaller
+      `pict` thumbnail track; Nokia `C026`–`C032`, `C036`–`C038`, and `C041`
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)
 - [ ] PCM
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
-- [ ] image sequences (`moov`)
+- [ ] sequence animation API / edit-list playback (public API decodes first sync frame)
 
 ## Investigation notes
 

@@ -6,6 +6,7 @@ Decode-only library for HEIC/HEIF/AVIF still images, aimed at easy embedding
 * plain C, jbig2dec-style API
 * **HEVC**: pure-C port of [imazen/heic](https://github.com/imazen/heic)
 * **AV1**: [videolan dav1d](https://code.videolan.org/videolan/dav1d) (C; linked, not re-ported)
+* HEVC image sequences: probe/decode the first sync frame
 * simple drop-in amalgamation: `dist/heic.h` + `dist/heic.c` (+ link dav1d for AVIF)
 * verified against [libheif](https://github.com/strukturag/libheif)
 
@@ -72,6 +73,7 @@ the host, same as the amalgamation.
 heic_test -info in.heic
 heic_test -out out.ppm in.heic
 heic_test -rgba -out out.ppm in.heic   # decode RGBA (PPM still drops A)
+heic_test -thumbnail -out thumb.ppm in.heic
 heic_test -bench in.heic              # vs libheif (build with -libheif)
 heic_test -verify in.heic             # RGB MSE vs libheif (build with -libheif)
 heic_test -exif in.heic

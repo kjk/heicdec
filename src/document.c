@@ -6,6 +6,7 @@ static heic_kind brand_kind(const heic_container *c)
     int i;
     heic_fourcc brands[16];
     int n = 0;
+    if (c->is_sequence) return HEIC_KIND_SEQUENCE;
     brands[n++] = c->brand;
     for (i = 0; i < c->n_compatible_brands && n < 16; i++)
         brands[n++] = c->compatible_brands[i];

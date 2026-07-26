@@ -88,7 +88,7 @@ typedef enum {
     HEIC_KIND_HEIC,     /* HEVC still (heic/heix/…) */
     HEIC_KIND_AVIF,     /* AV1 still */
     HEIC_KIND_HEIF,     /* generic HEIF (mif1 without heic brand) */
-    HEIC_KIND_SEQUENCE  /* image sequence (msf1/avis) — first frame only */
+    HEIC_KIND_SEQUENCE  /* HEVC image sequence (msf1) — first sync frame */
 } heic_kind;
 
 heic_kind heic_doc_kind(const heic_doc *doc);

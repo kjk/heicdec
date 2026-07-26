@@ -13,7 +13,7 @@
 // Skip = we decode but libheif does not (no oracle to compare).
 //
 // Intentional bad inputs (ok-expect-fail if we fail as expected):
-//   sequences / broken containers; bad iovl version; oversize canvas.
+//   broken containers; bad iovl version; oversize canvas.
 import { basename } from "path";
 import {
   build,
@@ -38,6 +38,21 @@ const EXPECT_FAIL = new Set([
 function expectFail(name: string): boolean {
   return EXPECT_FAIL.has(name);
 }
+
+/** Valid no-oracle fixtures that our decoder must continue to decode. */
+const MUST_DECODE = new Set([
+  "C026.heic",
+  "C027.heic",
+  "C028.heic",
+  "C029.heic",
+  "C030.heic",
+  "C031.heic",
+  "C032.heic",
+  "C036.heic",
+  "C037.heic",
+  "C038.heic",
+  "C041.heic",
+]);
 
 /** Parse `30x20 mse=0.0000 maxdiff=0 n_diff=0` from -verify stdout. */
 function parseVerifyMse(out: string): number | null {
@@ -140,7 +155,12 @@ async function main() {
     const mse = parseVerifyMse(out);
 
     if (kind === "both_fail") {
-      /* Neither side decodes — treat as ok (not a regression vs libheif). */
+      if (MUST_DECODE.has(name)) {
+        fail++;
+        console.log(`[fail] ${f} required fixture did not decode\n${out.slice(0, 300)}`);
+        continue;
+      }
+      /* Neither side decodes — acceptable only for non-mandatory corpus files. */
       ok++;
       if (wantFail) {
         console.log(`[ok-expect-fail] ${f} not decodable`);

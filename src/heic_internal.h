@@ -399,6 +399,7 @@ typedef struct {
     size_t             mdat_offset; /* content offset, or 0 */
     size_t             mdat_len;
     int                has_meta;
+    int                is_sequence; /* primary item synthesized from moov */
 } heic_container;
 
 /* Resolved item view (stack-friendly; pointers into container). */

@@ -1413,6 +1413,506 @@ fail:
     return -1;
 }
 
+/* ---- image sequences (moov/trak) ---- */
+
+#define HEIC_SEQ_MAX_TRACKS 16
+#define HEIC_SEQ_MAX_ENTRIES HEIC_MAX_ITEMS
+
+typedef struct {
+    uint32_t first_chunk;
+    uint32_t samples_per_chunk;
+    uint32_t sample_desc_idx;
+} heic_seq_stsc;
+
+typedef struct {
+    uint32_t track_id;
+    uint32_t width, height;
+    heic_fourcc handler_type;
+    heic_hvcc hvcc;
+    heic_colr colr;
+    int has_hvcc;
+    int has_colr;
+    uint32_t uniform_sample_size;
+    uint32_t sample_count;
+    uint32_t *sample_sizes;
+    uint64_t *chunk_offsets;
+    uint32_t n_chunk_offsets;
+    heic_seq_stsc *sample_to_chunk;
+    uint32_t n_sample_to_chunk;
+    uint32_t *sync_samples;
+    uint32_t n_sync_samples;
+} heic_seq_track;
+
+static void seq_free_track(heic_ctx *ctx, heic_seq_track *t)
+{
+    if (!t) return;
+    if (t->has_hvcc) free_hvcc(ctx, &t->hvcc);
+    if (t->has_colr) heic_free_buf(ctx, t->colr.icc);
+    heic_free_buf(ctx, t->sample_sizes);
+    heic_free_buf(ctx, t->chunk_offsets);
+    heic_free_buf(ctx, t->sample_to_chunk);
+    heic_free_buf(ctx, t->sync_samples);
+    memset(t, 0, sizeof(*t));
+}
+
+static int seq_parse_tkhd(const heic_box *b, heic_seq_track *t)
+{
+    const uint8_t *p = b->content;
+    if (b->content_len < 4) return -1;
+    if (p[0] == 0) {
+        if (b->content_len < 84) return -1;
+        t->track_id = heic_rb32(p + 12);
+        t->width = heic_rb32(p + 76) >> 16;
+        t->height = heic_rb32(p + 80) >> 16;
+    } else if (p[0] == 1) {
+        if (b->content_len < 96) return -1;
+        t->track_id = heic_rb32(p + 20);
+        t->width = heic_rb32(p + 88) >> 16;
+        t->height = heic_rb32(p + 92) >> 16;
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
+static int seq_parse_hdlr(const heic_box *b, heic_seq_track *t)
+{
+    if (b->content_len < 12) return -1;
+    t->handler_type = heic_read_fcc(b->content + 8);
+    return 0;
+}
+
+static int seq_parse_visual_entry(heic_ctx *ctx, const uint8_t *data,
+                                  size_t len, heic_seq_track *t,
+                                  const heic_abort *ab)
+{
+    heic_box_iter it;
+    heic_box child;
+    if (len < 86) return -1;
+    if (!t->width) t->width = heic_rb16(data + 32);
+    if (!t->height) t->height = heic_rb16(data + 34);
+    box_iter_init(&it, data + 86, len - 86);
+    while (box_iter_next(&it, &child)) {
+        if (heic_abort_check(ab)) return -1;
+        if (child.type == HEIC_BOX_HVCC && !t->has_hvcc) {
+            if (parse_hvcc(ctx, &child, &t->hvcc) != 0) return -1;
+            t->has_hvcc = 1;
+        } else if (child.type == HEIC_BOX_COLR && !t->has_colr) {
+            if (parse_colr(ctx, &child, &t->colr) == 0)
+                t->has_colr = 1;
+        }
+    }
+    return 0;
+}
+
+static int seq_parse_stsd(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t, const heic_abort *ab)
+{
+    uint32_t count, i;
+    size_t pos = 8;
+    if (b->content_len < 8) return -1;
+    count = heic_rb32(b->content + 4);
+    if (count > 16) count = 16;
+    for (i = 0; i < count; i++) {
+        uint32_t size;
+        heic_fourcc type;
+        if (heic_abort_check(ab)) return -1;
+        if (pos + 8 > b->content_len) return -1;
+        size = heic_rb32(b->content + pos);
+        type = heic_read_fcc(b->content + pos + 4);
+        if (size < 8 || size > b->content_len - pos) return -1;
+        if (type == HEIC_BOX_HVC1 || type == HEIC_BOX_HEV1)
+            return seq_parse_visual_entry(ctx, b->content + pos, size, t, ab);
+        pos += size;
+    }
+    return 0;
+}
+
+static int seq_parse_stsz(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t)
+{
+    uint32_t i;
+    size_t needed;
+    if (b->content_len < 12 || t->sample_count || t->sample_sizes
+        || t->uniform_sample_size)
+        return -1;
+    t->uniform_sample_size = heic_rb32(b->content + 4);
+    t->sample_count = heic_rb32(b->content + 8);
+    if (!t->sample_count || t->sample_count > HEIC_SEQ_MAX_ENTRIES) return -1;
+    if (t->uniform_sample_size) return 0;
+    needed = 12 + (size_t)t->sample_count * 4;
+    if (needed > b->content_len) return -1;
+    t->sample_sizes = (uint32_t *)heic_zalloc(
+        ctx, (size_t)t->sample_count * sizeof(uint32_t));
+    if (!t->sample_sizes) return -1;
+    for (i = 0; i < t->sample_count; i++)
+        t->sample_sizes[i] = heic_rb32(b->content + 12 + (size_t)i * 4);
+    return 0;
+}
+
+static int seq_parse_chunk_offsets(heic_ctx *ctx, const heic_box *b,
+                                   heic_seq_track *t, int is_64)
+{
+    uint32_t count, i;
+    size_t unit = is_64 ? 8u : 4u;
+    size_t needed;
+    if (b->content_len < 8 || t->chunk_offsets) return -1;
+    count = heic_rb32(b->content + 4);
+    if (!count || count > HEIC_SEQ_MAX_ENTRIES) return -1;
+    needed = 8 + (size_t)count * unit;
+    if (needed > b->content_len) return -1;
+    t->chunk_offsets = (uint64_t *)heic_zalloc(
+        ctx, (size_t)count * sizeof(uint64_t));
+    if (!t->chunk_offsets) return -1;
+    t->n_chunk_offsets = count;
+    for (i = 0; i < count; i++) {
+        const uint8_t *p = b->content + 8 + (size_t)i * unit;
+        t->chunk_offsets[i] = is_64 ? heic_rb64(p) : heic_rb32(p);
+    }
+    return 0;
+}
+
+static int seq_parse_stsc(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t)
+{
+    uint32_t count, i;
+    size_t needed;
+    if (b->content_len < 8 || t->sample_to_chunk) return -1;
+    count = heic_rb32(b->content + 4);
+    if (!count || count > HEIC_SEQ_MAX_ENTRIES) return -1;
+    needed = 8 + (size_t)count * 12;
+    if (needed > b->content_len) return -1;
+    t->sample_to_chunk = (heic_seq_stsc *)heic_zalloc(
+        ctx, (size_t)count * sizeof(heic_seq_stsc));
+    if (!t->sample_to_chunk) return -1;
+    t->n_sample_to_chunk = count;
+    for (i = 0; i < count; i++) {
+        const uint8_t *p = b->content + 8 + (size_t)i * 12;
+        t->sample_to_chunk[i].first_chunk = heic_rb32(p);
+        t->sample_to_chunk[i].samples_per_chunk = heic_rb32(p + 4);
+        t->sample_to_chunk[i].sample_desc_idx = heic_rb32(p + 8);
+    }
+    return 0;
+}
+
+static int seq_parse_stss(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t)
+{
+    uint32_t count, i;
+    size_t needed;
+    if (b->content_len < 8 || t->sync_samples) return -1;
+    count = heic_rb32(b->content + 4);
+    if (count > HEIC_SEQ_MAX_ENTRIES) return -1;
+    needed = 8 + (size_t)count * 4;
+    if (needed > b->content_len) return -1;
+    if (!count) return 0;
+    t->sync_samples = (uint32_t *)heic_zalloc(
+        ctx, (size_t)count * sizeof(uint32_t));
+    if (!t->sync_samples) return -1;
+    t->n_sync_samples = count;
+    for (i = 0; i < count; i++)
+        t->sync_samples[i] = heic_rb32(b->content + 8 + (size_t)i * 4);
+    return 0;
+}
+
+static int seq_parse_stbl(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t, const heic_abort *ab)
+{
+    heic_box_iter it;
+    heic_box child;
+    box_iter_init(&it, b->content, b->content_len);
+    while (box_iter_next(&it, &child)) {
+        int rc = 0;
+        if (heic_abort_check(ab)) return -1;
+        if (child.type == HEIC_BOX_STSD)
+            rc = seq_parse_stsd(ctx, &child, t, ab);
+        else if (child.type == HEIC_BOX_STSZ)
+            rc = seq_parse_stsz(ctx, &child, t);
+        else if (child.type == HEIC_BOX_STCO)
+            rc = seq_parse_chunk_offsets(ctx, &child, t, 0);
+        else if (child.type == HEIC_BOX_CO64)
+            rc = seq_parse_chunk_offsets(ctx, &child, t, 1);
+        else if (child.type == HEIC_BOX_STSC)
+            rc = seq_parse_stsc(ctx, &child, t);
+        else if (child.type == HEIC_BOX_STSS)
+            rc = seq_parse_stss(ctx, &child, t);
+        if (rc != 0) return -1;
+    }
+    return 0;
+}
+
+static int seq_parse_minf(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t, const heic_abort *ab)
+{
+    heic_box_iter it;
+    heic_box child;
+    box_iter_init(&it, b->content, b->content_len);
+    while (box_iter_next(&it, &child)) {
+        if (heic_abort_check(ab)) return -1;
+        if (child.type == HEIC_BOX_STBL
+            && seq_parse_stbl(ctx, &child, t, ab) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int seq_parse_mdia(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t, const heic_abort *ab)
+{
+    heic_box_iter it;
+    heic_box child;
+    box_iter_init(&it, b->content, b->content_len);
+    while (box_iter_next(&it, &child)) {
+        if (heic_abort_check(ab)) return -1;
+        if (child.type == HEIC_BOX_HDLR) {
+            if (seq_parse_hdlr(&child, t) != 0) return -1;
+        } else if (child.type == HEIC_BOX_MINF) {
+            if (seq_parse_minf(ctx, &child, t, ab) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static int seq_parse_trak(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t, const heic_abort *ab)
+{
+    heic_box_iter it;
+    heic_box child;
+    memset(t, 0, sizeof(*t));
+    box_iter_init(&it, b->content, b->content_len);
+    while (box_iter_next(&it, &child)) {
+        if (heic_abort_check(ab)) return -1;
+        if (child.type == HEIC_BOX_TKHD) {
+            if (seq_parse_tkhd(&child, t) != 0) return -1;
+        } else if (child.type == HEIC_BOX_MDIA) {
+            if (seq_parse_mdia(ctx, &child, t, ab) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static uint32_t seq_sample_size(const heic_seq_track *t, uint32_t sample)
+{
+    if (!sample || sample > t->sample_count) return 0;
+    if (t->uniform_sample_size) return t->uniform_sample_size;
+    if (!t->sample_sizes) return 0;
+    return t->sample_sizes[sample - 1];
+}
+
+static int seq_resolve_sample(const heic_seq_track *t, uint32_t sample,
+                              uint64_t file_len, uint64_t *out_offset,
+                              uint32_t *out_size, const heic_abort *ab)
+{
+    uint64_t current_sample = 1;
+    uint32_t size, e;
+    if (!sample || sample > t->sample_count || !t->chunk_offsets
+        || !t->sample_to_chunk || !out_offset || !out_size)
+        return -1;
+    size = seq_sample_size(t, sample);
+    if (!size) return -1;
+    for (e = 0; e < t->n_sample_to_chunk; e++) {
+        uint32_t first = t->sample_to_chunk[e].first_chunk;
+        uint32_t per_chunk = t->sample_to_chunk[e].samples_per_chunk;
+        uint32_t next = e + 1 < t->n_sample_to_chunk
+            ? t->sample_to_chunk[e + 1].first_chunk
+            : t->n_chunk_offsets + 1;
+        uint32_t chunk;
+        if (!first || !per_chunk || first > t->n_chunk_offsets
+            || next < first)
+            return -1;
+        if (next > t->n_chunk_offsets + 1) next = t->n_chunk_offsets + 1;
+        for (chunk = first; chunk < next; chunk++) {
+            uint64_t chunk_end_sample;
+            if ((chunk & 4095u) == 0 && heic_abort_check(ab)) return -1;
+            chunk_end_sample = current_sample + per_chunk;
+            if (chunk_end_sample < current_sample) return -1;
+            if ((uint64_t)sample >= current_sample
+                && (uint64_t)sample < chunk_end_sample) {
+                uint64_t off = t->chunk_offsets[chunk - 1];
+                uint64_t s;
+                for (s = current_sample; s < sample; s++) {
+                    uint32_t prev_size = seq_sample_size(t, (uint32_t)s);
+                    if (!prev_size || off > UINT64_MAX - prev_size) return -1;
+                    off += prev_size;
+                }
+                if (off > file_len || size > file_len - off) return -1;
+                *out_offset = off;
+                *out_size = size;
+                return 0;
+            }
+            current_sample = chunk_end_sample;
+        }
+    }
+    return -1;
+}
+
+static int seq_first_sample(const heic_seq_track *t, uint64_t file_len,
+                            uint64_t *offset, uint32_t *size,
+                            const heic_abort *ab)
+{
+    uint32_t sample = t->n_sync_samples ? t->sync_samples[0] : 1;
+    return seq_resolve_sample(t, sample, file_len, offset, size, ab);
+}
+
+static int seq_make_item(heic_ctx *ctx, heic_container *c,
+                         heic_seq_track *t, int item_index, uint32_t item_id,
+                         uint64_t offset, uint32_t size)
+{
+    heic_item_loc *loc = &c->item_locations[item_index];
+    heic_ipma *assoc = &c->property_associations[item_index];
+    heic_property *p;
+    uint16_t props[3];
+    int n_props = 0;
+
+    c->item_infos[item_index].item_id = item_id;
+    c->item_infos[item_index].item_type = HEIC_TYPE_HVC1;
+
+    loc->item_id = item_id;
+    loc->extents = (heic_extent *)heic_zalloc(ctx, sizeof(heic_extent));
+    if (!loc->extents) return -1;
+    loc->extents[0].offset = offset;
+    loc->extents[0].length = size;
+    loc->n_extents = 1;
+
+    p = &c->properties[c->n_properties];
+    p->kind = HEIC_PROP_ISPE;
+    p->ispe.width = t->width;
+    p->ispe.height = t->height;
+    props[n_props++] = (uint16_t)++c->n_properties;
+
+    p = &c->properties[c->n_properties];
+    p->kind = HEIC_PROP_HVCC;
+    p->hvcc = t->hvcc;
+    memset(&t->hvcc, 0, sizeof(t->hvcc));
+    t->has_hvcc = 0;
+    props[n_props++] = (uint16_t)++c->n_properties;
+
+    if (t->has_colr) {
+        p = &c->properties[c->n_properties];
+        p->kind = HEIC_PROP_COLR;
+        p->colr = t->colr;
+        memset(&t->colr, 0, sizeof(t->colr));
+        t->has_colr = 0;
+        props[n_props++] = (uint16_t)++c->n_properties;
+    }
+    return mini_make_assoc(ctx, assoc, item_id, props, n_props);
+}
+
+static int parse_moov(heic_ctx *ctx, const heic_box *moov,
+                      heic_container *c, const heic_abort *ab)
+{
+    heic_seq_track tracks[HEIC_SEQ_MAX_TRACKS];
+    heic_box_iter it;
+    heic_box child;
+    int n_tracks = 0, primary = -1, thumb = -1, i, rc = -1;
+    uint64_t primary_off, thumb_off = 0;
+    uint32_t primary_size, thumb_size = 0;
+    int n_items, n_props;
+
+    memset(tracks, 0, sizeof(tracks));
+    box_iter_init(&it, moov->content, moov->content_len);
+    while (n_tracks < HEIC_SEQ_MAX_TRACKS && box_iter_next(&it, &child)) {
+        if (heic_abort_check(ab)) goto done;
+        if (child.type != HEIC_BOX_TRAK) continue;
+        if (seq_parse_trak(ctx, &child, &tracks[n_tracks], ab) == 0)
+            n_tracks++;
+        else
+            seq_free_track(ctx, &tracks[n_tracks]);
+    }
+    for (i = 0; i < n_tracks; i++) {
+        if (tracks[i].handler_type == HEIC_FCC('p', 'i', 'c', 't')
+            && tracks[i].has_hvcc) {
+            primary = i;
+            break;
+        }
+    }
+    if (primary < 0) {
+        for (i = 0; i < n_tracks; i++) {
+            if (tracks[i].handler_type == HEIC_FCC('v', 'i', 'd', 'e')
+                && tracks[i].has_hvcc) {
+                primary = i;
+                break;
+            }
+        }
+    }
+    if (primary < 0) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "sequence has no HEVC image track");
+        goto done;
+    }
+    if (!tracks[primary].width || !tracks[primary].height
+        || tracks[primary].width > ctx->limits.max_width
+        || tracks[primary].height > ctx->limits.max_height
+        || (uint64_t)tracks[primary].width * tracks[primary].height
+            > ctx->limits.max_pixels) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "invalid sequence dimensions");
+        goto done;
+    }
+    if (seq_first_sample(&tracks[primary], c->len, &primary_off,
+                         &primary_size, ab) != 0) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "cannot resolve sequence sync sample");
+        goto done;
+    }
+
+    for (i = 0; i < n_tracks; i++) {
+        if (i == primary || !tracks[i].has_hvcc
+            || tracks[i].handler_type != HEIC_FCC('p', 'i', 'c', 't'))
+            continue;
+        if (tracks[i].width >= tracks[primary].width
+            && tracks[i].height >= tracks[primary].height)
+            continue;
+        if (seq_first_sample(&tracks[i], c->len, &thumb_off,
+                             &thumb_size, ab) == 0) {
+            thumb = i;
+            break;
+        }
+    }
+
+    n_items = thumb >= 0 ? 2 : 1;
+    n_props = 2 + tracks[primary].has_colr;
+    if (thumb >= 0) n_props += 2 + tracks[thumb].has_colr;
+    c->item_infos = (heic_item_info *)heic_zalloc(
+        ctx, (size_t)n_items * sizeof(heic_item_info));
+    c->item_locations = (heic_item_loc *)heic_zalloc(
+        ctx, (size_t)n_items * sizeof(heic_item_loc));
+    c->properties = (heic_property *)heic_zalloc(
+        ctx, (size_t)n_props * sizeof(heic_property));
+    c->property_associations = (heic_ipma *)heic_zalloc(
+        ctx, (size_t)n_items * sizeof(heic_ipma));
+    if (!c->item_infos || !c->item_locations || !c->properties
+        || !c->property_associations)
+        goto done;
+    c->n_item_infos = n_items;
+    c->n_item_locations = n_items;
+    c->n_property_associations = n_items;
+    c->primary_item_id = 1;
+    if (seq_make_item(ctx, c, &tracks[primary], 0, 1,
+                      primary_off, primary_size) != 0)
+        goto done;
+
+    if (thumb >= 0) {
+        c->item_references = (heic_iref *)heic_zalloc(ctx, sizeof(heic_iref));
+        if (!c->item_references) goto done;
+        c->n_item_references = 1;
+        if (seq_make_item(ctx, c, &tracks[thumb], 1, 2,
+                          thumb_off, thumb_size) != 0)
+            goto done;
+        c->item_references[0].ref_type = HEIC_REF_THMB;
+        c->item_references[0].from_item_id = 2;
+        c->item_references[0].to_item_ids =
+            (uint32_t *)heic_zalloc(ctx, sizeof(uint32_t));
+        if (!c->item_references[0].to_item_ids) goto done;
+        c->item_references[0].to_item_ids[0] = 1;
+        c->item_references[0].n_to = 1;
+    }
+    c->has_meta = 1;
+    c->is_sequence = 1;
+    rc = 0;
+
+done:
+    for (i = 0; i < n_tracks; i++) seq_free_track(ctx, &tracks[i]);
+    return rc;
+}
+
 static int parse_meta(heic_ctx *ctx, const heic_box *meta, heic_container *c,
                       const heic_abort *ab)
 {
@@ -1446,6 +1946,8 @@ int heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
 {
     heic_box_iter it;
     heic_box top;
+    heic_box moov;
+    int has_moov = 0;
 
     if (!ctx || !data || !out || len < 16) return -1;
     memset(out, 0, sizeof(*out));
@@ -1481,8 +1983,18 @@ int heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
                 heic_container_free(out);
                 return -1;
             }
+        } else if (top.type == HEIC_BOX_MOOV && !has_moov) {
+            /* Defer until all top-level boxes are seen: meta/mini takes
+             * precedence when a file also carries an image sequence. */
+            moov = top;
+            has_moov = 1;
         }
-        /* moov image sequences: later */
+    }
+    if (!out->has_meta && has_moov) {
+        if (parse_moov(ctx, &moov, out, ab) != 0) {
+            heic_container_free(out);
+            return -1;
+        }
     }
     if (out->brand == 0 && out->n_compatible_brands == 0) {
         heic_error(ctx, HEIC_SEVERITY_ERROR, "missing ftyp");
@@ -1490,8 +2002,7 @@ int heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
         return -1;
     }
     if (!out->has_meta) {
-        heic_error(ctx, HEIC_SEVERITY_ERROR,
-                   "missing meta/mini (image sequences not yet supported)");
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "missing meta/mini/moov image");
         heic_container_free(out);
         return -1;
     }
