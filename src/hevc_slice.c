@@ -43,6 +43,7 @@ static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
     for (list = 0; list < lists; list++) {
         int n = list ? sh->num_ref_idx_l1_active
                      : sh->num_ref_idx_l0_active;
+        if (n < 0 || n > HEIC_MAX_REF_PICS) return -1;
         for (i = 0; i < n; i++)
             luma_flag[list][i] = (uint8_t)heic_bs_bit(bs);
         if (sps->chroma_format_idc != 0)
@@ -228,6 +229,12 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             out->slice_sao_chroma_flag = heic_bs_bit(&bs);
     }
 
+    if (pps->num_ref_idx_l0_default_active_minus1 > 14
+        || pps->num_ref_idx_l1_default_active_minus1 > 14) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "PPS default active reference count out of range");
+        return -1;
+    }
     out->num_ref_idx_l0_active =
         (uint8_t)(pps->num_ref_idx_l0_default_active_minus1 + 1);
     out->num_ref_idx_l1_active =
@@ -248,6 +255,12 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                 if (n > 14) return -1;
                 out->num_ref_idx_l1_active = (uint8_t)(n + 1);
             }
+        }
+        if (out->num_ref_idx_l0_active > HEIC_MAX_REF_PICS
+            || out->num_ref_idx_l1_active > HEIC_MAX_REF_PICS) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "active reference count exceeds limit");
+            return -1;
         }
         if (pps->lists_modification_present_flag) {
             const heic_st_rps *rps = out->has_inline_short_term_rps

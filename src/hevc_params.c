@@ -417,6 +417,8 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
 int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out)
 {
     heic_bs bs;
+    uint32_t num_ref_idx_l0_default_active_minus1;
+    uint32_t num_ref_idx_l1_default_active_minus1;
     memset(out, 0, sizeof(*out));
     scaling_list_default(&out->scaling_list);
     if (!rbsp || len < 1) return -1;
@@ -429,8 +431,18 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
     out->num_extra_slice_header_bits = (uint8_t)heic_bs_bits(&bs, 3);
     out->sign_data_hiding_enabled_flag = heic_bs_bit(&bs);
     out->cabac_init_present_flag = heic_bs_bit(&bs);
-    out->num_ref_idx_l0_default_active_minus1 = (uint8_t)heic_bs_ue(&bs);
-    out->num_ref_idx_l1_default_active_minus1 = (uint8_t)heic_bs_ue(&bs);
+    num_ref_idx_l0_default_active_minus1 = heic_bs_ue(&bs);
+    num_ref_idx_l1_default_active_minus1 = heic_bs_ue(&bs);
+    if (num_ref_idx_l0_default_active_minus1 > 14
+        || num_ref_idx_l1_default_active_minus1 > 14) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "PPS default active reference count out of range");
+        return -1;
+    }
+    out->num_ref_idx_l0_default_active_minus1 =
+        (uint8_t)num_ref_idx_l0_default_active_minus1;
+    out->num_ref_idx_l1_default_active_minus1 =
+        (uint8_t)num_ref_idx_l1_default_active_minus1;
     out->init_qp_minus26 = (int8_t)heic_bs_se(&bs);
     out->constrained_intra_pred_flag = heic_bs_bit(&bs);
     out->transform_skip_enabled_flag = heic_bs_bit(&bs);
