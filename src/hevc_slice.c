@@ -59,7 +59,7 @@ static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
                 sh->luma_weight[list][i] =
                     (int16_t)(luma_denom + delta);
                 offset = heic_bs_se(bs);
-                if (offset < -128 || offset > 127) return -1;
+                if (offset < INT16_MIN || offset > INT16_MAX) return -1;
                 sh->luma_offset[list][i] = (int16_t)offset;
             }
             for (c = 0; c < 2; c++)
@@ -73,7 +73,7 @@ static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
                     sh->chroma_weight[list][i][c] =
                         (int16_t)(chroma_denom + delta);
                     offset = heic_bs_se(bs);
-                    if (offset < -128 || offset > 127) return -1;
+                    if (offset < INT16_MIN || offset > INT16_MAX) return -1;
                     round = sh->chroma_log2_weight_denom
                         ? 1 << (sh->chroma_log2_weight_denom - 1) : 0;
                     wp_offset = offset
@@ -241,11 +241,6 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                 out->num_ref_idx_l1_active = (uint8_t)(n + 1);
             }
         }
-        if (out->slice_type == HEIC_SLICE_B) {
-            heic_error(ctx, HEIC_SEVERITY_ERROR,
-                       "B-slice predictive items not supported");
-            return -1;
-        }
         if (pps->lists_modification_present_flag) {
             const heic_st_rps *rps = out->has_inline_short_term_rps
                 ? &out->inline_short_term_rps
@@ -267,14 +262,39 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                         out->list_entry_l0[i] = (uint8_t)entry;
                     }
                 }
+                if (out->slice_type == HEIC_SLICE_B) {
+                    out->ref_pic_list_modification_flag_l1 =
+                        heic_bs_bit(&bs);
+                    if (out->ref_pic_list_modification_flag_l1) {
+                        for (i = 0; i < out->num_ref_idx_l1_active; i++) {
+                            uint32_t entry = heic_bs_bits(&bs, bits);
+                            if (entry >= (uint32_t)used) return -1;
+                            out->list_entry_l1[i] = (uint8_t)entry;
+                        }
+                    }
+                }
             }
         }
+        if (out->slice_type == HEIC_SLICE_B)
+            out->mvd_l1_zero_flag = heic_bs_bit(&bs);
         if (pps->cabac_init_present_flag)
             out->cabac_init_flag = heic_bs_bit(&bs);
-        if (out->slice_temporal_mvp_enabled_flag
-            && out->num_ref_idx_l0_active > 1)
-            out->collocated_ref_idx = (uint8_t)heic_bs_ue(&bs);
-        if (pps->weighted_pred_flag) {
+        if (out->slice_temporal_mvp_enabled_flag) {
+            int n_col;
+            if (out->slice_type == HEIC_SLICE_B)
+                out->collocated_from_l0_flag = heic_bs_bit(&bs);
+            n_col = out->collocated_from_l0_flag
+                ? out->num_ref_idx_l0_active
+                : out->num_ref_idx_l1_active;
+            if (n_col > 1) {
+                uint32_t idx = heic_bs_ue(&bs);
+                if (idx >= (uint32_t)n_col) return -1;
+                out->collocated_ref_idx = (uint8_t)idx;
+            }
+        }
+        if ((out->slice_type == HEIC_SLICE_P && pps->weighted_pred_flag)
+            || (out->slice_type == HEIC_SLICE_B
+                && pps->weighted_bipred_flag)) {
             if (parse_pred_weight_table(&bs, sps, out) != 0) {
                 heic_error(ctx, HEIC_SEVERITY_ERROR,
                            "invalid weighted prediction table");

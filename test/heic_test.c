@@ -7,6 +7,7 @@
  *   heic_test -verify file.heic  # pixel MSE vs libheif (optional)
  *   heic_test -profile-heic N file.heic     # loop decode N times (winperf marks)
  *   heic_test -profile-libheif N file.heic  # same for libheif (needs oracle)
+ *   heic_test -hevc-sequence file.bit       # decode every Annex B access unit
  */
 #include "heic.h"
 #include "heic_internal.h"
@@ -100,6 +101,186 @@ static uint8_t *read_file(const char *path, size_t *out_len)
     }
     *out_len = n;
     return buf;
+}
+
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    uint8_t type;
+} annexb_nal;
+
+static int find_start_code(const uint8_t *data, size_t len, size_t from,
+                           size_t *pos, size_t *prefix)
+{
+    size_t i;
+    for (i = from; i + 3 <= len; i++) {
+        if (data[i] != 0 || data[i + 1] != 0) continue;
+        if (data[i + 2] == 1) {
+            *pos = i;
+            *prefix = 3;
+            return 1;
+        }
+        if (i + 4 <= len && data[i + 2] == 0 && data[i + 3] == 1) {
+            *pos = i;
+            *prefix = 4;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int split_annexb(const uint8_t *data, size_t len,
+                        annexb_nal *nals, int cap)
+{
+    size_t start, prefix, next, next_prefix;
+    int n = 0;
+    if (!find_start_code(data, len, 0, &start, &prefix)) return 0;
+    for (;;) {
+        size_t nal_start = start + prefix;
+        size_t nal_end;
+        int have_next = find_start_code(
+            data, len, nal_start + 2, &next, &next_prefix);
+        nal_end = have_next ? next : len;
+        while (nal_end > nal_start && data[nal_end - 1] == 0) nal_end--;
+        if (nal_end >= nal_start + 2 && n < cap) {
+            nals[n].data = data + nal_start;
+            nals[n].len = nal_end - nal_start;
+            nals[n].type = (uint8_t)((data[nal_start] >> 1) & 0x3f);
+            n++;
+        }
+        if (!have_next) break;
+        start = next;
+        prefix = next_prefix;
+    }
+    return n;
+}
+
+static uint64_t hash_plane(uint64_t h, const uint16_t *p,
+                           int stride, int w, int height)
+{
+    int x, y;
+    for (y = 0; y < height; y++)
+        for (x = 0; x < w; x++) {
+            uint16_t v = p[(size_t)y * stride + x];
+            h = (h ^ (uint8_t)v) * UINT64_C(1099511628211);
+            h = (h ^ (uint8_t)(v >> 8)) * UINT64_C(1099511628211);
+        }
+    return h;
+}
+
+static int do_hevc_sequence(const uint8_t *data, size_t len,
+                            const char *out_path, int max_frames)
+{
+    annexb_nal nals[1024];
+    uint8_t *params[16];
+    size_t param_lens[16];
+    heic_hvcc cfg;
+    heic_frame frames[512];
+    const heic_frame *refs[HEIC_MAX_REF_PICS];
+    heic_ctx *ctx;
+    int order[512];
+    int n_nals, n_params = 0, decoded = 0, i, j;
+    uint64_t hash = UINT64_C(1469598103934665603);
+
+    memset(&cfg, 0, sizeof(cfg));
+    memset(frames, 0, sizeof(frames));
+    n_nals = split_annexb(data, len, nals, 1024);
+    if (n_nals <= 0) {
+        fprintf(stderr, "hevc-sequence: no Annex B NAL units\n");
+        return 1;
+    }
+    for (i = 0; i < n_nals && n_params < 16; i++)
+        if (nals[i].type >= 32 && nals[i].type <= 34) {
+            params[n_params] = (uint8_t *)nals[i].data;
+            param_lens[n_params++] = nals[i].len;
+        }
+    if (n_params < 2) {
+        fprintf(stderr, "hevc-sequence: missing parameter sets\n");
+        return 1;
+    }
+    cfg.length_size_minus_one = 3;
+    cfg.nal_units = params;
+    cfg.nal_unit_lens = param_lens;
+    cfg.n_nal_units = n_params;
+    ctx = heic_ctx_new(NULL, NULL, on_error_quiet, NULL);
+    if (!ctx) return 1;
+
+    for (i = 0; i < n_nals; i++) {
+        uint8_t *sample;
+        size_t sample_len;
+        heic_frame out;
+        if (nals[i].type > 31) continue;
+        if (decoded >= max_frames) break;
+        sample_len = nals[i].len + 4;
+        sample = (uint8_t *)malloc(sample_len);
+        if (!sample) break;
+        sample[0] = (uint8_t)(nals[i].len >> 24);
+        sample[1] = (uint8_t)(nals[i].len >> 16);
+        sample[2] = (uint8_t)(nals[i].len >> 8);
+        sample[3] = (uint8_t)nals[i].len;
+        memcpy(sample + 4, nals[i].data, nals[i].len);
+        int n_refs = decoded < HEIC_MAX_REF_PICS
+            ? decoded : HEIC_MAX_REF_PICS;
+        if (decoded >= 512) break;
+        for (j = 0; j < n_refs; j++) refs[j] = &frames[decoded - 1 - j];
+        memset(&out, 0, sizeof(out));
+        if (heic_hevc_decode_refs(ctx, &cfg, sample, sample_len,
+                                  refs, n_refs, &out, NULL) != 0) {
+            fprintf(stderr, "hevc-sequence: frame %d decode failed\n",
+                    decoded);
+            free(sample);
+            break;
+        }
+        free(sample);
+        frames[decoded++] = out;
+    }
+    j = i == n_nals || decoded == max_frames;
+    for (i = 0; i < decoded; i++) order[i] = i;
+    for (i = 1; i < decoded; i++) {
+        int oi = order[i], k = i;
+        while (k > 0 && frames[order[k - 1]].poc > frames[oi].poc) {
+            order[k] = order[k - 1];
+            k--;
+        }
+        order[k] = oi;
+    }
+    for (i = 0; i < decoded; i++) {
+        heic_frame *f = &frames[order[i]];
+        hash = hash_plane(hash, f->y, f->y_stride, f->width, f->height);
+        if (f->chroma_format != 0) {
+            hash = hash_plane(hash, f->cb, f->c_stride,
+                              f->c_width, f->c_height);
+            hash = hash_plane(hash, f->cr, f->c_stride,
+                              f->c_width, f->c_height);
+        }
+    }
+    if (out_path) {
+        FILE *f = fopen(out_path, "wb");
+        if (!f) j = 0;
+        for (i = 0; f && i < decoded; i++) {
+            heic_frame *fr = &frames[order[i]];
+            int plane, y, x;
+            const uint16_t *planes[3] = {fr->y, fr->cb, fr->cr};
+            int strides[3] = {fr->y_stride, fr->c_stride, fr->c_stride};
+            int widths[3] = {fr->width, fr->c_width, fr->c_width};
+            int heights[3] = {fr->height, fr->c_height, fr->c_height};
+            int n_planes = fr->chroma_format ? 3 : 1;
+            for (plane = 0; plane < n_planes; plane++)
+                for (y = 0; y < heights[plane]; y++)
+                    for (x = 0; x < widths[plane]; x++) {
+                        uint8_t v = (uint8_t)planes[plane][
+                            (size_t)y * strides[plane] + x];
+                        if (fwrite(&v, 1, 1, f) != 1) j = 0;
+                    }
+        }
+        if (f) fclose(f);
+    }
+    for (i = 0; i < decoded; i++) heic_frame_free(ctx, &frames[i]);
+    heic_ctx_free(ctx);
+    if (decoded == 0 || !j) return 1;
+    printf("hevc-sequence frames=%d hash=%016llx\n", decoded,
+           (unsigned long long)hash);
+    return 0;
 }
 
 static int write_ppm(const char *path, const heic_image *img)
@@ -613,7 +794,9 @@ int main(int argc, char **argv)
     const char *out_path = NULL;
     int do_info = 0, do_exif = 0, do_decode = 0, do_thumbnail = 0;
     int do_bench_mode = 0, do_verify_mode = 0;
+    int do_hevc_sequence_mode = 0;
     int profile_heic_loops = 0, profile_libheif_loops = 0;
+    int hevc_sequence_frames = 512;
     int want_rgba = 0;
     int i;
     uint8_t *data = NULL;
@@ -629,6 +812,13 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-rgba") == 0) want_rgba = 1;
         else if (strcmp(argv[i], "-bench") == 0) do_bench_mode = 1;
         else if (strcmp(argv[i], "-verify") == 0) do_verify_mode = 1;
+        else if (strcmp(argv[i], "-hevc-sequence") == 0)
+            do_hevc_sequence_mode = 1;
+        else if (strcmp(argv[i], "-hevc-frames") == 0 && i + 1 < argc) {
+            hevc_sequence_frames = atoi(argv[++i]);
+            if (hevc_sequence_frames < 1) hevc_sequence_frames = 1;
+            if (hevc_sequence_frames > 512) hevc_sequence_frames = 512;
+        }
         else if (strcmp(argv[i], "-profile-heic") == 0 && i + 1 < argc) {
             profile_heic_loops = atoi(argv[++i]);
             if (profile_heic_loops < 1) profile_heic_loops = 1;
@@ -642,11 +832,14 @@ int main(int argc, char **argv)
             path = argv[i];
     }
     if (!path ||
-        (!do_info && !do_exif && !do_decode && !do_bench_mode && !do_verify_mode &&
-         !profile_heic_loops && !profile_libheif_loops)) {
+        (!do_info && !do_exif && !do_decode && !do_bench_mode
+         && !do_verify_mode && !do_hevc_sequence_mode
+         && !profile_heic_loops && !profile_libheif_loops)) {
         fprintf(stderr,
                 "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bench] [-verify] "
-                "[-profile-heic N] [-profile-libheif N] [-out out.ppm] file.heic\n");
+                "[-hevc-sequence [-hevc-frames N]] "
+                "[-profile-heic N] [-profile-libheif N] "
+                "[-out out.ppm] file.heic\n");
         return 2;
     }
 
@@ -657,6 +850,12 @@ int main(int argc, char **argv)
     }
 
     heic_init();
+
+    if (do_hevc_sequence_mode) {
+        rc = do_hevc_sequence(data, len, out_path, hevc_sequence_frames);
+        free(data);
+        return rc;
+    }
 
     if (profile_heic_loops) {
         rc = do_profile_heic(data, len, profile_heic_loops);

@@ -53,7 +53,17 @@ const FOX_SAMPLES = [
 ];
 
 const STAMP = ".heic_testimages_stamp";
-const STAMP_WANT = "v2-avif-fox+grid+alpha;unci-block;mini-hevc+av1";
+const STAMP_WANT =
+  "v3-avif-fox+grid+alpha;unci-block;mini-hevc+av1;hevc-sequences";
+const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
+const HEVC_SEQUENCE_SAMPLES = [
+  "LTRPSPS_A_Qualcomm_1.bit",
+  "RPLM_A_qualcomm_4.bit",
+  "TMVP_A_MS_3.bit",
+  "WP_A_Toshiba_3.bit",
+  "WP_B_Toshiba_3.bit",
+  "MERGE_A_TI_3.bit",
+];
 
 async function download(url: string, dest: string): Promise<void> {
   const res = await fetch(url);
@@ -69,6 +79,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   const avifDir = join(root, "avif");
   const unciDir = join(root, "unci_block");
   const miniDir = join(root, "mini");
+  const hevcSequenceDir = join(root, "hevc_sequence");
   const stampPath = join(root, STAMP);
   if (
     !opts.force &&
@@ -77,7 +88,10 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(avifDir, "alpha.avif")) &&
     existsSync(join(unciDir, "rgb8_block_pixel_le.heif")) &&
     existsSync(join(miniDir, "hevc32-mini.heif")) &&
-    existsSync(join(miniDir, "avif32-mini.heif"))
+    existsSync(join(miniDir, "avif32-mini.heif")) &&
+    HEVC_SEQUENCE_SAMPLES.every((name) =>
+      existsSync(join(hevcSequenceDir, name)),
+    )
   ) {
     const prev = (await Bun.file(stampPath).text()).trim();
     if (prev === STAMP_WANT) {
@@ -89,6 +103,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   mkdirSync(join(avifDir, "_src"), { recursive: true });
   mkdirSync(unciDir, { recursive: true });
   mkdirSync(miniDir, { recursive: true });
+  mkdirSync(hevcSequenceDir, { recursive: true });
 
   for (const name of FOX_SAMPLES) {
     const dest =
@@ -114,6 +129,12 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     join(LIBHEIF_DIR, "fuzzing", "data", "corpus", "avif32-mini.heif"),
     join(miniDir, "avif32-mini.heif"),
   );
+  console.log("deps/testimages: installing HEVC sequence fixtures…");
+  for (const name of HEVC_SEQUENCE_SAMPLES) {
+    const dest = join(hevcSequenceDir, name);
+    if (!existsSync(dest) || opts.force)
+      await download(`${HEVC_SEQUENCE_BASE}/${name}`, dest);
+  }
   writeFileSync(stampPath, STAMP_WANT);
   console.log(`deps/testimages: ready (${STAMP_WANT})`);
 }

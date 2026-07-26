@@ -16,19 +16,24 @@ static int find_ref_by_poc(const heic_frame *const *refs, int n_refs,
     return -1;
 }
 
-static int build_l0_refs(heic_ctx *ctx, const heic_sps *sps,
-                         const heic_slice_header *sh,
-                         int curr_poc,
-                         const heic_frame *const *refs, int n_refs,
-                         const heic_frame **out)
+static int build_ref_lists(heic_ctx *ctx, const heic_sps *sps,
+                           const heic_slice_header *sh,
+                           int curr_poc,
+                           const heic_frame *const *refs, int n_refs,
+                           const heic_frame **l0, int *n_l0,
+                           const heic_frame **l1, int *n_l1)
 {
     const heic_st_rps *rps = sh->has_inline_short_term_rps
         ? &sh->inline_short_term_rps
         : &sps->short_term_rps[sh->short_term_ref_pic_set_idx];
-    const heic_frame *temp[HEIC_MAX_REF_PICS];
+    const heic_frame *before[HEIC_MAX_REF_PICS];
+    const heic_frame *after[HEIC_MAX_REF_PICS];
+    const heic_frame *lt[HEIC_MAX_REF_PICS];
+    const heic_frame *temp0[HEIC_MAX_REF_PICS];
+    const heic_frame *temp1[HEIC_MAX_REF_PICS];
     uint32_t poc_mask =
         (1u << (sps->log2_max_pic_order_cnt_lsb_minus4 + 4)) - 1u;
-    int n_temp = 0;
+    int n_before = 0, n_after = 0, n_lt = 0, n_temp = 0;
     int i;
 
     /* StCurrBefore, StCurrAfter, then LtCurr (H.265 8.3.4). */
@@ -38,8 +43,8 @@ static int build_l0_refs(heic_ctx *ctx, const heic_sps *sps,
         idx = find_ref_by_poc(refs, n_refs,
                               curr_poc + rps->delta_poc_s0[i],
                               poc_mask, 0);
-        if (idx >= 0 && n_temp < HEIC_MAX_REF_PICS)
-            temp[n_temp++] = refs[idx];
+        if (idx >= 0 && n_before < HEIC_MAX_REF_PICS)
+            before[n_before++] = refs[idx];
     }
     for (i = 0; i < rps->num_positive_pics; i++) {
         int idx;
@@ -47,29 +52,38 @@ static int build_l0_refs(heic_ctx *ctx, const heic_sps *sps,
         idx = find_ref_by_poc(refs, n_refs,
                               curr_poc + rps->delta_poc_s1[i],
                               poc_mask, 0);
-        if (idx >= 0 && n_temp < HEIC_MAX_REF_PICS)
-            temp[n_temp++] = refs[idx];
+        if (idx >= 0 && n_after < HEIC_MAX_REF_PICS)
+            after[n_after++] = refs[idx];
     }
     for (i = 0; i < sh->num_long_term_sps + sh->num_long_term_pics; i++) {
         int idx;
         if (!sh->used_by_curr_pic_lt_flag[i]) continue;
         idx = find_ref_by_poc(refs, n_refs, (int)sh->poc_lsb_lt[i],
                               poc_mask, 1);
-        if (idx >= 0 && n_temp < HEIC_MAX_REF_PICS)
-            temp[n_temp++] = refs[idx];
+        if (idx >= 0 && n_lt < HEIC_MAX_REF_PICS)
+            lt[n_lt++] = refs[idx];
     }
 
     /* Some HEIF writers leave POC metadata ambiguous across independent items.
        Preserve iref order as a bounded fallback when no POC match was possible. */
+    n_temp = n_before + n_after + n_lt;
     if (n_temp == 0) {
-        for (i = 0; i < n_refs && n_temp < HEIC_MAX_REF_PICS; i++)
-            if (refs[i]) temp[n_temp++] = refs[i];
+        for (i = 0; i < n_refs && n_before < HEIC_MAX_REF_PICS; i++)
+            if (refs[i]) before[n_before++] = refs[i];
+        n_temp = n_before;
     }
     if (n_temp == 0) {
         heic_error(ctx, HEIC_SEVERITY_ERROR,
                    "no supplied HEVC reference matches active RPS");
         return -1;
     }
+    n_temp = 0;
+    for (i = 0; i < n_before && n_temp < HEIC_MAX_REF_PICS; i++)
+        temp0[n_temp++] = before[i];
+    for (i = 0; i < n_after && n_temp < HEIC_MAX_REF_PICS; i++)
+        temp0[n_temp++] = after[i];
+    for (i = 0; i < n_lt && n_temp < HEIC_MAX_REF_PICS; i++)
+        temp0[n_temp++] = lt[i];
     for (i = 0; i < sh->num_ref_idx_l0_active; i++) {
         int entry = sh->ref_pic_list_modification_flag_l0
             ? sh->list_entry_l0[i]
@@ -79,9 +93,33 @@ static int build_l0_refs(heic_ctx *ctx, const heic_sps *sps,
                        "HEVC L0 list entry has no supplied reference");
             return -1;
         }
-        out[i] = temp[entry];
+        l0[i] = temp0[entry];
     }
-    return sh->num_ref_idx_l0_active;
+    *n_l0 = sh->num_ref_idx_l0_active;
+
+    *n_l1 = 0;
+    if (sh->slice_type == HEIC_SLICE_B) {
+        n_temp = 0;
+        for (i = 0; i < n_after && n_temp < HEIC_MAX_REF_PICS; i++)
+            temp1[n_temp++] = after[i];
+        for (i = 0; i < n_before && n_temp < HEIC_MAX_REF_PICS; i++)
+            temp1[n_temp++] = before[i];
+        for (i = 0; i < n_lt && n_temp < HEIC_MAX_REF_PICS; i++)
+            temp1[n_temp++] = lt[i];
+        for (i = 0; i < sh->num_ref_idx_l1_active; i++) {
+            int entry = sh->ref_pic_list_modification_flag_l1
+                ? sh->list_entry_l1[i]
+                : i % n_temp;
+            if (entry < 0 || entry >= n_temp) {
+                heic_error(ctx, HEIC_SEVERITY_ERROR,
+                           "HEVC L1 list entry has no supplied reference");
+                return -1;
+            }
+            l1[i] = temp1[entry];
+        }
+        *n_l1 = sh->num_ref_idx_l1_active;
+    }
+    return 0;
 }
 
 static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
@@ -233,8 +271,9 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                         eps[ne++] = rel;
                     }
                 }
-                const heic_frame *l0[HEIC_MAX_REF_PICS];
-                int n_l0 = 0;
+                const heic_frame *l0[HEIC_MAX_REF_PICS] = {0};
+                const heic_frame *l1[HEIC_MAX_REF_PICS] = {0};
+                int n_l0 = 0, n_l1 = 0;
                 int poc_bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
                 uint32_t max_poc_lsb = 1u << poc_bits;
                 int is_irap = nals[i].type >= HEIC_NAL_BLA_W_LP
@@ -257,9 +296,9 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 }
                 out->poc_valid = 1;
                 if (sh.slice_type != HEIC_SLICE_I) {
-                    n_l0 = build_l0_refs(ctx, &sps, &sh, out->poc,
-                                         refs, n_refs, l0);
-                    if (n_l0 < 0) {
+                    if (build_ref_lists(ctx, &sps, &sh, out->poc,
+                                        refs, n_refs, l0, &n_l0,
+                                        l1, &n_l1) != 0) {
                         heic_free_buf(ctx, eps);
                         heic_slice_header_free(ctx, &sh);
                         break;
@@ -267,6 +306,7 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 }
                 if (heic_hevc_decode_slice(ctx, &sps, &pps, &sh, slice_data,
                                            slice_len, eps, ne, l0, n_l0,
+                                           l1, n_l1,
                                            out, ab) == 0)
                     decode_ok = 1;
                 heic_free_buf(ctx, eps);

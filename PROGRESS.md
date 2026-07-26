@@ -179,6 +179,11 @@
       bottom-right/center candidates, and POC-distance scaling for merge/AMVP
 - [x] HEVC weighted P prediction: full luma/chroma weight-table syntax,
       derived chroma offsets, bit-depth scaling, rounding, and clipping
+- [x] HEVC B slices: L0/L1 RPS construction and list modification, B CABAC
+      motion syntax, spatial/temporal AMVP, combined bi-merge candidates,
+      L1/bi motion compensation, and weighted biprediction
+- [x] Raw Annex B HEVC sequence regression path with `dec265` pixel oracle;
+      FATE fixtures cover long-term RPS, RPLM, TMVP, weighted P/B, and B merge
 - [x] HEVC image sequences (`moov`): first sync sample from `pict` (`vide`
       fallback), `stsd`/`stsz`/`stsc`/`stco`/`co64`/`stss`, and a smaller
       `pict` thumbnail track; Nokia `C026`–`C032`, `C036`–`C038`, and `C041`

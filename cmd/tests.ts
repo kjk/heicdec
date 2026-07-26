@@ -14,7 +14,8 @@
 //
 // Intentional bad inputs (ok-expect-fail if we fail as expected):
 //   broken containers; bad iovl version; oversize canvas.
-import { basename } from "path";
+import { existsSync, rmSync } from "fs";
+import { basename, join } from "path";
 import {
   build,
   buildDav1d,
@@ -22,7 +23,7 @@ import {
   defaultUseClang,
   cleanBuildOutput,
 } from "./build";
-import { getDeps } from "./get-deps";
+import { getDeps, TESTIMAGES_DIR } from "./get-deps";
 import { selectFiles, corpusSummary } from "./corpus";
 
 /** Open / decode expected to fail (intentionally invalid or out of scope). */
@@ -79,6 +80,88 @@ function classifyVerify(exitCode: number, out: string): VerifyKind {
   if (exitCode === 3) return "both_fail";
   if (exitCode === 4) return "libheif_fail";
   return "other";
+}
+
+const HEVC_SEQUENCE_TESTS = [
+  { name: "LTRPSPS_A_Qualcomm_1.bit", frames: 17, mse: 24 },
+  { name: "RPLM_A_qualcomm_4.bit", frames: 25, mse: 70 },
+  { name: "TMVP_A_MS_3.bit", frames: 17, mse: 24 },
+  { name: "WP_A_Toshiba_3.bit", frames: 17, mse: 8 },
+  { name: "WP_B_Toshiba_3.bit", frames: 17, mse: 2 },
+  { name: "MERGE_A_TI_3.bit", frames: 8, mse: 1 },
+] as const;
+
+async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
+  const root = join(import.meta.dir, "..");
+  const dec265Candidates = process.platform === "win32"
+    ? [join(root, "out/libde265_build/dec265/dec265.exe")]
+    : [
+        join(root, "out/libde265_build/dec265/dec265"),
+        join(root, "out/libde265_build/dec265"),
+      ];
+  const dec265 = dec265Candidates.find(existsSync);
+  if (!dec265) {
+    console.log("[fail] HEVC sequences: dec265 oracle executable not found");
+    return [0, HEVC_SEQUENCE_TESTS.length];
+  }
+
+  let ok = 0;
+  let fail = 0;
+  for (const t of HEVC_SEQUENCE_TESTS) {
+    const input = join(TESTIMAGES_DIR, "hevc_sequence", t.name);
+    const stem = t.name.replace(/\.[^.]+$/, "");
+    const ours = join(root, "out", `${stem}-ours.yuv`);
+    const ref = join(root, "out", `${stem}-ref.yuv`);
+    rmSync(ours, { force: true });
+    rmSync(ref, { force: true });
+    const rp = await Bun.$`${dec265} -q -f ${t.frames} -o ${ref} ${input}`
+      .nothrow()
+      .quiet();
+    const op = await Bun.$`${exe} -hevc-sequence -hevc-frames ${t.frames} -out ${ours} ${input}`
+      .nothrow()
+      .quiet();
+    if (rp.exitCode !== 0 || op.exitCode !== 0 || !existsSync(ours) || !existsSync(ref)) {
+      fail++;
+      const detail = (
+        op.stderr.toString() + rp.stderr.toString()
+      ).trim().slice(0, 300);
+      console.log(`[fail] HEVC sequence ${t.name} decode failed\n${detail}`);
+      continue;
+    }
+    const a = new Uint8Array(await Bun.file(ours).arrayBuffer());
+    const b = new Uint8Array(await Bun.file(ref).arrayBuffer());
+    if (a.length !== b.length || a.length === 0) {
+      fail++;
+      console.log(
+        `[fail] HEVC sequence ${t.name} size ${a.length} != oracle ${b.length}`,
+      );
+      continue;
+    }
+    let sse = 0;
+    let maxDiff = 0;
+    for (let i = 0; i < a.length; i++) {
+      const d = Math.abs(a[i] - b[i]);
+      sse += d * d;
+      if (d > maxDiff) maxDiff = d;
+    }
+    const mse = sse / a.length;
+    if (mse <= t.mse) {
+      ok++;
+      console.log(
+        `[ok] HEVC sequence ${t.name} frames=${t.frames} ` +
+          `mse=${mse.toFixed(4)} maxdiff=${maxDiff}`,
+      );
+    } else {
+      fail++;
+      console.log(
+        `[fail] HEVC sequence ${t.name} mse=${mse.toFixed(4)} > ${t.mse} ` +
+          `maxdiff=${maxDiff}`,
+      );
+    }
+    rmSync(ours, { force: true });
+    rmSync(ref, { force: true });
+  }
+  return [ok, fail];
 }
 
 async function main() {
@@ -231,8 +314,16 @@ async function main() {
     console.log(`[fail] ${f} verify exit ${p.exitCode}\n${out.slice(0, 400)}`);
   }
 
+  let extra = 0;
+  if (!infoOnly && argv.includes("-all")) {
+    const [seqOk, seqFail] = await runHevcSequenceTests(exe);
+    ok += seqOk;
+    fail += seqFail;
+    extra = HEVC_SEQUENCE_TESTS.length;
+  }
+
   console.log(
-    `done: ${ok} ok, ${fail} fail, ${skip} skip / ${files.length}` +
+    `done: ${ok} ok, ${fail} fail, ${skip} skip / ${files.length + extra}` +
       (infoOnly
         ? " (info)"
         : ` (libheif mse<=${mseThreshold}; skip=no oracle, not decodable counts as ok)`),
