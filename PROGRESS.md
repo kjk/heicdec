@@ -119,6 +119,15 @@
     0.30ms → **0.12ms**. All compressed unci fixtures are now at parity or faster.
   - Winperf 20k-decode workload 4.60s → **0.87s** (-81.0%); full pass remains
     166 comparable / 22 skips / 0 failures and 183 pixel-oracle successes.
+- **Precombined residual scan contexts**:
+  - Replace per-coefficient scan-coordinate/context arithmetic with compact
+    scan-order/context tables; fold level initialization, sign traversal, and
+    nonzero accounting into existing passes.
+  - HDR winperf 34.34ms → **33.23ms** (-3.2%); residual self-samples
+    2,775 → **1,925** (-30.6%). Focused bench: HDR 32.88ms vs libheif
+    33.89ms (-3.0%).
+  - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
+    183 ok / 5 no-oracle skips / 0 failures.
 
 ## Next
 

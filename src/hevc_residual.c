@@ -1,14 +1,6 @@
 /* hevc_residual.c -- residual_coding CABAC path (port of imazen/heic residual.rs) */
 #include "heic_internal.h"
 
-#if defined(_MSC_VER)
-#define HEIC_RESIDUAL_INLINE __forceinline
-#elif defined(__GNUC__) || defined(__clang__)
-#define HEIC_RESIDUAL_INLINE inline __attribute__((always_inline))
-#else
-#define HEIC_RESIDUAL_INLINE inline
-#endif
-
 /* 4x4 scan tables (H.265 Table 6-7 etc.) */
 static const uint8_t HEIC_SCAN_4X4_DIAG[16][2] = {
     {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0}, {0, 3}, {1, 2},
@@ -41,15 +33,31 @@ static const uint8_t HEIC_SCAN_8X8_SB_DIAG[64][2] = {
     {6, 5}, {7, 4}, {5, 7}, {6, 6}, {7, 5}, {6, 7}, {7, 6}, {7, 7},
 };
 
-static const uint8_t HEIC_CTX_IDX_MAP_4X4[16] = {
-    0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8
+static const uint8_t HEIC_SIG_CTX_4X4[3][16] = {
+    {0, 2, 1, 6, 3, 4, 7, 6, 4, 5, 7, 8, 5, 8, 8, 8},
+    {0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8},
+    {0, 2, 6, 7, 1, 3, 6, 7, 4, 4, 8, 8, 5, 5, 8, 8},
 };
 
-static const uint8_t HEIC_SIG_LOCAL_CTX[4][16] = {
-    {2, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
-    {2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
-    {2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0},
-    {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
+static const uint8_t HEIC_SIG_CTX_LOCAL[3][4][16] = {
+    {
+        {2, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+        {2, 1, 2, 0, 1, 2, 0, 0, 1, 2, 0, 0, 1, 0, 0, 0},
+        {2, 2, 1, 2, 1, 0, 2, 1, 0, 0, 1, 0, 0, 0, 0, 0},
+        {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
+    },
+    {
+        {2, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
+        {2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+        {2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0},
+        {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
+    },
+    {
+        {2, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
+        {2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0},
+        {2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+        {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
+    },
 };
 
 int heic_get_scan_order(uint8_t log2_size, uint8_t intra_mode, uint8_t c_idx,
@@ -121,15 +129,6 @@ static uint8_t find_scan_pos_4x4(const uint8_t (*scan)[2], uint8_t x, uint8_t y)
     return 0;
 }
 
-static void coeff_set(heic_coeff_buf *b, int x, int y, int16_t v)
-{
-    int stride = 1 << b->log2_size;
-    b->coeffs[y * stride + x] = v;
-    if (v != 0) {
-        if (b->num_nonzero < 0xFFFFu) b->num_nonzero++;
-    }
-}
-
 static uint32_t decode_last_sig_prefix(heic_cabac *cabac, heic_ctx_model *ctx,
                                        uint8_t log2_size, uint8_t c_idx, int is_x)
 {
@@ -186,26 +185,6 @@ static int decode_coded_sb_flag(heic_cabac *cabac, heic_ctx_model *ctx,
     int csbf_ctx = csbf_neighbors != 0 ? 1 : 0;
     int ctx_idx = HEIC_CTX_CODED_SUB_BLOCK_FLAG + csbf_ctx + (c_idx > 0 ? 2 : 0);
     return heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
-}
-
-static HEIC_RESIDUAL_INLINE int
-decode_sig_flag(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t pos,
-                uint8_t sb_width, uint8_t sb_x, uint8_t sb_y,
-                uint8_t prev_csbf, int ctx_base, int ctx_offset,
-                const uint8_t (*scan_pos)[2])
-{
-    uint8_t local = (uint8_t)(scan_pos[pos][1] * 4 + scan_pos[pos][0]);
-    int sig_ctx;
-    if (sb_width == 1)
-        sig_ctx = HEIC_CTX_IDX_MAP_4X4[local];
-    else if (sb_x == 0 && sb_y == 0 && local == 0)
-        sig_ctx = 0;
-    else
-        sig_ctx = HEIC_SIG_LOCAL_CTX[prev_csbf][local] + ctx_offset;
-    {
-        int ctx_idx = ctx_base + sig_ctx;
-        return heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
-    }
 }
 
 static int decode_greater1(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t c_idx,
@@ -314,6 +293,8 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         int right_coded, below_coded, csbf_neighbors, sb_coded, infer_sb_dc_sig;
         int prev_csbf;
         int sig_ctx_base, sig_ctx_offset;
+        int sig_ctx_add, sig_dc_ctx;
+        const uint8_t *sig_ctx_map;
         uint8_t start_pos, last_coeff;
         int16_t coeff_values[16];
         uint8_t sig_positions[16];
@@ -324,11 +305,12 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         int base_cs, ctx_set, this_subblock_had_gt1;
         uint8_t greater1_ctx, last_greater1_flag;
         int first_g1_idx;
-        int max_g1, g1_count;
+        int max_g1;
         uint8_t first_sig_pos, last_sig_pos;
         int sign_hidden;
         int n_signs;
         uint32_t sign_bits;
+        uint32_t sign_mask;
         int i;
         uint8_t rice_param;
         int32_t sum_abs_level;
@@ -361,6 +343,17 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         } else {
             sig_ctx_offset = sb_width == 2 ? 9 : 12;
         }
+        if (sb_width == 1) {
+            sig_ctx_map = HEIC_SIG_CTX_4X4[scan_idx];
+            sig_ctx_add = sig_ctx_base;
+            sig_dc_ctx = sig_ctx_base + sig_ctx_map[0];
+        } else {
+            sig_ctx_map = HEIC_SIG_CTX_LOCAL[scan_idx][prev_csbf];
+            sig_ctx_add = sig_ctx_base + sig_ctx_offset;
+            sig_dc_ctx = (sb_x == 0 && sb_y == 0)
+                              ? sig_ctx_base
+                              : sig_ctx_add + sig_ctx_map[0];
+        }
 
         start_pos = (sb_idx == last_sb_idx) ? last_pos_in_sb : 15;
         can_infer_dc = infer_sb_dc_sig;
@@ -375,9 +368,8 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
 
         if (!(sb_idx == last_sb_idx && start_pos == 0)) {
             for (n = (int)last_coeff; n >= 1; n--) {
-                int sig = decode_sig_flag(cabac, ctx, (uint8_t)n, (uint8_t)sb_width,
-                                          sb_x, sb_y, (uint8_t)prev_csbf,
-                                          sig_ctx_base, sig_ctx_offset, scan_pos);
+                int sig = heic_cabac_decode_bin(
+                              cabac, &ctx[sig_ctx_add + sig_ctx_map[n]]) != 0;
                 if (sig) {
                     sig_positions[n_sig++] = (uint8_t)n;
                     can_infer_dc = 0;
@@ -389,18 +381,12 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
             if (can_infer_dc) {
                 sig_positions[n_sig++] = 0;
             } else {
-                int sig = decode_sig_flag(cabac, ctx, 0, (uint8_t)sb_width,
-                                          sb_x, sb_y, (uint8_t)prev_csbf,
-                                          sig_ctx_base, sig_ctx_offset, scan_pos);
+                int sig = heic_cabac_decode_bin(cabac, &ctx[sig_dc_ctx]) != 0;
                 if (sig) sig_positions[n_sig++] = 0;
             }
         }
 
         if (n_sig == 0) continue;
-        for (i = 0; i < n_sig; i++) {
-            coeff_values[i] = 1;
-            needs_remaining[i] = 0;
-        }
 
         base_cs = (sb_idx == 0 || c_idx > 0) ? 0 : 2;
         ctx_set = base_cs + (prev_subblock_had_gt1 ? 1 : 0);
@@ -409,15 +395,12 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         last_greater1_flag = 0;
         first_g1_idx = -1;
         max_g1 = n_sig < 8 ? n_sig : 8;
-        g1_count = 0;
 
-        for (i = 0; i < n_sig; i++) {
+        for (i = 0; i < max_g1; i++) {
             int g1;
-            if (g1_count >= max_g1) {
-                needs_remaining[i] = 1;
-                continue;
-            }
-            if (g1_count > 0 && greater1_ctx > 0) {
+            coeff_values[i] = 1;
+            needs_remaining[i] = 0;
+            if (i > 0 && greater1_ctx > 0) {
                 if (last_greater1_flag)
                     greater1_ctx = 0;
                 else
@@ -433,7 +416,10 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                 else
                     needs_remaining[i] = 1;
             }
-            g1_count++;
+        }
+        for (; i < n_sig; i++) {
+            coeff_values[i] = 1;
+            needs_remaining[i] = 1;
         }
 
         if (first_g1_idx >= 0) {
@@ -451,9 +437,11 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
 
         n_signs = n_sig - (sign_hidden ? 1 : 0);
         sign_bits = heic_cabac_decode_bypass_bits(cabac, n_signs);
+        sign_mask = n_signs > 0 ? 1u << (n_signs - 1) : 0;
 
         rice_param = 0;
         sum_abs_level = 0;
+        out->num_nonzero = (uint16_t)(out->num_nonzero + n_sig);
         for (i = 0; i < n_sig; i++) {
             int pos = sig_positions[i];
             int16_t v = coeff_values[i];
@@ -463,15 +451,16 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                 if (sum > 32767) sum = 32767;
                 v = (int16_t)sum;
             }
-            if (i < n_signs && ((sign_bits >> (n_signs - 1 - i)) & 1u))
+            if (sign_bits & sign_mask)
                 v = (int16_t)(-v);
+            sign_mask >>= 1;
             sum_abs_level += v;
             if (i == n_sig - 1 && sign_hidden && (sum_abs_level & 1) != 0)
                 v = (int16_t)(-v);
             {
                 int x = (int)sb_x * 4 + scan_pos[pos][0];
                 int y = (int)sb_y * 4 + scan_pos[pos][1];
-                coeff_set(out, x, y, v);
+                out->coeffs[y * (int)size + x] = v;
             }
         }
 
