@@ -484,6 +484,15 @@ static inline __m128i lut4_i32(const int32_t *tab, const uint16_t *p)
                           tab[p[3] & 255]);
 }
 
+static inline __m128i lut420_i32(const int32_t *tab, const uint16_t *p, int phase)
+{
+    if (phase)
+        return _mm_setr_epi32(tab[p[0] & 255], tab[p[1] & 255], tab[p[1] & 255],
+                              tab[p[2] & 255]);
+    return _mm_setr_epi32(tab[p[0] & 255], tab[p[0] & 255], tab[p[1] & 255],
+                          tab[p[1] & 255]);
+}
+
 static inline __m128i clamp_u8_epi32(__m128i v)
 {
     v = _mm_max_epi32(v, _mm_setzero_si128());
@@ -555,6 +564,77 @@ int heic_simd_ycc_444_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
     /* Tail */
     for (; x < w; x++) {
         int Y = (int)yp[x] & 255, Cb = (int)cbp[x] & 255, Cr = (int)crp[x] & 255;
+        int rr, gg, bb;
+        if (full) {
+            rr = yv[Y] + ((cr_r[Cr] + 128) >> 8);
+            gg = yv[Y] + ((cb_g[Cb] + cr_g[Cr] + 128) >> 8);
+            bb = yv[Y] + ((cb_b[Cb] + 128) >> 8);
+        } else {
+            rr = (yv[Y] + cr_r[Cr] + 4096) >> 13;
+            gg = (yv[Y] + cb_g[Cb] + cr_g[Cr] + 4096) >> 13;
+            bb = (yv[Y] + cb_b[Cb] + 4096) >> 13;
+        }
+        if (rr < 0) rr = 0;
+        else if (rr > 255) rr = 255;
+        if (gg < 0) gg = 0;
+        else if (gg > 255) gg = 255;
+        if (bb < 0) bb = 0;
+        else if (bb > 255) bb = 255;
+        row[x * 3 + 0] = (uint8_t)rr;
+        row[x * 3 + 1] = (uint8_t)gg;
+        row[x * 3 + 2] = (uint8_t)bb;
+    }
+    return 1;
+}
+
+int heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_t *crp,
+                          uint8_t *row, int w, int phase, int full,
+                          const int32_t yv[256], const int32_t cr_r[256],
+                          const int32_t cb_g[256], const int32_t cr_g[256],
+                          const int32_t cb_b[256])
+{
+    int x;
+    if (!g_simd || w < 4) return 0;
+    if (full) {
+        __m128i round = _mm_set1_epi32(128);
+        for (x = 0; x + 4 <= w; x += 4) {
+            const uint16_t *cb = cbp + ((phase + x) >> 1);
+            const uint16_t *cr = crp + ((phase + x) >> 1);
+            __m128i Y = lut4_i32(yv, yp + x);
+            __m128i CrR = lut420_i32(cr_r, cr, phase);
+            __m128i CbG = lut420_i32(cb_g, cb, phase);
+            __m128i CrG = lut420_i32(cr_g, cr, phase);
+            __m128i CbB = lut420_i32(cb_b, cb, phase);
+            __m128i rr = clamp_u8_epi32(
+                _mm_add_epi32(Y, _mm_srai_epi32(_mm_add_epi32(CrR, round), 8)));
+            __m128i gg = clamp_u8_epi32(_mm_add_epi32(
+                Y, _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(CbG, CrG), round), 8)));
+            __m128i bb = clamp_u8_epi32(
+                _mm_add_epi32(Y, _mm_srai_epi32(_mm_add_epi32(CbB, round), 8)));
+            store_rgb4(rr, gg, bb, row + x * 3);
+        }
+    } else {
+        __m128i round = _mm_set1_epi32(4096);
+        for (x = 0; x + 4 <= w; x += 4) {
+            const uint16_t *cb = cbp + ((phase + x) >> 1);
+            const uint16_t *cr = crp + ((phase + x) >> 1);
+            __m128i Y = lut4_i32(yv, yp + x);
+            __m128i CrR = lut420_i32(cr_r, cr, phase);
+            __m128i CbG = lut420_i32(cb_g, cb, phase);
+            __m128i CrG = lut420_i32(cr_g, cr, phase);
+            __m128i CbB = lut420_i32(cb_b, cb, phase);
+            __m128i rr = clamp_u8_epi32(
+                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Y, CrR), round), 13));
+            __m128i gg = clamp_u8_epi32(_mm_srai_epi32(
+                _mm_add_epi32(_mm_add_epi32(_mm_add_epi32(Y, CbG), CrG), round), 13));
+            __m128i bb = clamp_u8_epi32(
+                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Y, CbB), round), 13));
+            store_rgb4(rr, gg, bb, row + x * 3);
+        }
+    }
+    for (; x < w; x++) {
+        int cx = (phase + x) >> 1;
+        int Y = (int)yp[x] & 255, Cb = (int)cbp[cx] & 255, Cr = (int)crp[cx] & 255;
         int rr, gg, bb;
         if (full) {
             rr = yv[Y] + ((cr_r[Cr] + 128) >> 8);
@@ -1149,6 +1229,25 @@ int heic_simd_ycc_444_row(const uint16_t *a, const uint16_t *b, const uint16_t *
     (void)c;
     (void)d;
     (void)w;
+    (void)full;
+    (void)e;
+    (void)f;
+    (void)g;
+    (void)h;
+    (void)i;
+    return 0;
+}
+int heic_simd_ycc_420_row(const uint16_t *a, const uint16_t *b, const uint16_t *c,
+                          uint8_t *d, int w, int p, int full, const int32_t *e,
+                          const int32_t *f, const int32_t *g, const int32_t *h,
+                          const int32_t *i)
+{
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)d;
+    (void)w;
+    (void)p;
     (void)full;
     (void)e;
     (void)f;

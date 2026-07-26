@@ -90,6 +90,13 @@
     samples/decode 82.0 → **72.1** (-12.1%).
   - `example.heic` 56.1ms → **50.6ms** (9.3% faster than libheif);
     C022 111.1ms → **109.3ms** (6.1% faster in this corpus pass).
+- **Direct 4:2:0 SIMD color**:
+  - Load subsampled chroma directly into duplicated SIMD lanes, including odd
+    crop phase; remove per-decode temp allocation and scalar 4:2:0→4:4:4 expansion.
+  - HDR long-loop 35.0ms → **33.8ms**; normalized winperf samples/decode
+    72.1 → **67.3** (-6.6%).
+  - Full pass: HDR 34.2ms vs libheif 32.8ms (+4.3%); C022 98.8ms vs
+    libheif 103.9ms (-4.9%); 166 comparable / 22 skips / 0 failures.
 
 ## Next
 

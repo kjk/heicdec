@@ -820,6 +820,12 @@ int  heic_simd_ycc_444_row(const uint16_t *yp, const uint16_t *cbp, const uint16
                            const int32_t yv[256], const int32_t cr_r[256],
                            const int32_t cb_g[256], const int32_t cr_g[256],
                            const int32_t cb_b[256]);
+/* 8-bit 4:2:0 row: cbp/crp point at floor(x0/2); x_phase is x0&1. */
+int  heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_t *crp,
+                           uint8_t *row, int w, int x_phase, int full,
+                           const int32_t yv[256], const int32_t cr_r[256],
+                           const int32_t cb_g[256], const int32_t cr_g[256],
+                           const int32_t cb_b[256]);
 /* Chroma edge: 4 samples along edge (vert: stride between samples; horiz: 1). */
 int  heic_simd_chroma_edge4(uint16_t *plane, int stride, size_t base_q0, int across,
                             int tc, int max_val, int along_is_stride);

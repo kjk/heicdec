@@ -249,54 +249,27 @@ static void convert_444(const heic_frame *f, const ycc_coeffs *cc, int x0, int y
     }
 }
 
-/* 8-bit 4:2:0 → packed RGB via LUTs; expand chroma to a temp 444 row for SIMD. */
+/* 8-bit 4:2:0 → packed RGB via LUTs. */
 static void convert_420_8_rgb(const heic_frame *f, const ycc_lut *lut, int x0, int y0,
                               int w, int h, uint8_t *dst, int stride)
 {
     int y, x;
-    uint16_t *cb_row = NULL, *cr_row = NULL;
-    uint16_t *heap_chr = NULL;
-    /* Always heap: a 16KB stack temp + HEVC decode frames trips ASan stack limits. */
-    if (heic_simd_enabled() && w >= 4) {
-        heap_chr = (uint16_t *)malloc((size_t)w * 2u * sizeof(uint16_t));
-        if (heap_chr) {
-            cb_row = heap_chr;
-            cr_row = heap_chr + w;
-        }
-    }
     for (y = 0; y < h; y++) {
         uint8_t *row = dst + (size_t)y * (size_t)stride;
         int sy = y0 + y;
         int cy = sy >> 1;
+        int cx0 = x0 >> 1;
         const uint16_t *yp = f->y + (size_t)sy * (size_t)f->y_stride + (size_t)x0;
         const uint16_t *cbp, *crp;
         if (cy >= f->c_height) cy = f->c_height - 1;
         if (cy < 0) cy = 0;
         cbp = f->cb + (size_t)cy * (size_t)f->c_stride;
         crp = f->cr + (size_t)cy * (size_t)f->c_stride;
-        if (cb_row && cr_row) {
-            /* Expand chroma 2× horizontally; pair samples share one Cb/Cr. */
-            int cx0 = x0 >> 1;
-            for (x = 0; x < w; ) {
-                int cx = cx0 + (x >> 1);
-                uint16_t cb, cr;
-                if (cx >= f->c_width) cx = f->c_width - 1;
-                if (cx < 0) cx = 0;
-                cb = cbp[cx];
-                cr = crp[cx];
-                cb_row[x] = cb;
-                cr_row[x] = cr;
-                x++;
-                if (x < w) {
-                    cb_row[x] = cb;
-                    cr_row[x] = cr;
-                    x++;
-                }
-            }
-            if (heic_simd_ycc_444_row(yp, cb_row, cr_row, row, w, lut->full, lut->yv,
-                                      lut->cr_r, lut->cb_g, lut->cr_g, lut->cb_b))
-                continue;
-        }
+        if (cx0 >= 0 && cx0 < f->c_width &&
+            heic_simd_ycc_420_row(yp, cbp + cx0, crp + cx0, row, w, x0 & 1,
+                                  lut->full, lut->yv, lut->cr_r, lut->cb_g,
+                                  lut->cr_g, lut->cb_b))
+            continue;
         for (x = 0; x < w; x++) {
             int cx = (x0 + x) >> 1;
             uint8_t r, g, b;
@@ -309,7 +282,6 @@ static void convert_420_8_rgb(const heic_frame *f, const ycc_lut *lut, int x0, i
             row += 3;
         }
     }
-    free(heap_chr);
 }
 
 static void convert_420(const heic_frame *f, const ycc_coeffs *cc, int x0, int y0,
