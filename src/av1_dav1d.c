@@ -139,6 +139,8 @@ static Dav1dContext *ensure_dav1d(heic_ctx *ctx)
     settings.n_threads = 1;
     settings.apply_grain = 0;
     settings.max_frame_delay = 1;
+    /* Mute dav1d's stderr logger (e.g. "Error parsing OBU data" on bad bits). */
+    settings.logger.callback = NULL;
     if (ctx->limits.max_pixels)
         settings.frame_size_limit = (unsigned)ctx->limits.max_pixels;
 
