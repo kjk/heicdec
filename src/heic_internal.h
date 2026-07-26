@@ -596,6 +596,7 @@ typedef struct {
 
 #define HEIC_MAX_REF_PICS 16
 #define HEIC_MAX_ST_RPS 64
+#define HEIC_MAX_LT_REF_PICS_SPS 32
 
 typedef struct {
     int32_t delta_poc_s0[HEIC_MAX_REF_PICS];
@@ -645,6 +646,9 @@ typedef struct {
     uint8_t  num_short_term_ref_pic_sets;
     heic_st_rps short_term_rps[HEIC_MAX_ST_RPS];
     int      long_term_ref_pics_present_flag;
+    uint8_t  num_long_term_ref_pics_sps;
+    uint32_t lt_ref_pic_poc_lsb_sps[HEIC_MAX_LT_REF_PICS_SPS];
+    uint8_t  used_by_curr_pic_lt_sps_flag[HEIC_MAX_LT_REF_PICS_SPS];
     int      sps_temporal_mvp_enabled_flag;
     int      strong_intra_smoothing_enabled_flag;
     int      vui_parameters_present_flag;
@@ -711,6 +715,8 @@ typedef struct {
 
 int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out);
 int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out);
+int heic_parse_st_ref_pic_set(heic_bs *bs, int idx, int num_sets,
+                              const heic_st_rps *sets, heic_st_rps *out);
 void heic_pps_free(heic_ctx *ctx, heic_pps *pps);
 
 /* ---- CABAC (hevc_cabac.c) ---- */
@@ -792,6 +798,15 @@ typedef struct {
     uint8_t  colour_plane_id;
     uint32_t slice_pic_order_cnt_lsb;
     uint8_t  short_term_ref_pic_set_idx;
+    int      has_inline_short_term_rps;
+    heic_st_rps inline_short_term_rps;
+    uint8_t  num_long_term_sps;
+    uint8_t  num_long_term_pics;
+    uint8_t  lt_idx_sps[HEIC_MAX_REF_PICS];
+    uint32_t poc_lsb_lt[HEIC_MAX_REF_PICS];
+    uint8_t  used_by_curr_pic_lt_flag[HEIC_MAX_REF_PICS];
+    uint8_t  delta_poc_msb_present_flag[HEIC_MAX_REF_PICS];
+    uint32_t delta_poc_msb_cycle_lt[HEIC_MAX_REF_PICS];
     int      slice_temporal_mvp_enabled_flag;
     int      slice_sao_luma_flag;
     int      slice_sao_chroma_flag;

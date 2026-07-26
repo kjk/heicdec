@@ -123,10 +123,9 @@ static void sort_rps(int32_t *delta, uint8_t *used, int n, int increasing)
     }
 }
 
-static int parse_st_ref_pic_set(heic_bs *bs, int idx, int num_sets,
-                                heic_st_rps *sets)
+int heic_parse_st_ref_pic_set(heic_bs *bs, int idx, int num_sets,
+                              const heic_st_rps *sets, heic_st_rps *out)
 {
-    heic_st_rps *out = &sets[idx];
     int inter = idx != 0 ? heic_bs_bit(bs) : 0;
     memset(out, 0, sizeof(*out));
     if (!inter) {
@@ -329,8 +328,9 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
     if (num_st_rps > 64) return -1;
     out->num_short_term_ref_pic_sets = (uint8_t)num_st_rps;
     for (i = 0; i < num_st_rps; i++)
-        if (parse_st_ref_pic_set(&bs, (int)i, (int)num_st_rps,
-                                 out->short_term_rps) != 0)
+        if (heic_parse_st_ref_pic_set(&bs, (int)i, (int)num_st_rps,
+                                      out->short_term_rps,
+                                      &out->short_term_rps[i]) != 0)
             return -1;
 
     out->long_term_ref_pics_present_flag = heic_bs_bit(&bs);
@@ -342,9 +342,11 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
             heic_error(ctx, HEIC_SEVERITY_ERROR, "SPS num_long_term_ref_pics_sps out of range");
             return -1;
         }
+        out->num_long_term_ref_pics_sps = (uint8_t)num_lt;
         for (k = 0; k < num_lt; k++) {
-            (void)heic_bs_bits(&bs, out->log2_max_pic_order_cnt_lsb_minus4 + 4);
-            (void)heic_bs_bit(&bs);
+            out->lt_ref_pic_poc_lsb_sps[k] =
+                heic_bs_bits(&bs, out->log2_max_pic_order_cnt_lsb_minus4 + 4);
+            out->used_by_curr_pic_lt_sps_flag[k] = (uint8_t)heic_bs_bit(&bs);
         }
     }
     out->sps_temporal_mvp_enabled_flag = heic_bs_bit(&bs);

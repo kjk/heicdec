@@ -31,8 +31,8 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
     uint32_t st;
     int i;
 
-    memset(out, 0, sizeof(*out));
     if (!nal || !sps || !pps || !out) return -1;
+    memset(out, 0, sizeof(*out));
     heic_bs_init(&bs, nal->payload, nal->payload_len);
 
     out->first_slice_segment_in_pic_flag = heic_bs_bit(&bs);
@@ -78,11 +78,18 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
         {
             int short_term_ref_pic_set_sps_flag = heic_bs_bit(&bs);
             if (!short_term_ref_pic_set_sps_flag) {
-                heic_error(ctx, HEIC_SEVERITY_ERROR,
-                           "inline short-term RPS not yet parsed");
-                return -1;
-            }
-            if (sps->num_short_term_ref_pic_sets > 1) {
+                if (heic_parse_st_ref_pic_set(
+                        &bs, sps->num_short_term_ref_pic_sets,
+                        sps->num_short_term_ref_pic_sets,
+                        sps->short_term_rps, &out->inline_short_term_rps) != 0) {
+                    heic_error(ctx, HEIC_SEVERITY_ERROR,
+                               "invalid inline short-term RPS");
+                    return -1;
+                }
+                out->has_inline_short_term_rps = 1;
+                out->short_term_ref_pic_set_idx =
+                    sps->num_short_term_ref_pic_sets;
+            } else if (sps->num_short_term_ref_pic_sets > 1) {
                 int bits = ceil_log2(sps->num_short_term_ref_pic_sets);
                 out->short_term_ref_pic_set_idx =
                     (uint8_t)heic_bs_bits(&bs, bits);
@@ -92,8 +99,47 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             }
         }
         if (sps->long_term_ref_pics_present_flag) {
-            heic_error(ctx, HEIC_SEVERITY_ERROR, "long-term RPS not yet parsed");
-            return -1;
+            uint32_t num_lt_sps = 0;
+            uint32_t num_lt_pics;
+            uint32_t total;
+            int lt_poc_bits = sps->log2_max_pic_order_cnt_lsb_minus4 + 4;
+            if (sps->num_long_term_ref_pics_sps > 0)
+                num_lt_sps = heic_bs_ue(&bs);
+            num_lt_pics = heic_bs_ue(&bs);
+            if (num_lt_sps > sps->num_long_term_ref_pics_sps
+                || num_lt_sps > HEIC_MAX_REF_PICS
+                || num_lt_pics > HEIC_MAX_REF_PICS
+                || num_lt_sps + num_lt_pics > HEIC_MAX_REF_PICS) {
+                heic_error(ctx, HEIC_SEVERITY_ERROR,
+                           "long-term RPS exceeds reference-picture limit");
+                return -1;
+            }
+            out->num_long_term_sps = (uint8_t)num_lt_sps;
+            out->num_long_term_pics = (uint8_t)num_lt_pics;
+            total = num_lt_sps + num_lt_pics;
+            for (i = 0; i < (int)total; i++) {
+                if ((uint32_t)i < num_lt_sps) {
+                    uint32_t idx = 0;
+                    if (sps->num_long_term_ref_pics_sps > 1)
+                        idx = heic_bs_bits(
+                            &bs, ceil_log2(sps->num_long_term_ref_pics_sps));
+                    if (idx >= sps->num_long_term_ref_pics_sps)
+                        return -1;
+                    out->lt_idx_sps[i] = (uint8_t)idx;
+                    out->poc_lsb_lt[i] =
+                        sps->lt_ref_pic_poc_lsb_sps[idx];
+                    out->used_by_curr_pic_lt_flag[i] =
+                        sps->used_by_curr_pic_lt_sps_flag[idx];
+                } else {
+                    out->poc_lsb_lt[i] = heic_bs_bits(&bs, lt_poc_bits);
+                    out->used_by_curr_pic_lt_flag[i] =
+                        (uint8_t)heic_bs_bit(&bs);
+                }
+                out->delta_poc_msb_present_flag[i] =
+                    (uint8_t)heic_bs_bit(&bs);
+                if (out->delta_poc_msb_present_flag[i])
+                    out->delta_poc_msb_cycle_lt[i] = heic_bs_ue(&bs);
+            }
         }
         if (sps->sps_temporal_mvp_enabled_flag)
             out->slice_temporal_mvp_enabled_flag = heic_bs_bit(&bs);
@@ -137,13 +183,16 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             return -1;
         }
         if (pps->lists_modification_present_flag) {
-            const heic_st_rps *rps =
-                &sps->short_term_rps[out->short_term_ref_pic_set_idx];
+            const heic_st_rps *rps = out->has_inline_short_term_rps
+                ? &out->inline_short_term_rps
+                : &sps->short_term_rps[out->short_term_ref_pic_set_idx];
             int used = 0;
             for (i = 0; i < rps->num_negative_pics; i++)
                 used += rps->used_by_curr_pic_s0[i] != 0;
             for (i = 0; i < rps->num_positive_pics; i++)
                 used += rps->used_by_curr_pic_s1[i] != 0;
+            for (i = 0; i < out->num_long_term_sps + out->num_long_term_pics; i++)
+                used += out->used_by_curr_pic_lt_flag[i] != 0;
             if (used > 1) {
                 int modify = heic_bs_bit(&bs);
                 if (modify) {
