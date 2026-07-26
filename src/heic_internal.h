@@ -109,6 +109,7 @@ typedef uint32_t heic_fourcc;
 #define HEIC_BOX_CTTS HEIC_FCC('c', 't', 't', 's')
 #define HEIC_BOX_HVC1 HEIC_FCC('h', 'v', 'c', '1')
 #define HEIC_BOX_HEV1 HEIC_FCC('h', 'e', 'v', '1')
+#define HEIC_BOX_AV01 HEIC_FCC('a', 'v', '0', '1')
 #define HEIC_BOX_TREF HEIC_FCC('t', 'r', 'e', 'f')
 
 /* Item type fourccs */
@@ -535,6 +536,13 @@ void heic_dav1d_ctx_close(heic_ctx *ctx); /* free cached dav1d on heic_ctx */
 int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
                     const uint8_t *data, size_t len,
                     heic_frame *out, const heic_abort *ab);
+typedef struct heic_av1_sequence_state heic_av1_sequence_state;
+heic_av1_sequence_state *heic_av1_sequence_new(heic_ctx *ctx);
+void heic_av1_sequence_destroy(heic_av1_sequence_state *state);
+int heic_av1_sequence_decode(heic_av1_sequence_state *state,
+                             const heic_av1c *cfg,
+                             const uint8_t *data, size_t len,
+                             heic_frame *out, const heic_abort *ab);
 
 /* Decode uncompressed HEIF (unci / ISO 23001-17). Interleave 0/1/3/4,
    multi-tile, 1..16-bit; optional zlib/deflate (HEIC_HAVE_ZLIB) and brotli

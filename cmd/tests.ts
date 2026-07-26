@@ -54,6 +54,7 @@ const MUST_DECODE = new Set([
   "C037.heic",
   "C038.heic",
   "C041.heic",
+  "sequence_3frame.avif",
 ]);
 
 /** Parse `30x20 mse=0.0000 maxdiff=0 n_diff=0` from -verify stdout. */
@@ -161,6 +162,15 @@ async function compareAltOracle(
   file: string,
   name: string,
 ): Promise<{ ok: boolean; detail: string } | null> {
+  if (name === "sequence_3frame.avif") {
+    const p = await Bun.$`${exe} -verify-sequence ${file}`.nothrow().quiet();
+    const out = (p.stdout.toString() + p.stderr.toString()).trim();
+    const mse = parseVerifyMse(out);
+    return {
+      ok: p.exitCode === 0 && mse !== null && mse <= 8,
+      detail: `libheif/dav1d ${out}`,
+    };
+  }
   const key = name.replace(/\.[^.]+$/, "");
   const oracle = ALT_ORACLES[key];
   if (!oracle) return null;
@@ -334,6 +344,10 @@ const HEIF_SEQUENCE_TESTS = [
     name: "C041.heic", frames: 8, duration: 2000,
     repetitions: 0, first: 0, last: 700,
   },
+  {
+    name: "sequence_3frame.avif", frames: 3, duration: 300,
+    repetitions: 1, first: 0, last: 200,
+  },
 ] as const;
 
 async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
@@ -342,7 +356,9 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
   let ok = 0;
   let fail = 0;
   for (const t of HEIF_SEQUENCE_TESTS) {
-    const input = join(corpus, t.name);
+    const input = t.name === "sequence_3frame.avif"
+      ? join(TESTIMAGES_DIR, "avif", t.name)
+      : join(corpus, t.name);
     const infoProc = await Bun.$`${exe} -sequence-info ${input}`.nothrow().quiet();
     const out =
       infoProc.stdout.toString() + infoProc.stderr.toString();

@@ -393,7 +393,126 @@ export function writeAlpha(
   console.log(`wrote ${path} (${out.length} bytes) alpha ${w}x${h}`);
 }
 
-/** Generate grid_2x2.avif + alpha.avif into outDir (expects fox stills present). */
+function identityMatrix(): Uint8Array {
+  return concat(
+    be32(0x00010000), be32(0), be32(0),
+    be32(0), be32(0x00010000), be32(0),
+    be32(0), be32(0), be32(0x40000000),
+  );
+}
+
+function visualSampleEntry(av1: Av01Extract): Uint8Array {
+  return box(
+    "av01",
+    concat(
+      new Uint8Array(6), be16(1),
+      new Uint8Array(16),
+      be16(av1.w), be16(av1.h),
+      be32(0x00480000), be32(0x00480000),
+      be32(0), be16(1),
+      new Uint8Array(32),
+      be16(0x0018), be16(0xffff),
+      av1cBox(av1.av1c),
+      colrNclx(),
+    ),
+  );
+}
+
+/** Build a three-frame AV1 image sequence with independently coded sync frames. */
+export function writeSequence(av1: Av01Extract, path: string): void {
+  const frameCount = 3;
+  const timescale = 1000;
+  const frameDuration = 100;
+  const duration = frameCount * frameDuration;
+  const samples = Array.from({ length: frameCount }, () => av1.sample);
+  const mdat = box("mdat", concat(...samples));
+  const ftyp = box(
+    "ftyp",
+    concat(
+      new TextEncoder().encode("avis"),
+      be32(0),
+      new TextEncoder().encode("avis"),
+      new TextEncoder().encode("avif"),
+      new TextEncoder().encode("msf1"),
+      new TextEncoder().encode("mif1"),
+      new TextEncoder().encode("miaf"),
+    ),
+  );
+  const mvhd = fullbox(
+    "mvhd", 0, 0,
+    concat(
+      be32(0), be32(0), be32(timescale), be32(duration),
+      be32(0x00010000), be16(0x0100), new Uint8Array(10),
+      identityMatrix(), new Uint8Array(24), be32(2),
+    ),
+  );
+  const tkhd = fullbox(
+    "tkhd", 0, 7,
+    concat(
+      be32(0), be32(0), be32(1), be32(0), be32(duration),
+      new Uint8Array(8), be16(0), be16(0), be16(0), be16(0),
+      identityMatrix(), be32(av1.w * 65536), be32(av1.h * 65536),
+    ),
+  );
+  const mdhd = fullbox(
+    "mdhd", 0, 0,
+    concat(
+      be32(0), be32(0), be32(timescale), be32(duration),
+      be16(0x55c4), be16(0),
+    ),
+  );
+  const hdlr = fullbox(
+    "hdlr", 0, 0,
+    concat(
+      be32(0), new TextEncoder().encode("pict"),
+      new Uint8Array(12), new TextEncoder().encode("AV1 sequence\0"),
+    ),
+  );
+  const vmhd = fullbox("vmhd", 0, 1, new Uint8Array(8));
+  const url = fullbox("url ", 0, 1, new Uint8Array(0));
+  const dref = fullbox("dref", 0, 0, concat(be32(1), url));
+  const dinf = box("dinf", dref);
+  const stsd = fullbox(
+    "stsd", 0, 0, concat(be32(1), visualSampleEntry(av1)),
+  );
+  const stts = fullbox(
+    "stts", 0, 0,
+    concat(be32(1), be32(frameCount), be32(frameDuration)),
+  );
+  const stsc = fullbox(
+    "stsc", 0, 0,
+    concat(be32(1), be32(1), be32(frameCount), be32(1)),
+  );
+  const stsz = fullbox(
+    "stsz", 0, 0,
+    concat(be32(av1.sample.length), be32(frameCount)),
+  );
+  const stss = fullbox(
+    "stss", 0, 0,
+    concat(be32(1), be32(1)),
+  );
+
+  const buildMoov = (chunkOffset: number): Uint8Array => {
+    const stco = fullbox(
+      "stco", 0, 0, concat(be32(1), be32(chunkOffset)),
+    );
+    const stbl = box("stbl", concat(stsd, stts, stsc, stsz, stco, stss));
+    const minf = box("minf", concat(vmhd, dinf, stbl));
+    const mdia = box("mdia", concat(mdhd, hdlr, minf));
+    return box("moov", concat(mvhd, box("trak", concat(tkhd, mdia))));
+  };
+
+  let moov = buildMoov(0);
+  moov = buildMoov(ftyp.length + moov.length + 8);
+  const out = concat(ftyp, moov, mdat);
+  writeFileSync(path, out);
+  console.log(
+    `wrote ${path} (${out.length} bytes) AV1 sequence ` +
+      `${frameCount}x${frameDuration}ms ${av1.w}x${av1.h}`,
+  );
+}
+
+/** Generate grid, alpha, and timed sequence AVIFs (expects fox stills present). */
 export function generateAvifFixtures(outDir: string = DEFAULT_OUT): void {
   mkdirSync(outDir, { recursive: true });
   const colorPath = join(outDir, "fox.profile0.8bpc.yuv420.avif");
@@ -404,6 +523,7 @@ export function generateAvifFixtures(outDir: string = DEFAULT_OUT): void {
     throw new Error(`missing ${colorPath} (download via get-deps first)`);
   const color = extractAv01(colorPath);
   writeGrid(color, join(outDir, "grid_2x2.avif"), 2, 2);
+  writeSequence(color, join(outDir, "sequence_3frame.avif"));
   if (existsSync(monoPath)) {
     const mono = extractAv01(monoPath);
     writeAlpha(color, mono, join(outDir, "alpha.avif"));

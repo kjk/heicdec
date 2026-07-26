@@ -1455,8 +1455,10 @@ typedef struct {
     uint32_t media_timescale;
     uint64_t media_duration;
     heic_hvcc hvcc;
+    heic_av1c av1c;
     heic_colr colr;
     int has_hvcc;
+    int has_av1c;
     int has_colr;
     uint32_t uniform_sample_size;
     uint32_t sample_count;
@@ -1480,6 +1482,7 @@ static void seq_free_track(heic_ctx *ctx, heic_seq_track *t)
 {
     if (!t) return;
     if (t->has_hvcc) free_hvcc(ctx, &t->hvcc);
+    if (t->has_av1c) heic_free_buf(ctx, t->av1c.config_obus);
     if (t->has_colr) heic_free_buf(ctx, t->colr.icc);
     heic_free_buf(ctx, t->sample_sizes);
     heic_free_buf(ctx, t->chunk_offsets);
@@ -1608,6 +1611,9 @@ static int seq_parse_visual_entry(heic_ctx *ctx, const uint8_t *data,
         if (child.type == HEIC_BOX_HVCC && !t->has_hvcc) {
             if (parse_hvcc(ctx, &child, &t->hvcc) != 0) return -1;
             t->has_hvcc = 1;
+        } else if (child.type == HEIC_BOX_AV1C && !t->has_av1c) {
+            if (parse_av1c(ctx, &child, &t->av1c) != 0) return -1;
+            t->has_av1c = 1;
         } else if (child.type == HEIC_BOX_COLR && !t->has_colr) {
             if (parse_colr(ctx, &child, &t->colr) == 0)
                 t->has_colr = 1;
@@ -1632,7 +1638,8 @@ static int seq_parse_stsd(heic_ctx *ctx, const heic_box *b,
         size = heic_rb32(b->content + pos);
         type = heic_read_fcc(b->content + pos + 4);
         if (size < 8 || size > b->content_len - pos) return -1;
-        if (type == HEIC_BOX_HVC1 || type == HEIC_BOX_HEV1)
+        if (type == HEIC_BOX_HVC1 || type == HEIC_BOX_HEV1
+            || type == HEIC_BOX_AV01)
             return seq_parse_visual_entry(ctx, b->content + pos, size, t, ab);
         pos += size;
     }
@@ -2200,7 +2207,8 @@ static int seq_make_item(heic_ctx *ctx, heic_container *c,
     int n_props = 0;
 
     c->item_infos[item_index].item_id = item_id;
-    c->item_infos[item_index].item_type = HEIC_TYPE_HVC1;
+    c->item_infos[item_index].item_type =
+        t->has_av1c ? HEIC_TYPE_AV01 : HEIC_TYPE_HVC1;
 
     loc->item_id = item_id;
     loc->extents = (heic_extent *)heic_zalloc(ctx, sizeof(heic_extent));
@@ -2216,10 +2224,17 @@ static int seq_make_item(heic_ctx *ctx, heic_container *c,
     props[n_props++] = (uint16_t)++c->n_properties;
 
     p = &c->properties[c->n_properties];
-    p->kind = HEIC_PROP_HVCC;
-    p->hvcc = t->hvcc;
-    memset(&t->hvcc, 0, sizeof(t->hvcc));
-    t->has_hvcc = 0;
+    if (t->has_av1c) {
+        p->kind = HEIC_PROP_AV1C;
+        p->av1c = t->av1c;
+        memset(&t->av1c, 0, sizeof(t->av1c));
+        t->has_av1c = 0;
+    } else {
+        p->kind = HEIC_PROP_HVCC;
+        p->hvcc = t->hvcc;
+        memset(&t->hvcc, 0, sizeof(t->hvcc));
+        t->has_hvcc = 0;
+    }
     props[n_props++] = (uint16_t)++c->n_properties;
 
     if (t->has_colr) {
@@ -2263,7 +2278,7 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     }
     for (i = 0; i < n_tracks; i++) {
         if (tracks[i].handler_type == HEIC_FCC('p', 'i', 'c', 't')
-            && tracks[i].has_hvcc) {
+            && (tracks[i].has_hvcc || tracks[i].has_av1c)) {
             primary = i;
             break;
         }
@@ -2271,14 +2286,15 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     if (primary < 0) {
         for (i = 0; i < n_tracks; i++) {
             if (tracks[i].handler_type == HEIC_FCC('v', 'i', 'd', 'e')
-                && tracks[i].has_hvcc) {
+                && (tracks[i].has_hvcc || tracks[i].has_av1c)) {
                 primary = i;
                 break;
             }
         }
     }
     if (primary < 0) {
-        heic_error(ctx, HEIC_SEVERITY_ERROR, "sequence has no HEVC image track");
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "sequence has no HEVC or AV1 image track");
         goto done;
     }
     if (!tracks[primary].width || !tracks[primary].height
@@ -2296,7 +2312,7 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     }
 
     for (i = 0; i < n_tracks; i++) {
-        if (i == primary || !tracks[i].has_hvcc
+        if (i == primary || (!tracks[i].has_hvcc && !tracks[i].has_av1c)
             || tracks[i].handler_type != HEIC_FCC('p', 'i', 'c', 't'))
             continue;
         if (tracks[i].width >= tracks[primary].width

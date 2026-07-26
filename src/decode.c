@@ -1152,6 +1152,7 @@ struct heic_sequence_decoder {
     heic_format format;
     heic_frame *pictures;
     const heic_frame **refs;
+    heic_av1_sequence_state *av1;
     uint32_t sample_count;
     uint32_t cache_start;
     uint32_t next_sample;
@@ -1169,6 +1170,8 @@ static void sequence_decoder_clear(heic_sequence_decoder *decoder)
     decoder->cache_start = 0;
     decoder->next_sample = 0;
     decoder->initialized = 0;
+    heic_av1_sequence_destroy(decoder->av1);
+    decoder->av1 = NULL;
 }
 
 heic_sequence_decoder *heic_sequence_decoder_new(heic_doc *doc,
@@ -1230,7 +1233,7 @@ heic_image *heic_sequence_decoder_decode_frame_abortable(
         || frame_index >= seq->frame_count
         || heic_container_get_item(&doc->container,
                                    doc->container.primary_item_id, &item) != 0
-        || !item.hvcc)
+        || (!item.hvcc && !item.av1c))
         return NULL;
     target = seq->frame_samples[frame_index];
     if (target >= seq->sample_count) return NULL;
@@ -1261,13 +1264,29 @@ heic_image *heic_sequence_decoder_decode_frame_abortable(
                 decoder->refs[j] = &decoder->pictures[i - 1 - j];
             decoded = &decoder->pictures[i];
             memset(decoded, 0, sizeof(*decoded));
-            if (heic_hevc_decode_refs(doc->ctx, item.hvcc,
-                                      doc->data + sample->offset, sample->size,
-                                      decoder->refs, (int)n_refs,
-                                      decoded, ab) != 0) {
-                heic_frame_free(doc->ctx, decoded);
-                decoder->next_sample = i;
-                return NULL;
+            if (item.hvcc) {
+                if (heic_hevc_decode_refs(
+                        doc->ctx, item.hvcc,
+                        doc->data + sample->offset, sample->size,
+                        decoder->refs, (int)n_refs, decoded, ab) != 0) {
+                    heic_frame_free(doc->ctx, decoded);
+                    decoder->next_sample = i;
+                    return NULL;
+                }
+            } else {
+                if (!decoder->av1)
+                    decoder->av1 = heic_av1_sequence_new(doc->ctx);
+                if (!decoder->av1
+                    || heic_av1_sequence_decode(
+                           decoder->av1, item.av1c,
+                           doc->data + sample->offset, sample->size,
+                           decoded, ab) != 0) {
+                    heic_av1_sequence_destroy(decoder->av1);
+                    decoder->av1 = NULL;
+                    heic_frame_free(doc->ctx, decoded);
+                    decoder->next_sample = i;
+                    return NULL;
+                }
             }
             if (item.colr && item.colr->kind == HEIC_COLR_NCLX) {
                 decoded->color_primaries =

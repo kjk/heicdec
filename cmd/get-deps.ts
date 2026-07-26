@@ -54,7 +54,7 @@ const FOX_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v4-avif-fox+grid+alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm";
+  "v5-avif-fox+grid+alpha+sequence;unci-block;mini-hevc+av1;hevc-sequences+pcm";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
@@ -89,6 +89,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(stampPath) &&
     existsSync(join(avifDir, "grid_2x2.avif")) &&
     existsSync(join(avifDir, "alpha.avif")) &&
+    existsSync(join(avifDir, "sequence_3frame.avif")) &&
     existsSync(join(unciDir, "rgb8_block_pixel_le.heif")) &&
     existsSync(join(miniDir, "hevc32-mini.heif")) &&
     existsSync(join(miniDir, "avif32-mini.heif")) &&

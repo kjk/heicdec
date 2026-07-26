@@ -150,6 +150,119 @@ static Dav1dContext *ensure_dav1d(heic_ctx *ctx)
     return c;
 }
 
+struct heic_av1_sequence_state {
+    heic_ctx *ctx;
+    Dav1dContext *decoder;
+    int config_sent;
+};
+
+heic_av1_sequence_state *heic_av1_sequence_new(heic_ctx *ctx)
+{
+    heic_av1_sequence_state *state;
+    Dav1dSettings settings;
+    if (!ctx) return NULL;
+    state = (heic_av1_sequence_state *)heic_zalloc(ctx, sizeof(*state));
+    if (!state) return NULL;
+    state->ctx = ctx;
+    dav1d_default_settings(&settings);
+    settings.n_threads = 1;
+    settings.apply_grain = 0;
+    settings.max_frame_delay = 1;
+    settings.logger.callback = NULL;
+    if (ctx->limits.max_pixels)
+        settings.frame_size_limit = (unsigned)ctx->limits.max_pixels;
+    if (dav1d_open(&state->decoder, &settings) != 0) {
+        heic_free_buf(ctx, state);
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "dav1d_open failed");
+        return NULL;
+    }
+    return state;
+}
+
+void heic_av1_sequence_destroy(heic_av1_sequence_state *state)
+{
+    heic_ctx *ctx;
+    if (!state) return;
+    ctx = state->ctx;
+    if (state->decoder) dav1d_close(&state->decoder);
+    heic_free_buf(ctx, state);
+}
+
+static int sequence_send_config(heic_av1_sequence_state *state,
+                                const heic_av1c *cfg)
+{
+    Dav1dData data;
+    int spins = 0;
+    if (state->config_sent || !cfg || !cfg->config_obus_len) {
+        state->config_sent = 1;
+        return 0;
+    }
+    memset(&data, 0, sizeof(data));
+    if (dav1d_data_wrap(&data, cfg->config_obus, cfg->config_obus_len,
+                        dav1d_data_free_nop, NULL) != 0)
+        return -1;
+    while (data.sz && spins++ < 32) {
+        int res = dav1d_send_data(state->decoder, &data);
+        if (res == 0) continue;
+        if (res == DAV1D_ERR(EAGAIN)) {
+            Dav1dPicture pic;
+            memset(&pic, 0, sizeof(pic));
+            res = dav1d_get_picture(state->decoder, &pic);
+            if (res == 0) {
+                dav1d_picture_unref(&pic);
+                continue;
+            }
+        }
+        if (data.sz) dav1d_data_unref(&data);
+        return -1;
+    }
+    if (data.sz) {
+        dav1d_data_unref(&data);
+        return -1;
+    }
+    state->config_sent = 1;
+    return 0;
+}
+
+int heic_av1_sequence_decode(heic_av1_sequence_state *state,
+                             const heic_av1c *cfg,
+                             const uint8_t *data, size_t len,
+                             heic_frame *out, const heic_abort *ab)
+{
+    Dav1dData input;
+    int spins = 0, rc = -1;
+    if (!state || !state->decoder || !data || !len || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&input, 0, sizeof(input));
+    if (heic_abort_check(ab)
+        || sequence_send_config(state, cfg) != 0
+        || dav1d_data_wrap(&input, data, len,
+                           dav1d_data_free_nop, NULL) != 0)
+        return -1;
+    while (spins++ < 64) {
+        int res;
+        Dav1dPicture pic;
+        if (heic_abort_check(ab)) break;
+        if (input.sz) {
+            res = dav1d_send_data(state->decoder, &input);
+            if (res != 0 && res != DAV1D_ERR(EAGAIN)) break;
+        }
+        memset(&pic, 0, sizeof(pic));
+        res = dav1d_get_picture(state->decoder, &pic);
+        if (res == 0) {
+            rc = picture_to_frame(state->ctx, &pic, out);
+            dav1d_picture_unref(&pic);
+            break;
+        }
+        if (res != DAV1D_ERR(EAGAIN) || !input.sz) break;
+    }
+    if (input.sz) dav1d_data_unref(&input);
+    if (rc != 0)
+        heic_error(state->ctx, HEIC_SEVERITY_ERROR,
+                   "dav1d produced no sequence picture");
+    return rc;
+}
+
 /* Push all of *pd into the decoder (handles EAGAIN by draining nothing —
  * stills are small). Returns 0 ok, <0 fatal, and leaves *pd.sz==0 when fully
  * consumed. */
@@ -293,6 +406,37 @@ int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
     if (ctx)
         heic_error(ctx, HEIC_SEVERITY_ERROR,
                    "AV1 decode requires dav1d (build with HEIC_HAVE_DAV1D)");
+    return -1;
+}
+
+struct heic_av1_sequence_state {
+    heic_ctx *ctx;
+};
+
+heic_av1_sequence_state *heic_av1_sequence_new(heic_ctx *ctx)
+{
+    if (ctx)
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "AV1 decode requires dav1d (build with HEIC_HAVE_DAV1D)");
+    return NULL;
+}
+
+void heic_av1_sequence_destroy(heic_av1_sequence_state *state)
+{
+    (void)state;
+}
+
+int heic_av1_sequence_decode(heic_av1_sequence_state *state,
+                             const heic_av1c *cfg,
+                             const uint8_t *data, size_t len,
+                             heic_frame *out, const heic_abort *ab)
+{
+    (void)state;
+    (void)cfg;
+    (void)data;
+    (void)len;
+    (void)ab;
+    if (out) memset(out, 0, sizeof(*out));
     return -1;
 }
 
