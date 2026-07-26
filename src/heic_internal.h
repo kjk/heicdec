@@ -828,6 +828,13 @@ typedef struct {
     int      ref_pic_list_modification_flag_l1;
     uint8_t  list_entry_l0[HEIC_MAX_REF_PICS];
     uint8_t  list_entry_l1[HEIC_MAX_REF_PICS];
+    int      has_pred_weight_table;
+    uint8_t  luma_log2_weight_denom;
+    uint8_t  chroma_log2_weight_denom;
+    int16_t  luma_weight[2][HEIC_MAX_REF_PICS];
+    int16_t  luma_offset[2][HEIC_MAX_REF_PICS];
+    int16_t  chroma_weight[2][HEIC_MAX_REF_PICS][2];
+    int16_t  chroma_offset[2][HEIC_MAX_REF_PICS][2];
     int      mvd_l1_zero_flag;
     int      collocated_from_l0_flag;
     uint8_t  collocated_ref_idx;

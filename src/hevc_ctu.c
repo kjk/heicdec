@@ -817,6 +817,57 @@ static heic_pb_motion resolve_motion(heic_slice_ctx *sc, heic_pb_coding coding,
     }
 }
 
+static void apply_uni_weight(heic_slice_ctx *sc, const heic_pu *pu,
+                             int ref_idx)
+{
+    const heic_slice_header *sh = sc->sh;
+    uint32_t x, y;
+    int max_y = (1 << bit_depth_y(sc->sps)) - 1;
+    int round_y = sh->luma_log2_weight_denom
+        ? 1 << (sh->luma_log2_weight_denom - 1) : 0;
+    int offset_y = sh->luma_offset[0][ref_idx]
+                 * (1 << (bit_depth_y(sc->sps) - 8));
+    for (y = 0; y < pu->h && pu->y + y < (uint32_t)sc->frame->height; y++)
+        for (x = 0; x < pu->w && pu->x + x < (uint32_t)sc->frame->width; x++) {
+            size_t pos = (size_t)(pu->y + y) * sc->frame->y_stride
+                       + pu->x + x;
+            int v = (sh->luma_weight[0][ref_idx] * sc->frame->y[pos]
+                     + round_y) >> sh->luma_log2_weight_denom;
+            sc->frame->y[pos] =
+                (uint16_t)clip_int(v + offset_y, 0, max_y);
+        }
+
+    if (sc->frame->chroma_format != 0) {
+        int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
+        int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
+        uint32_t cx = pu->x / (uint32_t)sub_x;
+        uint32_t cy = pu->y / (uint32_t)sub_y;
+        uint32_t cw = pu->w / (uint32_t)sub_x;
+        uint32_t ch = pu->h / (uint32_t)sub_y;
+        int max_c = (1 << bit_depth_c(sc->sps)) - 1;
+        int round_c = sh->chroma_log2_weight_denom
+            ? 1 << (sh->chroma_log2_weight_denom - 1) : 0;
+        uint16_t *planes[2] = {sc->frame->cb, sc->frame->cr};
+        int c;
+        for (c = 0; c < 2; c++) {
+            int offset_c = sh->chroma_offset[0][ref_idx][c]
+                         * (1 << (bit_depth_c(sc->sps) - 8));
+            for (y = 0; y < ch
+                        && cy + y < (uint32_t)sc->frame->c_height; y++)
+                for (x = 0; x < cw
+                            && cx + x < (uint32_t)sc->frame->c_width; x++) {
+                    size_t pos = (size_t)(cy + y) * sc->frame->c_stride
+                               + cx + x;
+                    int v = (sh->chroma_weight[0][ref_idx][c]
+                             * planes[c][pos] + round_c)
+                          >> sh->chroma_log2_weight_denom;
+                    planes[c][pos] =
+                        (uint16_t)clip_int(v + offset_c, 0, max_c);
+                }
+        }
+    }
+}
+
 static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
                         heic_pb_motion motion)
 {
@@ -830,9 +881,13 @@ static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
                      pu->x, pu->y, pu->w, pu->h,
                      sc->mc_scratch, 72u * 72u) != 0)
         return -1;
-    return heic_mc_chroma(ref, sc->frame, motion.mv[0],
-                          pu->x, pu->y, pu->w, pu->h,
-                          sc->mc_scratch, 72u * 72u);
+    if (heic_mc_chroma(ref, sc->frame, motion.mv[0],
+                       pu->x, pu->y, pu->w, pu->h,
+                       sc->mc_scratch, 72u * 72u) != 0)
+        return -1;
+    if (sc->sh->has_pred_weight_table)
+        apply_uni_weight(sc, pu, motion.ref_idx[0]);
+    return 0;
 }
 
 static int decode_rqt_root_cbf(heic_slice_ctx *sc)

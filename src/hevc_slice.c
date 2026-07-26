@@ -23,6 +23,75 @@ static int nal_is_irap(heic_nal_type t)
     return t >= HEIC_NAL_BLA_W_LP && t <= HEIC_NAL_CRA;
 }
 
+static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
+                                   heic_slice_header *sh)
+{
+    uint8_t luma_flag[2][HEIC_MAX_REF_PICS] = {{0}};
+    uint8_t chroma_flag[2][HEIC_MAX_REF_PICS] = {{0}};
+    uint32_t denom = heic_bs_ue(bs);
+    int lists = sh->slice_type == HEIC_SLICE_B ? 2 : 1;
+    int list, i, c;
+    if (denom > 7) return -1;
+    sh->luma_log2_weight_denom = (uint8_t)denom;
+    if (sps->chroma_format_idc != 0) {
+        int delta = heic_bs_se(bs);
+        int chroma_denom = (int)denom + delta;
+        if (chroma_denom < 0) chroma_denom = 0;
+        if (chroma_denom > 7) chroma_denom = 7;
+        sh->chroma_log2_weight_denom = (uint8_t)chroma_denom;
+    }
+    for (list = 0; list < lists; list++) {
+        int n = list ? sh->num_ref_idx_l1_active
+                     : sh->num_ref_idx_l0_active;
+        for (i = 0; i < n; i++)
+            luma_flag[list][i] = (uint8_t)heic_bs_bit(bs);
+        if (sps->chroma_format_idc != 0)
+            for (i = 0; i < n; i++)
+                chroma_flag[list][i] = (uint8_t)heic_bs_bit(bs);
+        for (i = 0; i < n; i++) {
+            int luma_denom = 1 << sh->luma_log2_weight_denom;
+            int chroma_denom = 1 << sh->chroma_log2_weight_denom;
+            sh->luma_weight[list][i] = (int16_t)luma_denom;
+            if (luma_flag[list][i]) {
+                int delta = heic_bs_se(bs);
+                int offset;
+                if (delta < -128 || delta > 127) return -1;
+                sh->luma_weight[list][i] =
+                    (int16_t)(luma_denom + delta);
+                offset = heic_bs_se(bs);
+                if (offset < -128 || offset > 127) return -1;
+                sh->luma_offset[list][i] = (int16_t)offset;
+            }
+            for (c = 0; c < 2; c++)
+                sh->chroma_weight[list][i][c] =
+                    (int16_t)chroma_denom;
+            if (chroma_flag[list][i]) {
+                for (c = 0; c < 2; c++) {
+                    int delta = heic_bs_se(bs);
+                    int offset, round, wp_offset;
+                    if (delta < -128 || delta > 127) return -1;
+                    sh->chroma_weight[list][i][c] =
+                        (int16_t)(chroma_denom + delta);
+                    offset = heic_bs_se(bs);
+                    if (offset < -128 || offset > 127) return -1;
+                    round = sh->chroma_log2_weight_denom
+                        ? 1 << (sh->chroma_log2_weight_denom - 1) : 0;
+                    wp_offset = offset
+                        - ((128 * sh->chroma_weight[list][i][c] + round)
+                           >> sh->chroma_log2_weight_denom)
+                        + 128;
+                    if (wp_offset < -128) wp_offset = -128;
+                    if (wp_offset > 127) wp_offset = 127;
+                    sh->chroma_offset[list][i][c] =
+                        (int16_t)wp_offset;
+                }
+            }
+        }
+    }
+    sh->has_pred_weight_table = 1;
+    return bs->error ? -1 : 0;
+}
+
 int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                             const heic_sps *sps, const heic_pps *pps,
                             heic_slice_header *out)
@@ -206,9 +275,11 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             && out->num_ref_idx_l0_active > 1)
             out->collocated_ref_idx = (uint8_t)heic_bs_ue(&bs);
         if (pps->weighted_pred_flag) {
-            heic_error(ctx, HEIC_SEVERITY_ERROR,
-                       "weighted P prediction not supported");
-            return -1;
+            if (parse_pred_weight_table(&bs, sps, out) != 0) {
+                heic_error(ctx, HEIC_SEVERITY_ERROR,
+                           "invalid weighted prediction table");
+                return -1;
+            }
         }
         {
             uint32_t five_minus = heic_bs_ue(&bs);
