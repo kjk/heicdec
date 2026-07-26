@@ -84,6 +84,17 @@ Override with `HEIC_SPECS=<dir>`.
 
 Requires `clang` or MSVC `cl`, `bun`, `git`.
 
+The Windows harness vendors `test/winperf_control.h`, so a **winperf** checkout
+is not required to compile. To record profiles, first look for the private
+winperf repository at `..\winperf`. If it is absent, try to clone it there:
+
+```
+git clone https://github.com/kjk/winperf ..\winperf
+```
+
+The clone requires access to the private repository. Keep the vendored header
+in sync with `..\winperf\client\winperf_control.h`.
+
 ```
 bun cmd/get-deps.ts      # clone deps + fill deps/testimages (auto-run by build/tests)
 bun cmd/build.ts         # build library + heic_test harness (MSVC default on Win)

@@ -81,7 +81,7 @@ export function cleanBuildOutput(): void {
   rmSync(OUT_ROOT, { recursive: true, force: true });
 }
 
-/* -Zi: CodeView for .pdb (samply / VS). -O2 keeps release-ish speed for bench. */
+/* -Zi: CodeView for .pdb (winperf / VS). -O2 keeps release-ish speed for bench. */
 export const MSVC_CL_COMMON = `-nologo -O2 -Ob3 -Zi -MT`;
 export const HEIC_MSVC_CL_C =
   `${MSVC_CL_COMMON} -W4 -WX -std:c11 -D_CRT_SECURE_NO_WARNINGS`;
@@ -90,7 +90,7 @@ export const HEIC_CLANG_C_WARN =
   "-Wall -Wextra -Wuninitialized -Winit-self -Werror";
 const HEIC_CLANG_C_STD = "-std=c11";
 
-/** Debug info: DWARF on *nix; CodeView PDB on Windows (samply).
+/** Debug info: DWARF on *nix; CodeView PDB on Windows (winperf).
  *  hevc_simd.c uses SSE4.1/SSSE3 intrinsics; clang requires -msse4.1 so
  *  always_inline intrinsics may be inlined into the TU (MSVC does not). */
 export function clangCFlags(opt = "-g -O3", win = isWindows): string {
@@ -411,7 +411,7 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
   const msvcC = withLibheif
     ? HEIC_MSVC_CL_C.replace(/\s-MT\b/, " -MD")
     : HEIC_MSVC_CL_C;
-  /* One PDB for all objs + the final exe (samply symbolicates from this). */
+  /* One PDB for all objs + the final exe (winperf symbolicates from this). */
   const pdb = `${dir}/heic_test_msvc.pdb`;
   const clC = `${msvcC}${def}${inc} -Fo${dir}/ -Fd${pdb} -c`;
   for (const u of units) {

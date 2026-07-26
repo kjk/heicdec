@@ -46,9 +46,9 @@
 
 ## Perf (2026-07)
 
-- MSVC harness builds emit `out/msvc/heic_test_msvc.pdb` (`-Zi` + link `-DEBUG`) for samply.
-- `heic_test -profile-heic N` / `-profile-libheif N` loop decode under samply section marks.
-- Profile-guided wins on HEVC stills (samply `-print-agent` on `nokia_444` 2048×2048):
+- MSVC harness builds emit `out/msvc/heic_test_msvc.pdb` (`-Zi` + link `-DEBUG`) for winperf.
+- `heic_test -profile-heic N` / `-profile-libheif N` loop decode under winperf section marks.
+- Profile-guided wins on HEVC stills (winperf on `nokia_444` 2048×2048):
   - IDCT: pure-DC fast path + skip zero columns (idct8/16/32)
   - Color: specialized 8-bit full/limited 4:4:4 and 4:2:0 RGB loops (no per-pixel UNINIT)
   - Intra: direct plane writes (no bounds checks); DC row fill

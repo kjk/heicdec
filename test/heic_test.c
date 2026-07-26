@@ -5,7 +5,7 @@
  *   heic_test -exif file.heic
  *   heic_test -bench file.heic   # needs HEIC_HAVE_LIBHEIF (libheif + libde265)
  *   heic_test -verify file.heic  # pixel MSE vs libheif (optional)
- *   heic_test -profile-heic N file.heic     # loop decode N times (samply marks)
+ *   heic_test -profile-heic N file.heic     # loop decode N times (winperf marks)
  *   heic_test -profile-libheif N file.heic  # same for libheif (needs oracle)
  */
 #include "heic.h"
@@ -23,12 +23,12 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-/* Sibling checkout: exp/samply/client — no-op when not under `samply record`. */
-#include "../../samply/client/samply_control.h"
+/* Vendored control client; calls are no-ops when winperf is not recording. */
+#include "winperf_control.h"
 #else
 #include <time.h>
-static void samply_profile_start(void) {}
-static void samply_profile_stop(void) {}
+static void winperf_profile_start(void) {}
+static void winperf_profile_stop(void) {}
 #endif
 
 static void on_error(void *user, heic_severity sev, const char *msg)
@@ -504,7 +504,7 @@ done:
 }
 #endif
 
-/* Loop open/decode/close N times with samply section marks around decode.
+/* Loop open/decode/close N times with winperf section marks around decode.
  * One heic_ctx is reused so cached backends (dav1d) stay warm across loops. */
 static int do_profile_heic(const uint8_t *data, size_t len, int loops)
 {
@@ -525,11 +525,11 @@ static int do_profile_heic(const uint8_t *data, size_t len, int loops)
             heic_ctx_free(ctx);
             return 1;
         }
-        samply_profile_start();
+        winperf_profile_start();
         t0 = bench_now_ms();
         img = heic_doc_decode(doc, HEIC_FORMAT_RGB);
         total += bench_now_ms() - t0;
-        samply_profile_stop();
+        winperf_profile_stop();
         if (!img) {
             heic_doc_close(doc);
             heic_ctx_free(ctx);
@@ -558,12 +558,12 @@ static int do_profile_libheif(const uint8_t *data, size_t len, int loops)
         heic_bench_session s;
         memset(&s, 0, sizeof(s));
         /* Mark whole session; open/close are tiny vs decode on big stills. */
-        samply_profile_start();
+        winperf_profile_start();
         if (heic_bench_libheif_session(data, len, &s) != 0 || !s.ok) {
-            samply_profile_stop();
+            winperf_profile_stop();
             return 1;
         }
-        samply_profile_stop();
+        winperf_profile_stop();
         total += s.decode_ms;
         w = s.width;
         h = s.height;
