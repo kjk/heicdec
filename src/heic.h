@@ -129,6 +129,39 @@ typedef struct {
     uint8_t    *data;     /* owned; free with heic_image_destroy */
 } heic_image;
 
+/* ----- image sequences ----- */
+
+/* Sequence timing uses timescale ticks. repetition_count is 1 without an
+   edit-list loop, 0 for an unrecognized edit pattern, or UINT32_MAX for an
+   indefinite loop. frame_count describes one bounded presentation pass;
+   callers repeat that pass according to repetition_count. */
+typedef struct {
+    uint32_t frame_count;
+    uint32_t timescale;
+    uint64_t duration;
+    uint32_t repetition_count;
+} heic_sequence_info;
+
+typedef struct {
+    uint64_t presentation_time;
+    uint32_t duration;
+    int      is_sync;
+} heic_sequence_frame_info;
+
+/* Return 0 for a sequence document, -1 for a still image or malformed
+   sequence timeline. Frame indices are in presentation order after applying
+   supported edit-list entries and composition offsets. */
+int heic_doc_sequence_info(const heic_doc *doc, heic_sequence_info *info);
+int heic_doc_sequence_frame_info(const heic_doc *doc, uint32_t frame_index,
+                                 heic_sequence_frame_info *info);
+
+/* Decode one presentation frame. Inter frames are decoded from the nearest
+   preceding sync sample. */
+heic_image *heic_doc_decode_sequence_frame(heic_doc *doc, uint32_t frame_index,
+                                           heic_format format);
+heic_image *heic_doc_decode_sequence_frame_abortable(
+    heic_doc *doc, uint32_t frame_index, heic_format format, heic_abort *ab);
+
 /* Decode the primary image. Returns NULL on error; free with
    heic_image_destroy(ctx, img). 8-bit output; 10/12-bit sources are
    right-shifted (no EOTF / tone-map). */

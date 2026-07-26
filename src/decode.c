@@ -1120,6 +1120,106 @@ heic_image *heic_doc_decode_abortable(heic_doc *doc, heic_format format, heic_ab
     return img;
 }
 
+static heic_image *sequence_frame_to_image(heic_ctx *ctx, heic_frame *frame,
+                                           heic_format format)
+{
+    heic_image *img;
+    int bpp, w = frame_cropped_w(frame), h = frame_cropped_h(frame);
+    size_t need;
+    if (w <= 0 || h <= 0) return NULL;
+    bpp = (format == HEIC_FORMAT_RGBA || format == HEIC_FORMAT_BGRA) ? 4 : 3;
+    if ((size_t)w > SIZE_MAX / (size_t)bpp
+        || (size_t)w * (size_t)bpp > SIZE_MAX / (size_t)h)
+        return NULL;
+    need = (size_t)w * (size_t)h * (size_t)bpp;
+    img = (heic_image *)heic_zalloc(ctx, sizeof(heic_image));
+    if (!img) return NULL;
+    img->width = (uint32_t)w;
+    img->height = (uint32_t)h;
+    img->format = format;
+    img->stride = w * bpp;
+    img->data = (uint8_t *)ctx->alloc(ctx->user, ctx, need);
+    if (!img->data
+        || heic_frame_to_rgb(ctx, frame, format, img->data, img->stride) != 0) {
+        heic_image_destroy(ctx, img);
+        return NULL;
+    }
+    return img;
+}
+
+heic_image *heic_doc_decode_sequence_frame_abortable(
+    heic_doc *doc, uint32_t frame_index, heic_format format, heic_abort *ab)
+{
+    const heic_sequence *seq;
+    const heic_sequence_sample *sample;
+    heic_item item;
+    heic_frame refs[HEIC_MAX_REF_PICS];
+    const heic_frame *ref_ptrs[HEIC_MAX_REF_PICS];
+    heic_frame frame;
+    heic_image *img = NULL;
+    uint32_t target, start, i;
+    int n_refs = 0, j;
+    if (!doc || !(seq = doc->container.sequence)
+        || frame_index >= seq->frame_count
+        || heic_container_get_item(&doc->container,
+                                   doc->container.primary_item_id, &item) != 0
+        || !item.hvcc)
+        return NULL;
+    target = seq->frame_samples[frame_index];
+    if (target >= seq->sample_count) return NULL;
+    start = target;
+    while (start > 0 && !seq->samples[start].is_sync) start--;
+    if (!seq->samples[start].is_sync) return NULL;
+
+    memset(refs, 0, sizeof(refs));
+    memset(&frame, 0, sizeof(frame));
+    for (i = start; i <= target; i++) {
+        heic_frame decoded;
+        sample = &seq->samples[i];
+        if (heic_abort_check(ab)) goto done;
+        for (j = 0; j < n_refs; j++) ref_ptrs[j] = &refs[j];
+        memset(&decoded, 0, sizeof(decoded));
+        if (heic_hevc_decode_refs(doc->ctx, item.hvcc,
+                                  doc->data + sample->offset, sample->size,
+                                  ref_ptrs, n_refs, &decoded, ab) != 0) {
+            heic_frame_free(doc->ctx, &decoded);
+            goto done;
+        }
+        if (i == target) {
+            frame = decoded;
+            break;
+        }
+        if (n_refs == HEIC_MAX_REF_PICS) {
+            heic_frame_free(doc->ctx, &refs[n_refs - 1]);
+            n_refs--;
+        }
+        for (j = n_refs; j > 0; j--) refs[j] = refs[j - 1];
+        refs[0] = decoded;
+        n_refs++;
+    }
+    if (item.colr && item.colr->kind == HEIC_COLR_NCLX) {
+        frame.color_primaries = (uint8_t)item.colr->color_primaries;
+        frame.transfer_characteristics =
+            (uint8_t)item.colr->transfer_characteristics;
+        frame.matrix_coeffs = (uint8_t)item.colr->matrix_coefficients;
+        frame.full_range = item.colr->full_range;
+    }
+    if (apply_transforms(doc->ctx, &frame, &item) != 0) goto done;
+    img = sequence_frame_to_image(doc->ctx, &frame, format);
+done:
+    heic_frame_free(doc->ctx, &frame);
+    for (j = 0; j < n_refs; j++) heic_frame_free(doc->ctx, &refs[j]);
+    return img;
+}
+
+heic_image *heic_doc_decode_sequence_frame(heic_doc *doc,
+                                           uint32_t frame_index,
+                                           heic_format format)
+{
+    return heic_doc_decode_sequence_frame_abortable(
+        doc, frame_index, format, NULL);
+}
+
 int heic_doc_decode_into(heic_doc *doc, heic_format format,
                          uint8_t *buf, size_t buf_size, int stride)
 {

@@ -795,6 +795,7 @@ int main(int argc, char **argv)
     int do_info = 0, do_exif = 0, do_decode = 0, do_thumbnail = 0;
     int do_bench_mode = 0, do_verify_mode = 0;
     int do_hevc_sequence_mode = 0;
+    int do_sequence_info = 0, sequence_frame = -1;
     int profile_heic_loops = 0, profile_libheif_loops = 0;
     int hevc_sequence_frames = 512;
     int want_rgba = 0;
@@ -812,6 +813,12 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-rgba") == 0) want_rgba = 1;
         else if (strcmp(argv[i], "-bench") == 0) do_bench_mode = 1;
         else if (strcmp(argv[i], "-verify") == 0) do_verify_mode = 1;
+        else if (strcmp(argv[i], "-sequence-info") == 0)
+            do_sequence_info = 1;
+        else if (strcmp(argv[i], "-sequence-frame") == 0 && i + 1 < argc) {
+            sequence_frame = atoi(argv[++i]);
+            if (sequence_frame < 0) sequence_frame = -1;
+        }
         else if (strcmp(argv[i], "-hevc-sequence") == 0)
             do_hevc_sequence_mode = 1;
         else if (strcmp(argv[i], "-hevc-frames") == 0 && i + 1 < argc) {
@@ -831,12 +838,15 @@ int main(int argc, char **argv)
         } else if (argv[i][0] != '-')
             path = argv[i];
     }
+    if (sequence_frame >= 0) do_decode = 0;
     if (!path ||
         (!do_info && !do_exif && !do_decode && !do_bench_mode
          && !do_verify_mode && !do_hevc_sequence_mode
+         && !do_sequence_info && sequence_frame < 0
          && !profile_heic_loops && !profile_libheif_loops)) {
         fprintf(stderr,
                 "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bench] [-verify] "
+                "[-sequence-info] [-sequence-frame N] "
                 "[-hevc-sequence [-hevc-frames N]] "
                 "[-profile-heic N] [-profile-libheif N] "
                 "[-out out.ppm] file.heic\n");
@@ -919,6 +929,52 @@ int main(int argc, char **argv)
                (unsigned)info.width, (unsigned)info.height, kind_str(heic_doc_kind(doc)),
                info.bit_depth, info.has_alpha, info.has_exif, info.has_xmp,
                info.has_thumbnail);
+        rc = 0;
+    }
+
+    if (do_sequence_info) {
+        heic_sequence_info info;
+        uint32_t frame;
+        if (heic_doc_sequence_info(doc, &info) != 0) {
+            fprintf(stderr, "sequence info failed\n");
+            goto done;
+        }
+        printf("sequence frames=%u timescale=%u duration=%llu repetitions=%u\n",
+               (unsigned)info.frame_count, (unsigned)info.timescale,
+               (unsigned long long)info.duration,
+               (unsigned)info.repetition_count);
+        for (frame = 0; frame < info.frame_count; frame++) {
+            heic_sequence_frame_info fi;
+            if (heic_doc_sequence_frame_info(doc, frame, &fi) != 0) {
+                fprintf(stderr, "sequence frame info failed at %u\n",
+                        (unsigned)frame);
+                goto done;
+            }
+            printf("frame %u time=%llu duration=%u sync=%d\n",
+                   (unsigned)frame,
+                   (unsigned long long)fi.presentation_time,
+                   (unsigned)fi.duration, fi.is_sync);
+        }
+        rc = 0;
+    }
+
+    if (sequence_frame >= 0) {
+        heic_format fmt = want_rgba ? HEIC_FORMAT_RGBA : HEIC_FORMAT_RGB;
+        heic_image *img = heic_doc_decode_sequence_frame(
+            doc, (uint32_t)sequence_frame, fmt);
+        if (!img) {
+            fprintf(stderr, "sequence frame decode failed\n");
+            goto done;
+        }
+        if (out_path && write_ppm(out_path, img) != 0) {
+            fprintf(stderr, "write %s failed\n", out_path);
+            heic_image_destroy(ctx, img);
+            goto done;
+        }
+        printf("sequence frame %d decoded %ux%u%s%s\n", sequence_frame,
+               (unsigned)img->width, (unsigned)img->height,
+               out_path ? " wrote " : "", out_path ? out_path : "");
+        heic_image_destroy(ctx, img);
         rc = 0;
     }
 

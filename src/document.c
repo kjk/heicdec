@@ -61,6 +61,33 @@ heic_kind heic_doc_kind(const heic_doc *doc)
     return doc ? doc->kind : HEIC_KIND_UNKNOWN;
 }
 
+int heic_doc_sequence_info(const heic_doc *doc, heic_sequence_info *info)
+{
+    const heic_sequence *seq;
+    if (!doc || !info || !(seq = doc->container.sequence)) return -1;
+    info->frame_count = seq->frame_count;
+    info->timescale = seq->timescale;
+    info->duration = seq->duration;
+    info->repetition_count = seq->repetition_count;
+    return 0;
+}
+
+int heic_doc_sequence_frame_info(const heic_doc *doc, uint32_t frame_index,
+                                 heic_sequence_frame_info *info)
+{
+    const heic_sequence *seq;
+    uint32_t sample;
+    if (!doc || !info || !(seq = doc->container.sequence)
+        || frame_index >= seq->frame_count)
+        return -1;
+    sample = seq->frame_samples[frame_index];
+    if (sample >= seq->sample_count) return -1;
+    info->presentation_time = seq->frame_times[frame_index];
+    info->duration = seq->frame_durations[frame_index];
+    info->is_sync = seq->samples[sample].is_sync;
+    return 0;
+}
+
 static int primary_item(const heic_doc *doc, heic_item *item)
 {
     if (!doc) return -1;

@@ -1,8 +1,9 @@
 /* fuzz_target.c -- libFuzzer / AFL++ entry point for the HEIC/HEIF/AVIF decoder.
  *
  * Each input is treated as a whole .heic/.heif/.avif file: open it, probe
- * info, decode primary + thumbnail, pull EXIF/XMP/ICC so malformed bytes
- * reach the container, HEVC, unci, and (when linked) dav1d paths.
+ * info, decode primary + thumbnail/sequence frame, pull EXIF/XMP/ICC so
+ * malformed bytes reach the container, HEVC, unci, and (when linked) dav1d
+ * paths.
  *
  * Drivers (same LLVMFuzzerTestOneInput, shared fuzz/corpus/):
  *   bun cmd/fuzz.ts      clang -fsanitize=address,fuzzer (libFuzzer main)
@@ -52,6 +53,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     heic_ctx *ctx;
     heic_doc *doc;
     heic_image_info info;
+    heic_sequence_info seq;
+    heic_sequence_frame_info frame_info;
     heic_image *img;
     heic_limits lim;
     uint8_t *meta;
@@ -92,6 +95,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     if (info.has_thumbnail) {
         img = heic_doc_decode_thumbnail(doc, HEIC_FORMAT_RGB);
+        if (img) heic_image_destroy(ctx, img);
+    }
+
+    if (heic_doc_sequence_info(doc, &seq) == 0 && seq.frame_count) {
+        uint32_t frame = seq.frame_count <= 32 ? seq.frame_count - 1 : 0;
+        (void)heic_doc_sequence_frame_info(doc, 0, &frame_info);
+        (void)heic_doc_sequence_frame_info(doc, frame, &frame_info);
+        img = heic_doc_decode_sequence_frame(doc, frame, HEIC_FORMAT_RGB);
         if (img) heic_image_destroy(ctx, img);
     }
 

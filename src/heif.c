@@ -190,6 +190,13 @@ void heic_container_free(heic_container *c)
     for (i = 0; i < c->n_item_references; i++)
         heic_free_buf(ctx, c->item_references[i].to_item_ids);
     heic_free_buf(ctx, c->item_references);
+    if (c->sequence) {
+        heic_free_buf(ctx, c->sequence->samples);
+        heic_free_buf(ctx, c->sequence->frame_samples);
+        heic_free_buf(ctx, c->sequence->frame_times);
+        heic_free_buf(ctx, c->sequence->frame_durations);
+        heic_free_buf(ctx, c->sequence);
+    }
     memset(c, 0, sizeof(*c));
 }
 
@@ -1425,9 +1432,28 @@ typedef struct {
 } heic_seq_stsc;
 
 typedef struct {
+    uint32_t count;
+    uint32_t delta;
+} heic_seq_stts;
+
+typedef struct {
+    uint32_t count;
+    int64_t offset;
+} heic_seq_ctts;
+
+typedef struct {
+    uint64_t segment_duration;
+    int64_t media_time;
+    int16_t rate_integer;
+    int16_t rate_fraction;
+} heic_seq_edit;
+
+typedef struct {
     uint32_t track_id;
     uint32_t width, height;
     heic_fourcc handler_type;
+    uint32_t media_timescale;
+    uint64_t media_duration;
     heic_hvcc hvcc;
     heic_colr colr;
     int has_hvcc;
@@ -1441,6 +1467,13 @@ typedef struct {
     uint32_t n_sample_to_chunk;
     uint32_t *sync_samples;
     uint32_t n_sync_samples;
+    heic_seq_stts *time_to_sample;
+    uint32_t n_time_to_sample;
+    heic_seq_ctts *composition_offsets;
+    uint32_t n_composition_offsets;
+    heic_seq_edit *edits;
+    uint32_t n_edits;
+    int edit_repeat;
 } heic_seq_track;
 
 static void seq_free_track(heic_ctx *ctx, heic_seq_track *t)
@@ -1452,7 +1485,85 @@ static void seq_free_track(heic_ctx *ctx, heic_seq_track *t)
     heic_free_buf(ctx, t->chunk_offsets);
     heic_free_buf(ctx, t->sample_to_chunk);
     heic_free_buf(ctx, t->sync_samples);
+    heic_free_buf(ctx, t->time_to_sample);
+    heic_free_buf(ctx, t->composition_offsets);
+    heic_free_buf(ctx, t->edits);
     memset(t, 0, sizeof(*t));
+}
+
+static int seq_parse_duration_header(const heic_box *b, uint32_t *timescale,
+                                     uint64_t *duration)
+{
+    const uint8_t *p = b->content;
+    if (b->content_len < 4) return -1;
+    if (p[0] == 0) {
+        if (b->content_len < 20) return -1;
+        *timescale = heic_rb32(p + 12);
+        *duration = heic_rb32(p + 16);
+    } else if (p[0] == 1) {
+        if (b->content_len < 32) return -1;
+        *timescale = heic_rb32(p + 20);
+        *duration = heic_rb64(p + 24);
+    } else {
+        return -1;
+    }
+    return *timescale ? 0 : -1;
+}
+
+static int seq_parse_mdhd(const heic_box *b, heic_seq_track *t)
+{
+    return seq_parse_duration_header(b, &t->media_timescale,
+                                     &t->media_duration);
+}
+
+static int seq_parse_elst(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t)
+{
+    uint32_t count, i;
+    size_t pos, unit;
+    int version;
+    if (b->content_len < 8 || t->edits) return -1;
+    version = b->content[0];
+    if (version != 0 && version != 1) return -1;
+    t->edit_repeat = (b->content[3] & 1) != 0;
+    count = heic_rb32(b->content + 4);
+    unit = version ? 20u : 12u;
+    if (!count || count > HEIC_SEQ_MAX_ENTRIES
+        || (size_t)count > (b->content_len - 8) / unit)
+        return -1;
+    t->edits = (heic_seq_edit *)heic_zalloc(
+        ctx, (size_t)count * sizeof(heic_seq_edit));
+    if (!t->edits) return -1;
+    t->n_edits = count;
+    pos = 8;
+    for (i = 0; i < count; i++, pos += unit) {
+        heic_seq_edit *e = &t->edits[i];
+        if (version) {
+            e->segment_duration = heic_rb64(b->content + pos);
+            e->media_time = (int64_t)heic_rb64(b->content + pos + 8);
+            e->rate_integer = (int16_t)heic_rb16(b->content + pos + 16);
+            e->rate_fraction = (int16_t)heic_rb16(b->content + pos + 18);
+        } else {
+            e->segment_duration = heic_rb32(b->content + pos);
+            e->media_time = (int32_t)heic_rb32(b->content + pos + 4);
+            e->rate_integer = (int16_t)heic_rb16(b->content + pos + 8);
+            e->rate_fraction = (int16_t)heic_rb16(b->content + pos + 10);
+        }
+    }
+    return 0;
+}
+
+static int seq_parse_edts(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t)
+{
+    heic_box_iter it;
+    heic_box child;
+    box_iter_init(&it, b->content, b->content_len);
+    while (box_iter_next(&it, &child)) {
+        if (child.type == HEIC_BOX_ELST)
+            return seq_parse_elst(ctx, &child, t);
+    }
+    return 0;
 }
 
 static int seq_parse_tkhd(const heic_box *b, heic_seq_track *t)
@@ -1615,6 +1726,57 @@ static int seq_parse_stss(heic_ctx *ctx, const heic_box *b,
     return 0;
 }
 
+static int seq_parse_stts(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t)
+{
+    uint32_t count, i;
+    if (b->content_len < 8 || b->content[0] != 0 || t->time_to_sample)
+        return -1;
+    count = heic_rb32(b->content + 4);
+    if (!count || count > HEIC_SEQ_MAX_ENTRIES
+        || (size_t)count > (b->content_len - 8) / 8)
+        return -1;
+    t->time_to_sample = (heic_seq_stts *)heic_zalloc(
+        ctx, (size_t)count * sizeof(heic_seq_stts));
+    if (!t->time_to_sample) return -1;
+    t->n_time_to_sample = count;
+    for (i = 0; i < count; i++) {
+        const uint8_t *p = b->content + 8 + (size_t)i * 8;
+        t->time_to_sample[i].count = heic_rb32(p);
+        t->time_to_sample[i].delta = heic_rb32(p + 4);
+        if (!t->time_to_sample[i].count || !t->time_to_sample[i].delta)
+            return -1;
+    }
+    return 0;
+}
+
+static int seq_parse_ctts(heic_ctx *ctx, const heic_box *b,
+                          heic_seq_track *t)
+{
+    uint32_t count, i;
+    int version;
+    if (b->content_len < 8 || t->composition_offsets) return -1;
+    version = b->content[0];
+    if (version != 0 && version != 1) return -1;
+    count = heic_rb32(b->content + 4);
+    if (!count || count > HEIC_SEQ_MAX_ENTRIES
+        || (size_t)count > (b->content_len - 8) / 8)
+        return -1;
+    t->composition_offsets = (heic_seq_ctts *)heic_zalloc(
+        ctx, (size_t)count * sizeof(heic_seq_ctts));
+    if (!t->composition_offsets) return -1;
+    t->n_composition_offsets = count;
+    for (i = 0; i < count; i++) {
+        const uint8_t *p = b->content + 8 + (size_t)i * 8;
+        t->composition_offsets[i].count = heic_rb32(p);
+        t->composition_offsets[i].offset = version
+            ? (int32_t)heic_rb32(p + 4)
+            : (int64_t)heic_rb32(p + 4);
+        if (!t->composition_offsets[i].count) return -1;
+    }
+    return 0;
+}
+
 static int seq_parse_stbl(heic_ctx *ctx, const heic_box *b,
                           heic_seq_track *t, const heic_abort *ab)
 {
@@ -1636,6 +1798,10 @@ static int seq_parse_stbl(heic_ctx *ctx, const heic_box *b,
             rc = seq_parse_stsc(ctx, &child, t);
         else if (child.type == HEIC_BOX_STSS)
             rc = seq_parse_stss(ctx, &child, t);
+        else if (child.type == HEIC_BOX_STTS)
+            rc = seq_parse_stts(ctx, &child, t);
+        else if (child.type == HEIC_BOX_CTTS)
+            rc = seq_parse_ctts(ctx, &child, t);
         if (rc != 0) return -1;
     }
     return 0;
@@ -1666,6 +1832,8 @@ static int seq_parse_mdia(heic_ctx *ctx, const heic_box *b,
         if (heic_abort_check(ab)) return -1;
         if (child.type == HEIC_BOX_HDLR) {
             if (seq_parse_hdlr(&child, t) != 0) return -1;
+        } else if (child.type == HEIC_BOX_MDHD) {
+            if (seq_parse_mdhd(&child, t) != 0) return -1;
         } else if (child.type == HEIC_BOX_MINF) {
             if (seq_parse_minf(ctx, &child, t, ab) != 0) return -1;
         }
@@ -1684,6 +1852,8 @@ static int seq_parse_trak(heic_ctx *ctx, const heic_box *b,
         if (heic_abort_check(ab)) return -1;
         if (child.type == HEIC_BOX_TKHD) {
             if (seq_parse_tkhd(&child, t) != 0) return -1;
+        } else if (child.type == HEIC_BOX_EDTS) {
+            if (seq_parse_edts(ctx, &child, t) != 0) return -1;
         } else if (child.type == HEIC_BOX_MDIA) {
             if (seq_parse_mdia(ctx, &child, t, ab) != 0) return -1;
         }
@@ -1754,6 +1924,271 @@ static int seq_first_sample(const heic_seq_track *t, uint64_t file_len,
     return seq_resolve_sample(t, sample, file_len, offset, size, ab);
 }
 
+static uint64_t seq_rescale(uint64_t value, uint32_t from, uint32_t to)
+{
+    uint64_t q, r, scaled;
+    if (!from || !to) return UINT64_MAX;
+    q = value / from;
+    r = value % from;
+    if (q > UINT64_MAX / to) return UINT64_MAX;
+    scaled = q * to;
+    if (scaled > UINT64_MAX - (r * to) / from) return UINT64_MAX;
+    return scaled + (r * to) / from;
+}
+
+static int seq_fill_sample_offsets(const heic_seq_track *t, uint64_t file_len,
+                                   heic_sequence_sample *samples,
+                                   const heic_abort *ab)
+{
+    uint32_t chunk, entry = 0, sample = 0, sync = 0;
+    if (!t->chunk_offsets || !t->sample_to_chunk || !t->n_chunk_offsets
+        || !t->n_sample_to_chunk
+        || t->sample_to_chunk[0].first_chunk != 1)
+        return -1;
+    for (chunk = 1; chunk <= t->n_chunk_offsets && sample < t->sample_count;
+         chunk++) {
+        uint64_t off = t->chunk_offsets[chunk - 1];
+        uint32_t j, per_chunk;
+        if ((chunk & 4095u) == 0 && heic_abort_check(ab)) return -1;
+        while (entry + 1 < t->n_sample_to_chunk
+               && t->sample_to_chunk[entry + 1].first_chunk <= chunk)
+            entry++;
+        per_chunk = t->sample_to_chunk[entry].samples_per_chunk;
+        if (!per_chunk) return -1;
+        for (j = 0; j < per_chunk && sample < t->sample_count; j++, sample++) {
+            uint32_t size = seq_sample_size(t, sample + 1);
+            if (!size || off > file_len || size > file_len - off)
+                return -1;
+            samples[sample].offset = off;
+            samples[sample].size = size;
+            samples[sample].is_sync = (uint8_t)(
+                !t->n_sync_samples
+                || (sync < t->n_sync_samples
+                    && t->sync_samples[sync] == sample + 1));
+            if (samples[sample].is_sync && t->n_sync_samples) sync++;
+            off += size;
+        }
+    }
+    return sample == t->sample_count ? 0 : -1;
+}
+
+static int seq_fill_sample_times(const heic_seq_track *t,
+                                 heic_sequence_sample *samples)
+{
+    uint64_t decode_time = 0;
+    uint32_t sample = 0, i, j;
+    if (!t->time_to_sample || !t->n_time_to_sample) return -1;
+    for (i = 0; i < t->n_time_to_sample; i++) {
+        for (j = 0; j < t->time_to_sample[i].count; j++) {
+            uint32_t delta = t->time_to_sample[i].delta;
+            if (sample >= t->sample_count || decode_time > INT64_MAX
+                || decode_time > UINT64_MAX - delta)
+                return -1;
+            samples[sample].duration = delta;
+            samples[sample].composition_time = (int64_t)decode_time;
+            decode_time += delta;
+            sample++;
+        }
+    }
+    if (sample != t->sample_count) return -1;
+    if (t->composition_offsets) {
+        sample = 0;
+        for (i = 0; i < t->n_composition_offsets; i++) {
+            for (j = 0; j < t->composition_offsets[i].count; j++) {
+                int64_t base, offset;
+                if (sample >= t->sample_count) return -1;
+                base = samples[sample].composition_time;
+                offset = t->composition_offsets[i].offset;
+                if ((offset > 0 && base > INT64_MAX - offset)
+                    || (offset < 0 && base < INT64_MIN - offset))
+                    return -1;
+                samples[sample].composition_time = base + offset;
+                sample++;
+            }
+        }
+        if (sample != t->sample_count) return -1;
+    }
+    return 0;
+}
+
+static int seq_order_after(const heic_sequence_sample *samples,
+                           uint32_t a, uint32_t b)
+{
+    return samples[a].composition_time > samples[b].composition_time
+        || (samples[a].composition_time == samples[b].composition_time
+            && a > b);
+}
+
+static void seq_heap_sift(const heic_sequence_sample *samples,
+                          uint32_t *order, uint32_t root, uint32_t count)
+{
+    for (;;) {
+        uint32_t child = root * 2 + 1, swap_at = root, tmp;
+        if (child >= count) return;
+        if (seq_order_after(samples, order[child], order[swap_at]))
+            swap_at = child;
+        if (child + 1 < count
+            && seq_order_after(samples, order[child + 1], order[swap_at]))
+            swap_at = child + 1;
+        if (swap_at == root) return;
+        tmp = order[root];
+        order[root] = order[swap_at];
+        order[swap_at] = tmp;
+        root = swap_at;
+    }
+}
+
+static void seq_sort_presentation(const heic_sequence_sample *samples,
+                                  uint32_t *order, uint32_t count)
+{
+    uint32_t i;
+    for (i = 0; i < count; i++) order[i] = i;
+    for (i = count / 2; i > 0; i--)
+        seq_heap_sift(samples, order, i - 1, count);
+    for (i = count; i > 1; i--) {
+        uint32_t tmp = order[0];
+        order[0] = order[i - 1];
+        order[i - 1] = tmp;
+        seq_heap_sift(samples, order, 0, i - 1);
+    }
+}
+
+static int seq_add_frame(heic_sequence *seq, uint32_t capacity,
+                         uint32_t sample, uint64_t time, uint64_t duration)
+{
+    uint32_t n = seq->frame_count;
+    if (n >= capacity || duration > UINT32_MAX) return -1;
+    seq->frame_samples[n] = sample;
+    seq->frame_times[n] = time;
+    seq->frame_durations[n] = (uint32_t)duration;
+    seq->frame_count++;
+    return 0;
+}
+
+static int seq_build_timeline(heic_ctx *ctx, heic_container *c,
+                              const heic_seq_track *t,
+                              uint32_t movie_timescale,
+                              uint64_t movie_duration,
+                              const heic_abort *ab)
+{
+    heic_sequence *seq = NULL;
+    uint32_t *order = NULL;
+    uint32_t capacity, i;
+    int rc = -1;
+    if (!t->sample_count || !t->media_timescale || !movie_timescale)
+        return -1;
+    for (i = 0; i < t->n_sync_samples; i++)
+        if (!t->sync_samples[i] || t->sync_samples[i] > t->sample_count
+            || (i && t->sync_samples[i] <= t->sync_samples[i - 1]))
+            return -1;
+    if (t->n_edits
+        && (uint64_t)t->sample_count * t->n_edits > HEIC_SEQ_MAX_ENTRIES)
+        return -1;
+    capacity = t->n_edits ? t->sample_count * t->n_edits : t->sample_count;
+    seq = (heic_sequence *)heic_zalloc(ctx, sizeof(heic_sequence));
+    if (!seq) goto done;
+    seq->samples = (heic_sequence_sample *)heic_zalloc(
+        ctx, (size_t)t->sample_count * sizeof(heic_sequence_sample));
+    seq->frame_samples = (uint32_t *)heic_zalloc(
+        ctx, (size_t)capacity * sizeof(uint32_t));
+    seq->frame_times = (uint64_t *)heic_zalloc(
+        ctx, (size_t)capacity * sizeof(uint64_t));
+    seq->frame_durations = (uint32_t *)heic_zalloc(
+        ctx, (size_t)capacity * sizeof(uint32_t));
+    order = (uint32_t *)heic_zalloc(
+        ctx, (size_t)t->sample_count * sizeof(uint32_t));
+    if (!seq->samples || !seq->frame_samples || !seq->frame_times
+        || !seq->frame_durations || !order)
+        goto done;
+    seq->sample_count = t->sample_count;
+    seq->timescale = movie_timescale;
+    seq->duration = movie_duration;
+    seq->repetition_count = t->n_edits ? 0 : 1;
+    if (seq_fill_sample_offsets(t, c->len, seq->samples, ab) != 0
+        || seq_fill_sample_times(t, seq->samples) != 0)
+        goto done;
+    seq_sort_presentation(seq->samples, order, t->sample_count);
+
+    if (!t->n_edits) {
+        int64_t first = seq->samples[order[0]].composition_time;
+        for (i = 0; i < t->sample_count; i++) {
+            uint32_t sample = order[i];
+            int64_t pts = seq->samples[sample].composition_time;
+            uint64_t time, duration;
+            if (pts < first) goto done;
+            time = seq_rescale((uint64_t)(pts - first),
+                               t->media_timescale, movie_timescale);
+            duration = seq_rescale(seq->samples[sample].duration,
+                                   t->media_timescale, movie_timescale);
+            if (time == UINT64_MAX || duration == UINT64_MAX
+                || seq_add_frame(seq, capacity, sample, time, duration) != 0)
+                goto done;
+        }
+    } else {
+        uint64_t movie_cursor = 0;
+        for (i = 0; i < t->n_edits; i++) {
+            const heic_seq_edit *edit = &t->edits[i];
+            uint32_t j;
+            uint64_t media_span;
+            if (edit->rate_integer != 1 || edit->rate_fraction != 0)
+                goto done;
+            if (edit->media_time >= 0) {
+                media_span = seq_rescale(edit->segment_duration,
+                                         movie_timescale,
+                                         t->media_timescale);
+                if (media_span == UINT64_MAX) goto done;
+                for (j = 0; j < t->sample_count; j++) {
+                    uint32_t sample = order[j];
+                    int64_t pts = seq->samples[sample].composition_time;
+                    uint64_t rel, time, duration;
+                    if (pts < edit->media_time) continue;
+                    rel = (uint64_t)(pts - edit->media_time);
+                    if (rel >= media_span) continue;
+                    time = seq_rescale(rel, t->media_timescale,
+                                       movie_timescale);
+                    duration = seq_rescale(seq->samples[sample].duration,
+                                           t->media_timescale,
+                                           movie_timescale);
+                    if (time == UINT64_MAX || duration == UINT64_MAX
+                        || movie_cursor > UINT64_MAX - time
+                        || seq_add_frame(seq, capacity, sample,
+                                         movie_cursor + time, duration) != 0)
+                        goto done;
+                }
+            }
+            if (movie_cursor > UINT64_MAX - edit->segment_duration)
+                goto done;
+            movie_cursor += edit->segment_duration;
+        }
+        if (t->edit_repeat && t->n_edits == 1
+            && t->edits[0].media_time == 0
+            && t->edits[0].rate_integer == 1
+            && t->edits[0].rate_fraction == 0) {
+            uint64_t segment = t->edits[0].segment_duration;
+            if (movie_duration == UINT32_MAX || movie_duration == UINT64_MAX)
+                seq->repetition_count = UINT32_MAX;
+            else if (segment && movie_duration % segment == 0
+                     && movie_duration / segment <= UINT32_MAX)
+                seq->repetition_count =
+                    (uint32_t)(movie_duration / segment);
+        }
+    }
+    if (!seq->frame_count) goto done;
+    c->sequence = seq;
+    seq = NULL;
+    rc = 0;
+done:
+    heic_free_buf(ctx, order);
+    if (seq) {
+        heic_free_buf(ctx, seq->samples);
+        heic_free_buf(ctx, seq->frame_samples);
+        heic_free_buf(ctx, seq->frame_times);
+        heic_free_buf(ctx, seq->frame_durations);
+        heic_free_buf(ctx, seq);
+    }
+    return rc;
+}
+
 static int seq_make_item(heic_ctx *ctx, heic_container *c,
                          heic_seq_track *t, int item_index, uint32_t item_id,
                          uint64_t offset, uint32_t size)
@@ -1807,17 +2242,24 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     int n_tracks = 0, primary = -1, thumb = -1, i, rc = -1;
     uint64_t primary_off, thumb_off = 0;
     uint32_t primary_size, thumb_size = 0;
+    uint32_t movie_timescale = 0;
+    uint64_t movie_duration = 0;
     int n_items, n_props;
 
     memset(tracks, 0, sizeof(tracks));
     box_iter_init(&it, moov->content, moov->content_len);
     while (n_tracks < HEIC_SEQ_MAX_TRACKS && box_iter_next(&it, &child)) {
         if (heic_abort_check(ab)) goto done;
-        if (child.type != HEIC_BOX_TRAK) continue;
-        if (seq_parse_trak(ctx, &child, &tracks[n_tracks], ab) == 0)
-            n_tracks++;
-        else
-            seq_free_track(ctx, &tracks[n_tracks]);
+        if (child.type == HEIC_BOX_MVHD) {
+            if (seq_parse_duration_header(&child, &movie_timescale,
+                                          &movie_duration) != 0)
+                goto done;
+        } else if (child.type == HEIC_BOX_TRAK) {
+            if (seq_parse_trak(ctx, &child, &tracks[n_tracks], ab) == 0)
+                n_tracks++;
+            else
+                seq_free_track(ctx, &tracks[n_tracks]);
+        }
     }
     for (i = 0; i < n_tracks; i++) {
         if (tracks[i].handler_type == HEIC_FCC('p', 'i', 'c', 't')
@@ -1888,6 +2330,13 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     if (seq_make_item(ctx, c, &tracks[primary], 0, 1,
                       primary_off, primary_size) != 0)
         goto done;
+    if (!movie_timescale) movie_timescale = tracks[primary].media_timescale;
+    if (!movie_duration)
+        movie_duration = seq_rescale(tracks[primary].media_duration,
+                                     tracks[primary].media_timescale,
+                                     movie_timescale);
+    (void)seq_build_timeline(ctx, c, &tracks[primary], movie_timescale,
+                             movie_duration, ab);
 
     if (thumb >= 0) {
         c->item_references = (heic_iref *)heic_zalloc(ctx, sizeof(heic_iref));

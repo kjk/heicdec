@@ -289,6 +289,97 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
   return [ok, fail];
 }
 
+const HEIF_SEQUENCE_TESTS = [
+  {
+    name: "C026.heic", frames: 8, duration: 160,
+    repetitions: 1, first: 0, last: 140,
+  },
+  {
+    name: "C027.heic", frames: 16, duration: 320,
+    repetitions: 1, first: 0, last: 300,
+  },
+  {
+    name: "C028.heic", frames: 16, duration: 320,
+    repetitions: 1, first: 0, last: 300,
+  },
+  {
+    name: "C029.heic", frames: 13, duration: 100500,
+    repetitions: 0, first: 0, last: 1200,
+  },
+  {
+    name: "C030.heic", frames: 8, duration: 100500,
+    repetitions: 0, first: 500, last: 1200,
+  },
+  {
+    name: "C031.heic", frames: 8, duration: 800,
+    repetitions: 1, first: 0, last: 700,
+  },
+  {
+    name: "C032.heic", frames: 8, duration: 800,
+    repetitions: 1, first: 0, last: 700,
+  },
+  {
+    name: "C036.heic", frames: 8, duration: 2400,
+    repetitions: 3, first: 0, last: 700,
+  },
+  {
+    name: "C037.heic", frames: 8, duration: 1200,
+    repetitions: 0, first: 0, last: 700,
+  },
+  {
+    name: "C038.heic", frames: 8, duration: 4294967295,
+    repetitions: 4294967295, first: 0, last: 700,
+  },
+  {
+    name: "C041.heic", frames: 8, duration: 2000,
+    repetitions: 0, first: 0, last: 700,
+  },
+] as const;
+
+async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
+  const root = join(import.meta.dir, "..");
+  const corpus = join(root, "deps", "heif_conformance", "conformance_files");
+  let ok = 0;
+  let fail = 0;
+  for (const t of HEIF_SEQUENCE_TESTS) {
+    const input = join(corpus, t.name);
+    const infoProc = await Bun.$`${exe} -sequence-info ${input}`.nothrow().quiet();
+    const out =
+      infoProc.stdout.toString() + infoProc.stderr.toString();
+    const summary = out.match(
+      /sequence frames=(\d+) timescale=(\d+) duration=(\d+) repetitions=(\d+)/,
+    );
+    const frames = [...out.matchAll(/frame \d+ time=(\d+) duration=(\d+) sync=\d/g)];
+    const metadataOk =
+      infoProc.exitCode === 0 &&
+      summary !== null &&
+      Number(summary[1]) === t.frames &&
+      Number(summary[2]) === 1000 &&
+      Number(summary[3]) === t.duration &&
+      Number(summary[4]) === t.repetitions &&
+      frames.length === t.frames &&
+      Number(frames[0]![1]) === t.first &&
+      Number(frames[frames.length - 1]![1]) === t.last;
+    const decodeProc = await Bun.$`${exe} -sequence-frame ${t.frames - 1} ${input}`
+      .nothrow()
+      .quiet();
+    if (metadataOk && decodeProc.exitCode === 0) {
+      ok++;
+      console.log(
+        `[ok] HEIF sequence ${t.name} frames=${t.frames} ` +
+          `duration=${t.duration} repetitions=${t.repetitions}`,
+      );
+    } else {
+      fail++;
+      const detail = (
+        out + decodeProc.stdout.toString() + decodeProc.stderr.toString()
+      ).trim().slice(0, 500);
+      console.log(`[fail] HEIF sequence ${t.name}\n${detail}`);
+    }
+  }
+  return [ok, fail];
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.includes("-clean")) cleanBuildOutput();
@@ -452,7 +543,10 @@ async function main() {
     const [seqOk, seqFail] = await runHevcSequenceTests(exe);
     ok += seqOk;
     fail += seqFail;
-    extra = HEVC_SEQUENCE_TESTS.length;
+    const [apiOk, apiFail] = await runHeifSequenceApiTests(exe);
+    ok += apiOk;
+    fail += apiFail;
+    extra = HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length;
   }
 
   console.log(

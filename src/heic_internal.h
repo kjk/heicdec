@@ -90,8 +90,11 @@ typedef uint32_t heic_fourcc;
 #define HEIC_BOX_MDCV HEIC_FCC('m', 'D', 'C', 'v')
 #define HEIC_BOX_MINI HEIC_FCC('m', 'i', 'n', 'i')
 #define HEIC_BOX_MOOV HEIC_FCC('m', 'o', 'o', 'v')
+#define HEIC_BOX_MVHD HEIC_FCC('m', 'v', 'h', 'd')
 #define HEIC_BOX_TRAK HEIC_FCC('t', 'r', 'a', 'k')
 #define HEIC_BOX_TKHD HEIC_FCC('t', 'k', 'h', 'd')
+#define HEIC_BOX_EDTS HEIC_FCC('e', 'd', 't', 's')
+#define HEIC_BOX_ELST HEIC_FCC('e', 'l', 's', 't')
 #define HEIC_BOX_MDIA HEIC_FCC('m', 'd', 'i', 'a')
 #define HEIC_BOX_MDHD HEIC_FCC('m', 'd', 'h', 'd')
 #define HEIC_BOX_MINF HEIC_FCC('m', 'i', 'n', 'f')
@@ -102,6 +105,8 @@ typedef uint32_t heic_fourcc;
 #define HEIC_BOX_CO64 HEIC_FCC('c', 'o', '6', '4')
 #define HEIC_BOX_STSC HEIC_FCC('s', 't', 's', 'c')
 #define HEIC_BOX_STSS HEIC_FCC('s', 't', 's', 's')
+#define HEIC_BOX_STTS HEIC_FCC('s', 't', 't', 's')
+#define HEIC_BOX_CTTS HEIC_FCC('c', 't', 't', 's')
 #define HEIC_BOX_HVC1 HEIC_FCC('h', 'v', 'c', '1')
 #define HEIC_BOX_HEV1 HEIC_FCC('h', 'e', 'v', '1')
 #define HEIC_BOX_TREF HEIC_FCC('t', 'r', 'e', 'f')
@@ -386,6 +391,26 @@ typedef struct {
 } heic_iref;
 
 typedef struct {
+    uint64_t offset;
+    uint32_t size;
+    uint32_t duration;
+    int64_t  composition_time;
+    uint8_t  is_sync;
+} heic_sequence_sample;
+
+typedef struct {
+    uint32_t timescale;
+    uint64_t duration;
+    uint32_t repetition_count;
+    heic_sequence_sample *samples;
+    uint32_t sample_count;
+    uint32_t *frame_samples;
+    uint64_t *frame_times;
+    uint32_t *frame_durations;
+    uint32_t frame_count;
+} heic_sequence;
+
+typedef struct {
     heic_ctx          *ctx;
     const uint8_t     *data;
     size_t             len;
@@ -410,6 +435,7 @@ typedef struct {
     size_t             mdat_len;
     int                has_meta;
     int                is_sequence; /* primary item synthesized from moov */
+    heic_sequence      *sequence;
 } heic_container;
 
 /* Resolved item view (stack-friendly; pointers into container). */

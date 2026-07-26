@@ -195,13 +195,15 @@
 - [x] HEVC image sequences (`moov`): first sync sample from `pict` (`vide`
       fallback), `stsd`/`stsz`/`stsc`/`stco`/`co64`/`stss`, and a smaller
       `pict` thumbnail track; Nokia `C026`–`C032`, `C036`–`C038`, and `C041`
+- [x] Public HEVC sequence API: `stts`/`ctts` timing, `elst` presentation
+      edits, finite/infinite repetition counts, and arbitrary frame decode
+      from the preceding sync sample; all 11 Nokia sequence fixtures covered
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)
 - [x] HEVC PCM: raw luma/chroma samples, CABAC restart, bit-depth scaling,
       and PCM loop-filter exclusion; official `ipcm_A/B/C_NEC_3` oracles mse=0
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
-- [ ] sequence animation API / edit-list playback (public API decodes first sync frame)
 
 ## Investigation notes
 
