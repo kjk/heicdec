@@ -785,6 +785,47 @@ static uint32_t sequence_presentation_rank(const heic_sequence *seq,
     return rank;
 }
 
+static int compare_sequence_frame(
+    heic_ctx *ctx, heic_sequence_decoder *decoder,
+    const heic_sequence *seq, uint32_t frame,
+    const uint8_t *ref, uint32_t ref_frames, int rw, int rh, int rstride,
+    double *sse, uint64_t *compared, uint64_t *ndiff, int *maxd)
+{
+    uint32_t sample, rank;
+    heic_image *img;
+    int y, x;
+    if (frame >= seq->frame_count) return -1;
+    sample = seq->frame_samples[frame];
+    if (sample >= seq->sample_count) return -1;
+    rank = sequence_presentation_rank(seq, sample);
+    if (rank >= ref_frames) return -1;
+    img = heic_sequence_decoder_decode_frame(decoder, frame);
+    if (!img) return -1;
+    if ((int)img->width != rw || (int)img->height != rh) {
+        heic_image_destroy(ctx, img);
+        return -1;
+    }
+    for (y = 0; y < rh; y++) {
+        const uint8_t *a =
+            img->data + (size_t)y * (size_t)img->stride;
+        const uint8_t *b =
+            ref + (size_t)rank * (size_t)rstride * (size_t)rh
+                + (size_t)y * (size_t)rstride;
+        for (x = 0; x < rw * 3; x++) {
+            int d = (int)a[x] - (int)b[x];
+            if (d < 0) d = -d;
+            if (d) {
+                (*ndiff)++;
+                *sse += (double)d * (double)d;
+                if (d > *maxd) *maxd = d;
+            }
+        }
+    }
+    *compared += (uint64_t)rw * (uint64_t)rh * 3u;
+    heic_image_destroy(ctx, img);
+    return 0;
+}
+
 static int do_verify_sequence(const uint8_t *data, size_t len)
 {
     heic_ctx *ctx = NULL;
@@ -793,6 +834,7 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     heic_sequence_info info;
     uint8_t *ref = NULL;
     uint32_t ref_frames = 0, frame;
+    int dependent = 0;
     int rw = 0, rh = 0, rstride = 0;
     double sse = 0.0;
     uint64_t compared = 0, ndiff = 0;
@@ -815,42 +857,55 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     if (!decoder) goto done;
     for (frame = 0; frame < info.frame_count; frame++) {
         const heic_sequence *seq = doc->container.sequence;
-        uint32_t sample = seq->frame_samples[frame];
-        uint32_t rank;
-        heic_image *img;
-        int y, x;
-        if (sample >= seq->sample_count) goto done;
-        rank = sequence_presentation_rank(seq, sample);
-        if (rank >= ref_frames) goto done;
-        img = heic_sequence_decoder_decode_frame(decoder, frame);
-        if (!img) goto done;
-        if ((int)img->width != rw || (int)img->height != rh) {
-            heic_image_destroy(ctx, img);
+        if (compare_sequence_frame(
+                ctx, decoder, seq, frame, ref, ref_frames,
+                rw, rh, rstride, &sse, &compared, &ndiff, &maxd) != 0)
             goto done;
+    }
+    {
+        const heic_sequence *seq = doc->container.sequence;
+        uint32_t seek_order[3];
+        seek_order[0] = info.frame_count - 1;
+        seek_order[1] = info.frame_count / 2;
+        seek_order[2] = 0;
+        heic_sequence_decoder_reset(decoder);
+        for (frame = 0; frame < 3; frame++) {
+            if (compare_sequence_frame(
+                    ctx, decoder, seq, seek_order[frame], ref, ref_frames,
+                    rw, rh, rstride, &sse, &compared, &ndiff, &maxd) != 0)
+                goto done;
+            if (frame + 1 < 3) heic_sequence_decoder_reset(decoder);
         }
-        for (y = 0; y < rh; y++) {
-            const uint8_t *a =
-                img->data + (size_t)y * (size_t)img->stride;
-            const uint8_t *b =
-                ref + (size_t)rank * (size_t)rstride * (size_t)rh
-                    + (size_t)y * (size_t)rstride;
-            for (x = 0; x < rw * 3; x++) {
-                int d = (int)a[x] - (int)b[x];
-                if (d < 0) d = -d;
-                if (d) {
-                    ndiff++;
-                    sse += (double)d * (double)d;
-                    if (d > maxd) maxd = d;
+    }
+    {
+        const heic_sequence *seq = doc->container.sequence;
+        heic_item item;
+        uint32_t sample;
+        if (heic_container_get_item(
+                &doc->container, doc->container.primary_item_id, &item) == 0
+            && item.av1c) {
+            for (sample = 1; sample < seq->sample_count; sample++) {
+                heic_frame standalone;
+                if (seq->samples[sample].is_sync) continue;
+                memset(&standalone, 0, sizeof(standalone));
+                if (heic_av1_decode(
+                        ctx, item.av1c,
+                        data + seq->samples[sample].offset,
+                        seq->samples[sample].size,
+                        &standalone, NULL) != 0) {
+                    dependent = 1;
+                } else {
+                    heic_frame_free(ctx, &standalone);
                 }
+                break;
             }
         }
-        compared += (uint64_t)rw * (uint64_t)rh * 3u;
-        heic_image_destroy(ctx, img);
     }
     if (!compared) goto done;
-    printf("sequence %u frames %dx%d mse=%.4f maxdiff=%d n_diff=%llu\n",
+    printf("sequence %u frames %dx%d mse=%.4f maxdiff=%d n_diff=%llu"
+           " dependent=%d\n",
            (unsigned)info.frame_count, rw, rh, sse / (double)compared,
-           maxd, (unsigned long long)ndiff);
+           maxd, (unsigned long long)ndiff, dependent);
     rc = 0;
 done:
     heic_sequence_decoder_destroy(decoder);

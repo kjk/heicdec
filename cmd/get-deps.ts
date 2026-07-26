@@ -51,10 +51,14 @@ const FOX_SAMPLES = [
   "fox.profile0.10bpc.yuv420.avif",
   "fox.profile0.8bpc.yuv420.monochrome.avif",
 ];
+const LIBAVIF_BASE =
+  "https://raw.githubusercontent.com/AOMediaCodec/libavif/" +
+  "57953b32c1d5ae09761ce8ef66141cfa78c6196f/tests/data";
+const LIBAVIF_SAMPLES = ["colors-animated-8bpc.avif"];
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v5-avif-fox+grid+alpha+sequence;unci-block;mini-hevc+av1;hevc-sequences+pcm";
+  "v6-avif-fox+grid+alpha+inter-sequence;unci-block;mini-hevc+av1;hevc-sequences+pcm";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
@@ -89,7 +93,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(stampPath) &&
     existsSync(join(avifDir, "grid_2x2.avif")) &&
     existsSync(join(avifDir, "alpha.avif")) &&
-    existsSync(join(avifDir, "sequence_3frame.avif")) &&
+    existsSync(join(avifDir, "sequence_inter.avif")) &&
     existsSync(join(unciDir, "rgb8_block_pixel_le.heif")) &&
     existsSync(join(miniDir, "hevc32-mini.heif")) &&
     existsSync(join(miniDir, "avif32-mini.heif")) &&
@@ -117,6 +121,13 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     if (!existsSync(dest) || opts.force) {
       console.log(`deps/testimages: fetching ${name}…`);
       await download(`${FOX_BASE}/${name}`, dest);
+    }
+  }
+  for (const name of LIBAVIF_SAMPLES) {
+    const dest = join(avifDir, "_src", name);
+    if (!existsSync(dest) || opts.force) {
+      console.log(`deps/testimages: fetching ${name}…`);
+      await download(`${LIBAVIF_BASE}/${name}`, dest);
     }
   }
 

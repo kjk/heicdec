@@ -224,14 +224,46 @@ static int sequence_send_config(heic_av1_sequence_state *state,
     return 0;
 }
 
-int heic_av1_sequence_decode(heic_av1_sequence_state *state,
+static int sequence_receive(heic_av1_sequence_state *state,
+                            heic_frame *out, uint32_t *out_sample)
+{
+    Dav1dPicture pic;
+    int res;
+    int64_t timestamp;
+    if (!state || !state->decoder || !out || !out_sample) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&pic, 0, sizeof(pic));
+    res = dav1d_get_picture(state->decoder, &pic);
+    if (res == DAV1D_ERR(EAGAIN)) return 0;
+    if (res != 0) {
+        heic_error(state->ctx, HEIC_SEVERITY_ERROR,
+                   "dav1d_get_picture failed (%d)", res);
+        return -1;
+    }
+    timestamp = pic.m.timestamp;
+    if (timestamp < 0 || (uint64_t)timestamp > UINT32_MAX
+        || picture_to_frame(state->ctx, &pic, out) != 0) {
+        dav1d_picture_unref(&pic);
+        heic_frame_free(state->ctx, out);
+        heic_error(state->ctx, HEIC_SEVERITY_ERROR,
+                   "dav1d returned invalid sequence timestamp");
+        return -1;
+    }
+    *out_sample = (uint32_t)timestamp;
+    dav1d_picture_unref(&pic);
+    return 1;
+}
+
+int heic_av1_sequence_submit(heic_av1_sequence_state *state,
                              const heic_av1c *cfg,
                              const uint8_t *data, size_t len,
-                             heic_frame *out, const heic_abort *ab)
+                             uint32_t sample_index, heic_frame *out,
+                             uint32_t *out_sample, const heic_abort *ab)
 {
     Dav1dData input;
-    int spins = 0, rc = -1;
-    if (!state || !state->decoder || !data || !len || !out) return -1;
+    int spins = 0, got = 0;
+    if (!state || !state->decoder || !data || !len || !out || !out_sample)
+        return -1;
     memset(out, 0, sizeof(*out));
     memset(&input, 0, sizeof(input));
     if (heic_abort_check(ab)
@@ -239,28 +271,46 @@ int heic_av1_sequence_decode(heic_av1_sequence_state *state,
         || dav1d_data_wrap(&input, data, len,
                            dav1d_data_free_nop, NULL) != 0)
         return -1;
+    input.m.timestamp = sample_index;
     while (spins++ < 64) {
         int res;
-        Dav1dPicture pic;
         if (heic_abort_check(ab)) break;
-        if (input.sz) {
-            res = dav1d_send_data(state->decoder, &input);
-            if (res != 0 && res != DAV1D_ERR(EAGAIN)) break;
-        }
-        memset(&pic, 0, sizeof(pic));
-        res = dav1d_get_picture(state->decoder, &pic);
+        res = dav1d_send_data(state->decoder, &input);
         if (res == 0) {
-            rc = picture_to_frame(state->ctx, &pic, out);
-            dav1d_picture_unref(&pic);
+            if (!input.sz) break;
+            continue;
+        }
+        if (res != DAV1D_ERR(EAGAIN)) break;
+        if (got) {
+            heic_error(state->ctx, HEIC_SEVERITY_ERROR,
+                       "dav1d sequence sample produced multiple pictures");
             break;
         }
-        if (res != DAV1D_ERR(EAGAIN) || !input.sz) break;
+        got = sequence_receive(state, out, out_sample);
+        if (got < 0) break;
+        if (!got) {
+            heic_error(state->ctx, HEIC_SEVERITY_ERROR,
+                       "dav1d stalled while submitting sequence sample");
+            break;
+        }
     }
-    if (input.sz) dav1d_data_unref(&input);
-    if (rc != 0)
+    if (input.sz) {
+        dav1d_data_unref(&input);
+        if (got > 0) heic_frame_free(state->ctx, out);
         heic_error(state->ctx, HEIC_SEVERITY_ERROR,
-                   "dav1d produced no sequence picture");
-    return rc;
+                   "dav1d failed to submit sequence sample");
+        return -1;
+    }
+    if (got) return got;
+    return sequence_receive(state, out, out_sample);
+}
+
+int heic_av1_sequence_receive(heic_av1_sequence_state *state,
+                              heic_frame *out, uint32_t *out_sample,
+                              const heic_abort *ab)
+{
+    if (heic_abort_check(ab)) return -1;
+    return sequence_receive(state, out, out_sample);
 }
 
 /* Push all of *pd into the decoder (handles EAGAIN by draining nothing —
@@ -426,15 +476,29 @@ void heic_av1_sequence_destroy(heic_av1_sequence_state *state)
     (void)state;
 }
 
-int heic_av1_sequence_decode(heic_av1_sequence_state *state,
+int heic_av1_sequence_submit(heic_av1_sequence_state *state,
                              const heic_av1c *cfg,
                              const uint8_t *data, size_t len,
-                             heic_frame *out, const heic_abort *ab)
+                             uint32_t sample_index, heic_frame *out,
+                             uint32_t *out_sample, const heic_abort *ab)
 {
     (void)state;
     (void)cfg;
     (void)data;
     (void)len;
+    (void)sample_index;
+    (void)out_sample;
+    (void)ab;
+    if (out) memset(out, 0, sizeof(*out));
+    return -1;
+}
+
+int heic_av1_sequence_receive(heic_av1_sequence_state *state,
+                              heic_frame *out, uint32_t *out_sample,
+                              const heic_abort *ab)
+{
+    (void)state;
+    (void)out_sample;
     (void)ab;
     if (out) memset(out, 0, sizeof(*out));
     return -1;

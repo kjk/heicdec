@@ -539,10 +539,14 @@ int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
 typedef struct heic_av1_sequence_state heic_av1_sequence_state;
 heic_av1_sequence_state *heic_av1_sequence_new(heic_ctx *ctx);
 void heic_av1_sequence_destroy(heic_av1_sequence_state *state);
-int heic_av1_sequence_decode(heic_av1_sequence_state *state,
+int heic_av1_sequence_submit(heic_av1_sequence_state *state,
                              const heic_av1c *cfg,
                              const uint8_t *data, size_t len,
-                             heic_frame *out, const heic_abort *ab);
+                             uint32_t sample_index, heic_frame *out,
+                             uint32_t *out_sample, const heic_abort *ab);
+int heic_av1_sequence_receive(heic_av1_sequence_state *state,
+                              heic_frame *out, uint32_t *out_sample,
+                              const heic_abort *ab);
 
 /* Decode uncompressed HEIF (unci / ISO 23001-17). Interleave 0/1/3/4,
    multi-tile, 1..16-bit; optional zlib/deflate (HEIC_HAVE_ZLIB) and brotli

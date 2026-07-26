@@ -207,8 +207,9 @@
       pixels without tone mapping; the bundled Apple fixture is compared
       directly against libheif's auxiliary-image decode
 - [x] AV1 timed image sequences (`av01` tracks / `avis` brand) use persistent
-      dav1d state for dependent samples; a generated three-frame AVIF validates
-      timeline metadata and every RGB frame against libheif/dav1d
+      dav1d state for dependent samples; libavif's five-frame inter-coded
+      fixture covers show-existing frames, timestamp-associated delayed output,
+      reset/random access, and every RGB frame against libheif/dav1d
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)

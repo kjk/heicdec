@@ -54,7 +54,7 @@ const MUST_DECODE = new Set([
   "C037.heic",
   "C038.heic",
   "C041.heic",
-  "sequence_3frame.avif",
+  "sequence_inter.avif",
 ]);
 
 /** Parse `30x20 mse=0.0000 maxdiff=0 n_diff=0` from -verify stdout. */
@@ -162,7 +162,7 @@ async function compareAltOracle(
   file: string,
   name: string,
 ): Promise<{ ok: boolean; detail: string } | null> {
-  if (name === "sequence_3frame.avif") {
+  if (name === "sequence_inter.avif") {
     const p = await Bun.$`${exe} -verify-sequence ${file}`.nothrow().quiet();
     const out = (p.stdout.toString() + p.stderr.toString()).trim();
     const mse = parseVerifyMse(out);
@@ -345,8 +345,8 @@ const HEIF_SEQUENCE_TESTS = [
     repetitions: 0, first: 0, last: 700,
   },
   {
-    name: "sequence_3frame.avif", frames: 3, duration: 300,
-    repetitions: 1, first: 0, last: 200,
+    name: "sequence_inter.avif", frames: 5, timescale: 30, duration: 5,
+    repetitions: 0, first: 0, last: 4,
   },
 ] as const;
 
@@ -356,7 +356,7 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
   let ok = 0;
   let fail = 0;
   for (const t of HEIF_SEQUENCE_TESTS) {
-    const input = t.name === "sequence_3frame.avif"
+    const input = t.name === "sequence_inter.avif"
       ? join(TESTIMAGES_DIR, "avif", t.name)
       : join(corpus, t.name);
     const infoProc = await Bun.$`${exe} -sequence-info ${input}`.nothrow().quiet();
@@ -370,7 +370,7 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
       infoProc.exitCode === 0 &&
       summary !== null &&
       Number(summary[1]) === t.frames &&
-      Number(summary[2]) === 1000 &&
+      Number(summary[2]) === ("timescale" in t ? t.timescale : 1000) &&
       Number(summary[3]) === t.duration &&
       Number(summary[4]) === t.repetitions &&
       frames.length === t.frames &&
@@ -386,7 +386,8 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
       metadataOk &&
       oracleProc.exitCode === 0 &&
       oracleMse !== null &&
-      oracleMse <= 8
+      oracleMse <= 8 &&
+      (t.name !== "sequence_inter.avif" || oracleOut.includes("dependent=1"))
     ) {
       ok++;
       console.log(
