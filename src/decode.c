@@ -77,6 +77,65 @@ static void frame_apply_clap(heic_frame *f, const heic_clap *clap)
     f->crop_bottom += (int)extra_bottom;
 }
 
+static int frame_materialize_crop(heic_ctx *ctx, heic_frame *f)
+{
+    heic_frame g;
+    int w, h, sub_w = 1, sub_h = 1;
+    int y;
+
+    if (!f || (!f->crop_left && !f->crop_right &&
+               !f->crop_top && !f->crop_bottom))
+        return 0;
+    if (f->a)
+        return 0;
+
+    w = frame_cropped_w(f);
+    h = frame_cropped_h(f);
+    if (w <= 0 || h <= 0)
+        return 0;
+    if (f->chroma_format == 1) {
+        sub_w = 2;
+        sub_h = 2;
+    } else if (f->chroma_format == 2) {
+        sub_w = 2;
+    }
+    /* Moving the origin must not change the chroma sample phase. */
+    if ((f->crop_left % sub_w) != 0 || (f->crop_top % sub_h) != 0)
+        return 0;
+
+    if (heic_frame_alloc(ctx, &g, w, h, f->bit_depth, f->chroma_format) != 0)
+        return -1;
+    g.full_range = f->full_range;
+    g.matrix_coeffs = f->matrix_coeffs;
+    g.color_primaries = f->color_primaries;
+    g.transfer_characteristics = f->transfer_characteristics;
+
+    for (y = 0; y < h; y++) {
+        const uint16_t *src = f->y +
+            (size_t)(f->crop_top + y) * (size_t)f->y_stride +
+            (size_t)f->crop_left;
+        memcpy(g.y + (size_t)y * (size_t)g.y_stride,
+               src, (size_t)w * sizeof(uint16_t));
+    }
+    if (f->cb && f->cr && g.c_width > 0) {
+        int src_x = f->crop_left / sub_w;
+        int src_y = f->crop_top / sub_h;
+        for (y = 0; y < g.c_height; y++) {
+            size_t si = (size_t)(src_y + y) * (size_t)f->c_stride +
+                        (size_t)src_x;
+            size_t di = (size_t)y * (size_t)g.c_stride;
+            memcpy(g.cb + di, f->cb + si,
+                   (size_t)g.c_width * sizeof(uint16_t));
+            memcpy(g.cr + di, f->cr + si,
+                   (size_t)g.c_width * sizeof(uint16_t));
+        }
+    }
+
+    heic_frame_free(ctx, f);
+    *f = g;
+    return 0;
+}
+
 static int frame_mirror_lr(heic_ctx *ctx, heic_frame *f)
 {
     /* Left-right flip (about vertical axis). */
@@ -257,6 +316,8 @@ static int apply_transforms(heic_ctx *ctx, heic_frame *f, const heic_item *item)
                 if (frame_mirror_lr(ctx, f) != 0) return -1;
             }
         } else if (t->kind == HEIC_XFORM_IROT) {
+            if (t->irot.angle != 0 && frame_materialize_crop(ctx, f) != 0)
+                return -1;
             switch (t->irot.angle) {
             case 90:
                 if (frame_rotate_90_cw(ctx, f) != 0) return -1;

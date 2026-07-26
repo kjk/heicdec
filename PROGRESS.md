@@ -97,6 +97,14 @@
     72.1 → **67.3** (-6.6%).
   - Full pass: HDR 34.2ms vs libheif 32.8ms (+4.3%); C022 98.8ms vs
     libheif 103.9ms (-4.9%); 166 comparable / 22 skips / 0 failures.
+- **Crop before rotation**:
+  - Materialize an aligned clean-aperture crop before `irot`, preserving chroma
+    phase and retaining the full-frame transform as a fallback.
+  - C014 25.9ms → **24.6ms** (libheif 25.7ms); C039 27.0ms → **25.4ms**
+    (libheif 27.1ms). Winperf no longer reports rotation among the top functions
+    (previously 3.4% self / 5.4% inclusive on C014).
+  - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
+    183 ok / 5 no-oracle skips / 0 failures.
 
 ## Next
 
