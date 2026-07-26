@@ -403,6 +403,7 @@ typedef struct {
     uint32_t timescale;
     uint64_t duration;
     uint32_t repetition_count;
+    uint32_t coded_item_id; /* synthetic item holding the moov track config */
     heic_sequence_sample *samples;
     uint32_t sample_count;
     uint32_t *frame_samples;
@@ -435,7 +436,7 @@ typedef struct {
     size_t             mdat_offset; /* content offset, or 0 */
     size_t             mdat_len;
     int                has_meta;
-    int                is_sequence; /* primary item synthesized from moov */
+    int                is_sequence; /* moov image sequence is available */
     heic_sequence      *sequence;
 } heic_container;
 

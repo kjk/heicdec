@@ -835,6 +835,7 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     uint8_t *ref = NULL;
     uint32_t ref_frames = 0, frame;
     int dependent = 0;
+    int separate_primary = 0;
     int rw = 0, rh = 0, rstride = 0;
     double sse = 0.0;
     uint64_t compared = 0, ndiff = 0;
@@ -853,6 +854,9 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     if (!doc || heic_doc_sequence_info(doc, &info) != 0
         || !doc->container.sequence)
         goto done;
+    separate_primary =
+        doc->container.sequence->coded_item_id
+            != doc->container.primary_item_id;
     decoder = heic_sequence_decoder_new(doc, HEIC_FORMAT_RGB);
     if (!decoder) goto done;
     for (frame = 0; frame < info.frame_count; frame++) {
@@ -882,7 +886,7 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
         heic_item item;
         uint32_t sample;
         if (heic_container_get_item(
-                &doc->container, doc->container.primary_item_id, &item) == 0
+                &doc->container, seq->coded_item_id, &item) == 0
             && item.av1c) {
             for (sample = 1; sample < seq->sample_count; sample++) {
                 heic_frame standalone;
@@ -903,9 +907,9 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     }
     if (!compared) goto done;
     printf("sequence %u frames %dx%d mse=%.4f maxdiff=%d n_diff=%llu"
-           " dependent=%d\n",
+           " dependent=%d separate_primary=%d\n",
            (unsigned)info.frame_count, rw, rh, sse / (double)compared,
-           maxd, (unsigned long long)ndiff, dependent);
+           maxd, (unsigned long long)ndiff, dependent, separate_primary);
     rc = 0;
 done:
     heic_sequence_decoder_destroy(decoder);

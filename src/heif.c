@@ -98,6 +98,19 @@ static int is_heif_brand(heic_fourcc b)
            b == HEIC_FCC('a', 'v', 'i', 'f') || b == HEIC_FCC('a', 'v', 'i', 's');
 }
 
+static int has_sequence_brand(const heic_container *c)
+{
+    int i;
+    if (c->brand == HEIC_FCC('a', 'v', 'i', 's')
+        || c->brand == HEIC_FCC('m', 's', 'f', '1'))
+        return 1;
+    for (i = 0; i < c->n_compatible_brands; i++)
+        if (c->compatible_brands[i] == HEIC_FCC('a', 'v', 'i', 's')
+            || c->compatible_brands[i] == HEIC_FCC('m', 's', 'f', '1'))
+            return 1;
+    return 0;
+}
+
 static void free_hvcc(heic_ctx *ctx, heic_hvcc *h)
 {
     int i;
@@ -2074,6 +2087,7 @@ static int seq_add_frame(heic_sequence *seq, uint32_t capacity,
 
 static int seq_build_timeline(heic_ctx *ctx, heic_container *c,
                               const heic_seq_track *t,
+                              uint32_t coded_item_id,
                               uint32_t movie_timescale,
                               uint64_t movie_duration,
                               const heic_abort *ab)
@@ -2108,6 +2122,7 @@ static int seq_build_timeline(heic_ctx *ctx, heic_container *c,
         || !seq->frame_durations || !order)
         goto done;
     seq->sample_count = t->sample_count;
+    seq->coded_item_id = coded_item_id;
     seq->timescale = movie_timescale;
     seq->duration = movie_duration;
     seq->repetition_count = t->n_edits ? 0 : 1;
@@ -2196,18 +2211,127 @@ done:
     return rc;
 }
 
+static int seq_item_id_used(const heic_container *c, uint32_t item_id)
+{
+    int i;
+    if (!item_id) return 1;
+    for (i = 0; i < c->n_item_infos; i++)
+        if (c->item_infos[i].item_id == item_id) return 1;
+    return 0;
+}
+
+static uint32_t seq_unused_item_id(const heic_container *c,
+                                   uint32_t preferred, uint32_t avoid)
+{
+    uint32_t item_id = preferred;
+    uint32_t tries = 0;
+    while (item_id && tries++ <= HEIC_MAX_ITEMS) {
+        if (item_id != avoid && !seq_item_id_used(c, item_id))
+            return item_id;
+        item_id--;
+    }
+    return 0;
+}
+
+static int seq_reserve_items(heic_ctx *ctx, heic_container *c,
+                             int add_items, int add_props,
+                             int *info_base, int *loc_base, int *assoc_base)
+{
+    heic_item_info *infos;
+    heic_item_loc *locs;
+    heic_ipma *assocs;
+    heic_property *props;
+    int new_infos, new_locs, new_assocs, new_props;
+    if (add_items <= 0 || add_props <= 0
+        || c->n_item_infos < 0 || c->n_item_locations < 0
+        || c->n_property_associations < 0 || c->n_properties < 0
+        || (uint32_t)c->n_item_infos + (uint32_t)add_items > HEIC_MAX_ITEMS
+        || (uint32_t)c->n_item_locations + (uint32_t)add_items
+            > HEIC_MAX_ITEMS
+        || (uint32_t)c->n_property_associations + (uint32_t)add_items
+            > HEIC_MAX_ITEMS
+        || (uint32_t)c->n_properties + (uint32_t)add_props > UINT16_MAX)
+        return -1;
+    *info_base = c->n_item_infos;
+    *loc_base = c->n_item_locations;
+    *assoc_base = c->n_property_associations;
+    new_infos = c->n_item_infos + add_items;
+    new_locs = c->n_item_locations + add_items;
+    new_assocs = c->n_property_associations + add_items;
+    new_props = c->n_properties + add_props;
+    infos = (heic_item_info *)heic_realloc_buf(
+        ctx, c->item_infos,
+        (size_t)c->n_item_infos * sizeof(heic_item_info),
+        (size_t)new_infos * sizeof(heic_item_info));
+    if (!infos) return -1;
+    c->item_infos = infos;
+    locs = (heic_item_loc *)heic_realloc_buf(
+        ctx, c->item_locations,
+        (size_t)c->n_item_locations * sizeof(heic_item_loc),
+        (size_t)new_locs * sizeof(heic_item_loc));
+    if (!locs) return -1;
+    c->item_locations = locs;
+    assocs = (heic_ipma *)heic_realloc_buf(
+        ctx, c->property_associations,
+        (size_t)c->n_property_associations * sizeof(heic_ipma),
+        (size_t)new_assocs * sizeof(heic_ipma));
+    if (!assocs) return -1;
+    c->property_associations = assocs;
+    props = (heic_property *)heic_realloc_buf(
+        ctx, c->properties,
+        (size_t)c->n_properties * sizeof(heic_property),
+        (size_t)new_props * sizeof(heic_property));
+    if (!props) return -1;
+    c->properties = props;
+    c->n_item_infos = new_infos;
+    c->n_item_locations = new_locs;
+    c->n_property_associations = new_assocs;
+    return 0;
+}
+
+static int seq_append_thumb_ref(heic_ctx *ctx, heic_container *c,
+                                uint32_t from_item_id, uint32_t to_item_id)
+{
+    heic_iref *refs;
+    uint32_t *to_ids =
+        (uint32_t *)heic_zalloc(ctx, sizeof(uint32_t));
+    int old_count = c->n_item_references;
+    if (!to_ids || old_count < 0
+        || (uint32_t)old_count >= HEIC_MAX_ITEMS) {
+        heic_free_buf(ctx, to_ids);
+        return -1;
+    }
+    refs = (heic_iref *)heic_realloc_buf(
+        ctx, c->item_references,
+        (size_t)old_count * sizeof(heic_iref),
+        (size_t)(old_count + 1) * sizeof(heic_iref));
+    if (!refs) {
+        heic_free_buf(ctx, to_ids);
+        return -1;
+    }
+    c->item_references = refs;
+    refs[old_count].ref_type = HEIC_REF_THMB;
+    refs[old_count].from_item_id = from_item_id;
+    refs[old_count].to_item_ids = to_ids;
+    refs[old_count].to_item_ids[0] = to_item_id;
+    refs[old_count].n_to = 1;
+    c->n_item_references = old_count + 1;
+    return 0;
+}
+
 static int seq_make_item(heic_ctx *ctx, heic_container *c,
-                         heic_seq_track *t, int item_index, uint32_t item_id,
+                         heic_seq_track *t, int info_index, int loc_index,
+                         int assoc_index, uint32_t item_id,
                          uint64_t offset, uint32_t size)
 {
-    heic_item_loc *loc = &c->item_locations[item_index];
-    heic_ipma *assoc = &c->property_associations[item_index];
+    heic_item_loc *loc = &c->item_locations[loc_index];
+    heic_ipma *assoc = &c->property_associations[assoc_index];
     heic_property *p;
     uint16_t props[3];
     int n_props = 0;
 
-    c->item_infos[item_index].item_id = item_id;
-    c->item_infos[item_index].item_type =
+    c->item_infos[info_index].item_id = item_id;
+    c->item_infos[info_index].item_type =
         t->has_av1c ? HEIC_TYPE_AV01 : HEIC_TYPE_HVC1;
 
     loc->item_id = item_id;
@@ -2259,7 +2383,9 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     uint32_t primary_size, thumb_size = 0;
     uint32_t movie_timescale = 0;
     uint64_t movie_duration = 0;
-    int n_items, n_props;
+    uint32_t primary_item_id, thumb_item_id = 0;
+    int n_items, n_props, info_base, loc_base, assoc_base;
+    int had_meta = c->has_meta;
 
     memset(tracks, 0, sizeof(tracks));
     box_iter_init(&it, moov->content, moov->content_len);
@@ -2328,46 +2454,41 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     n_items = thumb >= 0 ? 2 : 1;
     n_props = 2 + tracks[primary].has_colr;
     if (thumb >= 0) n_props += 2 + tracks[thumb].has_colr;
-    c->item_infos = (heic_item_info *)heic_zalloc(
-        ctx, (size_t)n_items * sizeof(heic_item_info));
-    c->item_locations = (heic_item_loc *)heic_zalloc(
-        ctx, (size_t)n_items * sizeof(heic_item_loc));
-    c->properties = (heic_property *)heic_zalloc(
-        ctx, (size_t)n_props * sizeof(heic_property));
-    c->property_associations = (heic_ipma *)heic_zalloc(
-        ctx, (size_t)n_items * sizeof(heic_ipma));
-    if (!c->item_infos || !c->item_locations || !c->properties
-        || !c->property_associations)
-        goto done;
-    c->n_item_infos = n_items;
-    c->n_item_locations = n_items;
-    c->n_property_associations = n_items;
-    c->primary_item_id = 1;
-    if (seq_make_item(ctx, c, &tracks[primary], 0, 1,
-                      primary_off, primary_size) != 0)
-        goto done;
+    primary_item_id = seq_unused_item_id(
+        c, had_meta ? UINT32_MAX : 1u, 0);
+    if (!primary_item_id) goto done;
+    if (thumb >= 0) {
+        thumb_item_id = seq_unused_item_id(
+            c, had_meta ? UINT32_MAX - 1u : 2u, primary_item_id);
+        if (!thumb_item_id) goto done;
+    }
     if (!movie_timescale) movie_timescale = tracks[primary].media_timescale;
     if (!movie_duration)
         movie_duration = seq_rescale(tracks[primary].media_duration,
                                      tracks[primary].media_timescale,
                                      movie_timescale);
-    (void)seq_build_timeline(ctx, c, &tracks[primary], movie_timescale,
-                             movie_duration, ab);
+    if (seq_build_timeline(ctx, c, &tracks[primary], primary_item_id,
+                           movie_timescale, movie_duration, ab) != 0) {
+        goto done;
+    }
+    if (seq_reserve_items(ctx, c, n_items, n_props,
+                          &info_base, &loc_base, &assoc_base) != 0)
+        goto done;
+    if (!had_meta) c->primary_item_id = primary_item_id;
+    if (seq_make_item(ctx, c, &tracks[primary],
+                      info_base, loc_base, assoc_base, primary_item_id,
+                      primary_off, primary_size) != 0)
+        goto done;
 
     if (thumb >= 0) {
-        c->item_references = (heic_iref *)heic_zalloc(ctx, sizeof(heic_iref));
-        if (!c->item_references) goto done;
-        c->n_item_references = 1;
-        if (seq_make_item(ctx, c, &tracks[thumb], 1, 2,
+        if (seq_make_item(ctx, c, &tracks[thumb],
+                          info_base + 1, loc_base + 1, assoc_base + 1,
+                          thumb_item_id,
                           thumb_off, thumb_size) != 0)
             goto done;
-        c->item_references[0].ref_type = HEIC_REF_THMB;
-        c->item_references[0].from_item_id = 2;
-        c->item_references[0].to_item_ids =
-            (uint32_t *)heic_zalloc(ctx, sizeof(uint32_t));
-        if (!c->item_references[0].to_item_ids) goto done;
-        c->item_references[0].to_item_ids[0] = 1;
-        c->item_references[0].n_to = 1;
+        if (seq_append_thumb_ref(
+                ctx, c, thumb_item_id, primary_item_id) != 0)
+            goto done;
     }
     c->has_meta = 1;
     c->is_sequence = 1;
@@ -2375,6 +2496,10 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
 
 done:
     for (i = 0; i < n_tracks; i++) seq_free_track(ctx, &tracks[i]);
+    /* Keep a valid still primary when an optional movie track is unsupported.
+     * Once a timeline exists, later failures are allocation/merge failures and
+     * must remain fatal so partially appended ownership is cleaned up. */
+    if (rc != 0 && had_meta && !c->sequence) rc = 0;
     return rc;
 }
 
@@ -2449,13 +2574,12 @@ int heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
                 return -1;
             }
         } else if (top.type == HEIC_BOX_MOOV && !has_moov) {
-            /* Defer until all top-level boxes are seen: meta/mini takes
-             * precedence when a file also carries an image sequence. */
+            /* Defer until meta has populated the still-image item tables. */
             moov = top;
             has_moov = 1;
         }
     }
-    if (!out->has_meta && has_moov) {
+    if (has_moov && (!out->has_meta || has_sequence_brand(out))) {
         if (parse_moov(ctx, &moov, out, ab) != 0) {
             heic_container_free(out);
             return -1;

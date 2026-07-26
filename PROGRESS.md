@@ -210,6 +210,9 @@
       dav1d state for dependent samples; libavif's five-frame inter-coded
       fixture covers show-existing frames, timestamp-associated delayed output,
       reset/random access, and every RGB frame against libheif/dav1d
+- [x] Combined `meta` + `moov` image sequences preserve the still primary item
+      and its metadata while exposing the movie track through sequence APIs;
+      the original libavif fixture is tested unchanged
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)

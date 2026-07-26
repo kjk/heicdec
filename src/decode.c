@@ -1270,7 +1270,7 @@ heic_image *heic_sequence_decoder_decode_frame_abortable(
         || seq->sample_count != decoder->sample_count
         || frame_index >= seq->frame_count
         || heic_container_get_item(&doc->container,
-                                   doc->container.primary_item_id, &item) != 0
+                                   seq->coded_item_id, &item) != 0
         || (!item.hvcc && !item.av1c))
         return NULL;
     target = seq->frame_samples[frame_index];

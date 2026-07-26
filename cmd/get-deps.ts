@@ -58,7 +58,7 @@ const LIBAVIF_SAMPLES = ["colors-animated-8bpc.avif"];
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v6-avif-fox+grid+alpha+inter-sequence;unci-block;mini-hevc+av1;hevc-sequences+pcm";
+  "v7-avif-fox+grid+alpha+meta-moov-sequence;unci-block;mini-hevc+av1;hevc-sequences+pcm";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",

@@ -387,7 +387,9 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
       oracleProc.exitCode === 0 &&
       oracleMse !== null &&
       oracleMse <= 8 &&
-      (t.name !== "sequence_inter.avif" || oracleOut.includes("dependent=1"))
+      (t.name !== "sequence_inter.avif" ||
+        (oracleOut.includes("dependent=1") &&
+          oracleOut.includes("separate_primary=1")))
     ) {
       ok++;
       console.log(

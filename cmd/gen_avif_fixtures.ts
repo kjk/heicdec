@@ -393,11 +393,7 @@ export function writeAlpha(
   console.log(`wrote ${path} (${out.length} bytes) alpha ${w}x${h}`);
 }
 
-/**
- * Preserve libavif's inter-coded movie track byte-for-byte. Its redundant
- * top-level meta would make our still-image parser take precedence, so mark
- * that box as free without changing its size or the absolute sample offsets.
- */
+/** Install libavif's original inter-coded meta+moov sequence unchanged. */
 export function writeInterSequence(source: string, path: string): void {
   const out = new Uint8Array(readFileSync(source));
   let pos = 0;
@@ -409,7 +405,6 @@ export function writeInterSequence(source: string, path: string): void {
     if (size < 8 || pos + size > out.length)
       throw new Error(`invalid top-level box in ${source}`);
     if (typ === "meta" && !foundMeta) {
-      out.set(new TextEncoder().encode("free"), pos + 4);
       foundMeta = true;
     } else if (typ === "moov") {
       foundMoov = true;
@@ -419,7 +414,9 @@ export function writeInterSequence(source: string, path: string): void {
   if (pos !== out.length || !foundMeta || !foundMoov)
     throw new Error(`expected meta+moov AVIF sequence in ${source}`);
   writeFileSync(path, out);
-  console.log(`wrote ${path} (${out.length} bytes) inter-frame AV1 sequence`);
+  console.log(
+    `wrote ${path} (${out.length} bytes) inter-frame AV1 meta+moov sequence`,
+  );
 }
 
 /** Generate grid, alpha, and timed sequence AVIFs (expects sources present). */
