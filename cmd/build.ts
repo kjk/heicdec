@@ -860,6 +860,173 @@ export async function buildFuzz(clean = false): Promise<string> {
   return FUZZ_EXE;
 }
 
+/* ----- AFL++ target (driven by cmd/fuzz-afl.ts; macOS / *nix) ----- */
+
+const FUZZ_AFL_DIR = `${OUT_ROOT}/fuzz-afl`;
+export const FUZZ_AFL_EXE = `${FUZZ_AFL_DIR}/heic_afl`;
+
+/** Prefer Homebrew AFL++ wrappers (afl-clang-fast → Homebrew LLVM). */
+export function findAflCc(): string {
+  const env = process.env.AFL_CC || process.env.AFL_CLANG_FAST;
+  if (env && existsSync(env)) return env;
+  for (const c of [
+    "/opt/homebrew/bin/afl-clang-fast",
+    "/usr/local/bin/afl-clang-fast",
+    "/opt/homebrew/bin/afl-cc",
+    "/usr/local/bin/afl-cc",
+  ]) {
+    if (existsSync(c)) return c;
+  }
+  return "afl-clang-fast";
+}
+
+export function aflTool(name: string): string | null {
+  const envKey = name.toUpperCase().replaceAll("-", "_");
+  const env = process.env[envKey];
+  if (env && existsSync(env)) return env;
+  for (const base of ["/opt/homebrew/bin", "/usr/local/bin"]) {
+    const p = `${base}/${name}`;
+    if (existsSync(p)) return p;
+  }
+  // Bun.which returns null when missing.
+  return Bun.which(name);
+}
+
+// AFL++ target: same LLVMFuzzerTestOneInput harness as libFuzzer, but built
+// with afl-clang-fast -fsanitize=fuzzer (AFL++ swaps that for libAFLDriver.a
+// + persistent-mode shared-memory input). Optional ASan via AFL_USE_ASAN.
+// dav1d/zlib/brotli are linked uninstrumented (prebuilt) when present.
+export async function buildAflFuzz(
+  opts: { clean?: boolean; asan?: boolean } = {},
+): Promise<string> {
+  if (isWindows) {
+    throw new Error(
+      "AFL++ fuzzing is not supported on Windows; use bun cmd/fuzz.ts (libFuzzer)",
+    );
+  }
+  const clean = !!opts.clean;
+  const asan = opts.asan !== false; // default on
+  mkdirSync(FUZZ_AFL_DIR, { recursive: true });
+
+  const cc = findAflCc();
+  const ccOk =
+    existsSync(cc) ||
+    !!Bun.which(cc) ||
+    // bare name may still resolve when PATH is set for the child
+    cc === "afl-clang-fast" ||
+    cc === "afl-cc";
+  if (!ccOk && !Bun.which("afl-clang-fast") && !Bun.which("afl-cc")) {
+    throw new Error(
+      "afl-clang-fast not found. On macOS: brew install afl++\n" +
+        "  (uses Homebrew LLVM for instrumentation)",
+    );
+  }
+
+  const testSrc = `${ROOT}/test/fuzz_target.c`;
+  const units: { src: string; obj: string }[] = [
+    ...SRCS.map((s) => ({
+      src: `${ROOT}/${s}`,
+      obj: `${FUZZ_AFL_DIR}/${objBase(s)}.o`,
+    })),
+    { src: testSrc, obj: `${FUZZ_AFL_DIR}/fuzz_target.o` },
+  ];
+
+  const dav1d = dav1dPaths();
+  const zlib = zlibPaths();
+  const brotli = brotliPaths();
+  const comp = compressFeatureFlags(zlib, brotli);
+  const stampWant =
+    `asan=${asan ? 1 : 0};dav1d=${dav1d ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0};cc=${cc}`;
+  const stampPath = `${FUZZ_AFL_DIR}/.afl_features`;
+  const stampPrev = existsSync(stampPath)
+    ? readFileSync(stampPath, "utf8").trim()
+    : "";
+  const stampChanged = stampPrev !== stampWant;
+
+  if (clean || stampChanged) {
+    for (const u of units) rmSync(u.obj, { force: true });
+    rmSync(FUZZ_AFL_EXE, { force: true });
+  }
+
+  let def = comp.def;
+  let inc = ` -I${ROOT}/src` + comp.inc;
+  if (dav1d) {
+    def += " -DHEIC_HAVE_DAV1D";
+    inc += dav1dIncFlags(dav1d);
+  }
+
+  const headers = [INTERNAL_H, PUBLIC_H];
+  const objStale = (u: { src: string; obj: string }) =>
+    needsRebuild(u.obj, u.src, ...headers);
+  const staleObj = units.some(objStale);
+  const staleExe = needsRebuild(
+    FUZZ_AFL_EXE,
+    ...units.map((u) => u.obj),
+    ...(dav1d ? [dav1d.lib] : []),
+    ...comp.libs,
+  );
+  if (!staleObj && !staleExe && existsSync(FUZZ_AFL_EXE) && !stampChanged) {
+    console.log("heic_afl up to date");
+    return FUZZ_AFL_EXE;
+  }
+
+  // -O1 for readable ASan traces; -fsanitize=fuzzer → AFL++ libAFLDriver.
+  // Do not also pass -fsanitize=address: AFL_USE_ASAN adds it.
+  const cflags = `-fsanitize=fuzzer ${clangCFlags("-g -O1", false)}${def}${inc}`;
+  const env: Record<string, string> = {
+    ...process.env,
+    // Strip -Werror noise from AFL plugin passes on some LLVM versions.
+    AFL_LLVM_NO_ERROR: process.env.AFL_LLVM_NO_ERROR ?? "1",
+    AFL_QUIET: process.env.AFL_QUIET ?? "1",
+  };
+  if (asan) env.AFL_USE_ASAN = "1";
+  else delete env.AFL_USE_ASAN;
+
+  console.log(
+    `building heic_afl (afl-clang-fast+fuzzer` +
+      `${asan ? "+asan" : ""}` +
+      `${dav1d ? "+dav1d" : ""}${zlib ? "+zlib" : ""}${brotli ? "+brotli" : ""})...`,
+  );
+  try {
+    for (const u of units) {
+      if (!objStale(u) && !stampChanged) continue;
+      await $`${cc} ${{ raw: cflags }} -c -o ${u.obj} ${u.src}`
+        .cwd(ROOT)
+        .env(env);
+    }
+    const objs = units.map((u) => u.obj);
+    const linkLibs: string[] = [];
+    if (dav1d) linkLibs.push(dav1d.lib);
+    linkLibs.push(...comp.libs);
+    linkLibs.push("-lpthread", "-lm");
+    const linkExtra = ` ${linkLibs.join(" ")}`;
+    if (
+      needsRebuild(
+        FUZZ_AFL_EXE,
+        ...objs,
+        ...(dav1d ? [dav1d.lib] : []),
+        ...comp.libs,
+      ) ||
+      stampChanged
+    ) {
+      await $`${cc} -fsanitize=fuzzer ${{ raw: objs.join(" ") }}${{ raw: linkExtra }} -o ${FUZZ_AFL_EXE}`
+        .cwd(ROOT)
+        .env(env);
+    }
+  } catch (e) {
+    console.error("\nAFL++ fuzz build failed.");
+    console.error("Install AFL++ (and LLVM) via Homebrew:");
+    console.error("  brew install afl++");
+    console.error(
+      "afl-clang-fast must be on PATH (or set AFL_CC=/path/to/afl-clang-fast).\n",
+    );
+    throw e;
+  }
+  writeFileSync(stampPath, stampWant);
+  console.log("built heic_afl");
+  return FUZZ_AFL_EXE;
+}
+
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   if (argv.includes("-clean")) cleanBuildOutput();

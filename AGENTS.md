@@ -103,6 +103,7 @@ bun cmd/tests.ts -all    # decode + RGB mse vs libheif (fail if we can't / diffe
 bun cmd/tests.ts -info -all  # open/probe only
 bun cmd/bench.ts -rand 5
 bun cmd/fuzz.ts          # libFuzzer + ASan (seeds fuzz/corpus from deps/)
+bun cmd/fuzz-afl.ts      # AFL++ on macOS/*nix (shares fuzz/corpus with libFuzzer)
 bun cmd/build-dist.ts    # amalgamation → dist/heic.h + dist/heic.c (+ dist/wasm/)
 bun cmd/build-wasm.ts    # WebAssembly drop only (deps/emsdk if emcc missing)
 bun cmd/run-wasm-demo.ts # serve dist/wasm/demo.html on localhost:8000
@@ -121,9 +122,15 @@ bun cmd/verify-wasm.ts <file.heic>
   unci compression are covered (`-no-deps` for pure-C HEVC only).
 - Flags: `-jobs N`, `-repro FILE`, `-minimize` (`-merge=1` corpus shrink),
   `-max-len N`, `-no-deps`.
+- `bun cmd/fuzz-afl.ts` — same harness via **AFL++** (macOS/*nix;
+  `brew install afl++`). Shares `fuzz/corpus/` with libFuzzer; AFL state in
+  `fuzz/afl-out/` (gitignored). On exit (and with `-import`), queue/crashes
+  merge into the shared corpus and `fuzz/crashes/`. Flags: `-jobs N`,
+  `-repro FILE`, `-cmin`, `-import`, `-no-asan`, `-V SEC`, `-no-deps`.
+  Once per machine on macOS: `sudo afl-system-config` (raises SysV shm limits).
 - `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so crash inputs
   become regression seeds. Reproduce with
-  `bun cmd/fuzz.ts -repro fuzz/crashes/<artifact>`.
+  `bun cmd/fuzz.ts -repro fuzz/crashes/<artifact>` (or `fuzz-afl.ts -repro`).
 
 WASM: pure-C HEVC + unci only (no `HEIC_HAVE_DAV1D` / zlib / brotli).
 `bun cmd/build-dist.ts` also rebuilds split `dist/wasm/heic.js` +

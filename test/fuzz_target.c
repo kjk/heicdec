@@ -1,11 +1,13 @@
-/* fuzz_target.c -- libFuzzer entry point for the HEIC/HEIF/AVIF decoder.
+/* fuzz_target.c -- libFuzzer / AFL++ entry point for the HEIC/HEIF/AVIF decoder.
  *
  * Each input is treated as a whole .heic/.heif/.avif file: open it, probe
  * info, decode primary + thumbnail, pull EXIF/XMP/ICC so malformed bytes
- * reach the container, HEVC, unci, and (when linked) dav1d paths. Built with
- * `clang -fsanitize=address,fuzzer`; libFuzzer supplies main().
+ * reach the container, HEVC, unci, and (when linked) dav1d paths.
  *
- * See cmd/fuzz.ts for the driver. */
+ * Drivers (same LLVMFuzzerTestOneInput, shared fuzz/corpus/):
+ *   bun cmd/fuzz.ts      clang -fsanitize=address,fuzzer (libFuzzer main)
+ *   bun cmd/fuzz-afl.ts  afl-clang-fast -fsanitize=fuzzer (AFL++ libAFLDriver)
+ */
 #include "heic.h"
 
 #include <stdlib.h>

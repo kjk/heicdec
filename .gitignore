@@ -30,6 +30,9 @@ features_summary.txt
 # fuzzing: corpus is generated/large. fuzz/crashes/ IS tracked.
 fuzz/corpus/
 fuzz/corpus.min/
+fuzz/corpus.cmin/
+fuzz/corpus.precmin/
+fuzz/afl-out/
 fuzz/*.log
 # amalgamated dist is regenerated; agents do not commit it
 # (user commits dist/ manually when publishing)

@@ -44,6 +44,7 @@ bun cmd/build.ts -libheif        # also link strukturag libheif oracle
 bun cmd/bench.ts -rand 5         # compact best-of-3 timing vs libheif
 bun cmd/bench.ts -verbose -rand 5 # also show open/decode/close timing
 bun cmd/fuzz.ts                  # libFuzzer + ASan (seeded from deps corpus)
+bun cmd/fuzz-afl.ts              # AFL++ on macOS (shares fuzz/corpus/)
 bun cmd/build-dist.ts            # amalgamation → dist/ (+ split JS/WASM demo)
 bun cmd/build-wasm.ts            # WebAssembly drop only (bootstraps emsdk if needed)
 bun cmd/run-wasm-demo.ts         # serve dist/wasm/demo.html on localhost:8000
@@ -54,6 +55,12 @@ Fuzzing notes: first run builds optional dav1d/zlib/brotli when missing, seeds
 `fuzz/corpus/` from the corpus, then mutates until you Ctrl-C (rerun resumes).
 Crashes land in `fuzz/crashes/` (commit them). Useful flags: `-jobs N`,
 `-repro FILE`, `-minimize`, `-no-deps` (HEVC-only, skip codec builds).
+
+On macOS you can also use AFL++ (`brew install afl++`, then once
+`sudo afl-system-config`): `bun cmd/fuzz-afl.ts` builds the same
+`LLVMFuzzerTestOneInput` harness with `afl-clang-fast` and shares
+`fuzz/corpus/` with libFuzzer. AFL state is in `fuzz/afl-out/`; use
+`-import` (also runs on exit) to merge the queue back into the shared corpus.
 
 ### WebAssembly demo
 
