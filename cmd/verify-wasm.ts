@@ -7,7 +7,7 @@ import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { getDeps } from "./get-deps";
 import { corpusSummary, selectFiles } from "./corpus";
-import { ensureWasm, WASM_JS } from "./build-wasm";
+import { ensureWasm, WASM_BINARY, WASM_JS } from "./build-wasm";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 await getDeps();
@@ -20,11 +20,15 @@ ${corpusSummary()}`,
 ensureWasm(false);
 if (!existsSync(WASM_JS))
   throw new Error("dist/wasm/heic.js missing after build");
+if (!existsSync(WASM_BINARY))
+  throw new Error("dist/wasm/heic.wasm missing after build");
 
 /* The glue is built for ENVIRONMENT=web; provide the browser globals it probes. */
 (globalThis as any).self = globalThis;
 const createHeicModule = (await import(WASM_JS)).default;
-const M: any = await createHeicModule();
+const M: any = await createHeicModule({
+  wasmBinary: readFileSync(WASM_BINARY),
+});
 
 M._heic_init();
 const ctx = M._heic_ctx_new(0, 0, 0, 0);

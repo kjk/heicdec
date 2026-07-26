@@ -4,8 +4,8 @@
 //
 // Emits:
 //   dist/heic.h + dist/heic.c  — amalgamation (does NOT include dav1d)
-//   dist/wasm/heic.js          — Emscripten SINGLE_FILE module from dist/heic.c
-//                                for the demo at dist/wasm/index.html
+//   dist/wasm/heic.{js,wasm}   — Emscripten loader and binary from dist/heic.c
+//                                for the demo at dist/wasm/demo.html
 import { $ } from "bun";
 import {
   readFileSync,

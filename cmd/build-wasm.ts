@@ -4,8 +4,8 @@
 //   bun cmd/build-wasm.ts -clean     # also wipe/re-activate the local emsdk
 //   bun cmd/build-wasm.ts -dist      # compile dist/heic.c (after build-dist)
 //
-// Output: dist/wasm/heic.js — a self-contained (SINGLE_FILE) Emscripten module
-// that embeds the .wasm as base64, so dist/wasm/index.html works from file://.
+// Output: dist/wasm/heic.js + heic.wasm — Emscripten loader and binary.
+// Serve dist/wasm over HTTP; browsers do not reliably fetch wasm from file://.
 //
 // Pure-C HEVC + unci (no dav1d / zlib / brotli). AVIF returns a clear error
 // until a consumer links dav1d. Emscripten is bootstrapped into deps/emsdk
@@ -22,6 +22,7 @@ const SRC = path.join(ROOT, "src");
 const DIST_C = path.join(ROOT, "dist", "heic.c");
 const WASM = path.join(ROOT, "dist", "wasm");
 export const WASM_JS = path.join(WASM, "heic.js");
+export const WASM_BINARY = path.join(WASM, "heic.wasm");
 const EMSDK = path.join(ROOT, "deps", "emsdk");
 const isWin = process.platform === "win32";
 const EMSDK_ENV = path.join(EMSDK, isWin ? "emsdk_env.bat" : "emsdk_env.sh");
@@ -153,8 +154,12 @@ function wasmInputMtime(useDist: boolean): number {
 }
 
 export function wasmOutdated(useDist = false): boolean {
-  if (!existsSync(WASM_JS)) return true;
-  return statSync(WASM_JS).mtimeMs < wasmInputMtime(useDist);
+  if (!existsSync(WASM_JS) || !existsSync(WASM_BINARY)) return true;
+  const inputMtime = wasmInputMtime(useDist);
+  return (
+    statSync(WASM_JS).mtimeMs < inputMtime ||
+    statSync(WASM_BINARY).mtimeMs < inputMtime
+  );
 }
 
 function compile(prefix: string, useDist: boolean) {
@@ -164,10 +169,10 @@ function compile(prefix: string, useDist: boolean) {
     "-O2",
     "-sMODULARIZE=1",
     "-sEXPORT_NAME=createHeicModule",
-    "-sSINGLE_FILE=1",
     "-sALLOW_MEMORY_GROWTH=1",
     "-sENVIRONMENT=web",
     "-sEXPORT_ES6=0",
+    "-sINCOMING_MODULE_JS_API=wasmBinary",
     /* HEVC stills can be multi‑MP; default INITIAL_MEMORY is tight. */
     "-sINITIAL_MEMORY=67108864",
     `-sEXPORTED_FUNCTIONS=${EXPORTS.join(",")}`,
@@ -190,13 +195,12 @@ function compile(prefix: string, useDist: boolean) {
 
   sh(`${prefix}emcc ${inputs} ${flags} -o ${out}`);
   const kb = (Bun.file(WASM_JS).size / 1024).toFixed(0);
-  console.log(`✓ wrote dist/wasm/heic.js (${kb} KB, wasm embedded)`);
-  const py = isWin ? "python" : "python3";
+  const wasmKb = (Bun.file(WASM_BINARY).size / 1024).toFixed(0);
   console.log(
-    `  open the demo:  cd dist/wasm && ${py} -m http.server 8000   → http://localhost:8000/`,
+    `✓ wrote dist/wasm/heic.js (${kb} KB) + heic.wasm (${wasmKb} KB)`,
   );
   console.log(
-    "  (or open dist/wasm/index.html directly — SINGLE_FILE works from file://)",
+    "  run the demo: bun cmd/run-wasm-demo.ts → http://localhost:8000/",
   );
   console.log(
     "  note: pure-C HEVC/unci only; AV1 (avif) needs dav1d (not in this wasm drop)",
