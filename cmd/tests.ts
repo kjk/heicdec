@@ -389,6 +389,24 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
   return [ok, fail];
 }
 
+async function runGainMapTest(exe: string): Promise<[number, number]> {
+  const input = join(
+    import.meta.dir, "..", "deps", "heic", "testdata",
+    "apple-hdr", "hdr-sample.heic",
+  );
+  const proc = await Bun.$`${exe} -verify-gain-map ${input}`
+    .nothrow()
+    .quiet();
+  const out = (proc.stdout.toString() + proc.stderr.toString()).trim();
+  const mse = parseVerifyMse(out);
+  if (proc.exitCode === 0 && mse !== null && mse <= 8) {
+    console.log(`[ok] HDR gain map ${out}`);
+    return [1, 0];
+  }
+  console.log(`[fail] HDR gain map\n${out.slice(0, 500)}`);
+  return [0, 1];
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.includes("-clean")) cleanBuildOutput();
@@ -555,7 +573,10 @@ async function main() {
     const [apiOk, apiFail] = await runHeifSequenceApiTests(exe);
     ok += apiOk;
     fail += apiFail;
-    extra = HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length;
+    const [gainOk, gainFail] = await runGainMapTest(exe);
+    ok += gainOk;
+    fail += gainFail;
+    extra = HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 1;
   }
 
   console.log(

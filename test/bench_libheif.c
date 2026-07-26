@@ -187,6 +187,102 @@ int heic_libheif_decode_rgb(const uint8_t *data, size_t len,
     return decode_rgb_inner(data, len, out_rgb, out_w, out_h, out_stride, NULL);
 }
 
+int heic_libheif_decode_gain_map_rgb(const uint8_t *data, size_t len,
+                                     uint8_t **out_rgb, int *out_w, int *out_h,
+                                     int *out_stride, char *error,
+                                     size_t error_cap)
+{
+    heif_context *ctx = NULL;
+    heif_image_handle *primary = NULL, *gain_map = NULL;
+    heif_image *image = NULL;
+    heif_item_id *ids = NULL;
+    heif_decoding_options *opts = NULL;
+    uint8_t *rgb = NULL;
+    heif_error err;
+    const uint8_t *plane;
+    int count, i, stride, w, h, y, rc = -1;
+
+    if (!data || !len || !out_rgb) return -1;
+    *out_rgb = NULL;
+    if (error && error_cap) error[0] = '\0';
+    ctx = heif_context_alloc();
+    if (!ctx) goto done;
+    heif_context_set_max_decoding_threads(ctx, 1);
+    err = heif_context_read_from_memory_without_copy(ctx, data, len, NULL);
+    if (err.code != heif_error_Ok) goto heif_fail;
+    err = heif_context_get_primary_image_handle(ctx, &primary);
+    if (err.code != heif_error_Ok || !primary) goto heif_fail;
+    count = heif_image_handle_get_number_of_auxiliary_images(primary, 0);
+    if (count <= 0) {
+        if (error && error_cap) snprintf(error, error_cap, "no auxiliary images");
+        goto done;
+    }
+    ids = (heif_item_id *)malloc((size_t)count * sizeof(*ids));
+    if (!ids) goto done;
+    count = heif_image_handle_get_list_of_auxiliary_image_IDs(
+        primary, 0, ids, count);
+    for (i = 0; i < count; i++) {
+        heif_image_handle *candidate = NULL;
+        const char *type = NULL;
+        err = heif_image_handle_get_auxiliary_image_handle(
+            primary, ids[i], &candidate);
+        if (err.code != heif_error_Ok || !candidate) continue;
+        err = heif_image_handle_get_auxiliary_type(candidate, &type);
+        if (err.code == heif_error_Ok && type && strstr(type, "hdrgainmap")) {
+            heif_image_handle_release_auxiliary_type(candidate, &type);
+            gain_map = candidate;
+            break;
+        }
+        if (type)
+            heif_image_handle_release_auxiliary_type(candidate, &type);
+        heif_image_handle_release(candidate);
+    }
+    if (!gain_map) {
+        if (error && error_cap) snprintf(error, error_cap, "no HDR gain map");
+        goto done;
+    }
+    opts = heif_decoding_options_alloc();
+    if (opts) opts->num_codec_threads = 1;
+    err = heif_decode_image(gain_map, &image, heif_colorspace_RGB,
+                            heif_chroma_interleaved_RGB, opts);
+    if (err.code != heif_error_Ok || !image) goto heif_fail;
+    plane = heif_image_get_plane_readonly(
+        image, heif_channel_interleaved, &stride);
+    w = heif_image_get_width(image, heif_channel_interleaved);
+    h = heif_image_get_height(image, heif_channel_interleaved);
+    if (!plane || w <= 0 || h <= 0 || stride < w * 3
+        || (size_t)w > SIZE_MAX / 3
+        || (size_t)w * 3 > SIZE_MAX / (size_t)h)
+        goto done;
+    rgb = (uint8_t *)malloc((size_t)w * (size_t)h * 3);
+    if (!rgb) goto done;
+    for (y = 0; y < h; y++)
+        memcpy(rgb + (size_t)y * (size_t)w * 3,
+               plane + (size_t)y * (size_t)stride, (size_t)w * 3);
+    *out_rgb = rgb;
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    if (out_stride) *out_stride = w * 3;
+    rgb = NULL;
+    rc = 0;
+    goto done;
+
+heif_fail:
+    if (error && error_cap)
+        snprintf(error, error_cap, "%s (code %d, subcode %d)",
+                 err.message ? err.message : "libheif gain-map error",
+                 (int)err.code, (int)err.subcode);
+done:
+    free(rgb);
+    free(ids);
+    if (opts) heif_decoding_options_free(opts);
+    if (image) heif_image_release(image);
+    if (gain_map) heif_image_handle_release(gain_map);
+    if (primary) heif_image_handle_release(primary);
+    if (ctx) heif_context_free(ctx);
+    return rc;
+}
+
 int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
                                      uint8_t **out_rgb, uint32_t *out_frames,
                                      int *out_w, int *out_h, int *out_stride,

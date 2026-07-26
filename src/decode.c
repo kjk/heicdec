@@ -1319,30 +1319,29 @@ int heic_doc_decode_into(heic_doc *doc, heic_format format,
     return heic_decode_primary(doc, format, NULL, buf, buf_size, stride, NULL);
 }
 
-heic_image *heic_doc_decode_thumbnail(heic_doc *doc, heic_format format)
+static heic_image *decode_item_to_image(heic_doc *doc, const heic_item *item,
+                                        heic_format format,
+                                        const heic_abort *ab)
 {
-    uint32_t thumbs[8];
-    int n;
-    heic_item item;
     heic_frame frame;
     heic_image *img;
     int bpp;
     size_t need;
     int w, h;
 
-    if (!doc) return NULL;
-    n = heic_container_find_thumbs(&doc->container, doc->container.primary_item_id,
-                                   thumbs, 8);
-    if (n <= 0) return NULL;
-    if (heic_container_get_item(&doc->container, thumbs[0], &item) != 0) return NULL;
     memset(&frame, 0, sizeof(frame));
-    if (decode_item(doc, &item, &frame, NULL, 0) != 0) {
+    if (decode_item(doc, item, &frame, ab, 0) != 0) {
         heic_frame_free(doc->ctx, &frame);
         return NULL;
     }
     w = frame_cropped_w(&frame);
     h = frame_cropped_h(&frame);
     bpp = (format == HEIC_FORMAT_RGBA || format == HEIC_FORMAT_BGRA) ? 4 : 3;
+    if (w <= 0 || h <= 0 || (size_t)w > SIZE_MAX / (size_t)bpp
+        || (size_t)w * (size_t)bpp > SIZE_MAX / (size_t)h) {
+        heic_frame_free(doc->ctx, &frame);
+        return NULL;
+    }
     need = (size_t)w * (size_t)h * (size_t)bpp;
     img = (heic_image *)heic_zalloc(doc->ctx, sizeof(heic_image));
     if (!img) {
@@ -1361,4 +1360,41 @@ heic_image *heic_doc_decode_thumbnail(heic_doc *doc, heic_format format)
     }
     heic_frame_free(doc->ctx, &frame);
     return img;
+}
+
+heic_image *heic_doc_decode_thumbnail(heic_doc *doc, heic_format format)
+{
+    uint32_t thumbs[8];
+    heic_item item;
+    int n;
+    if (!doc) return NULL;
+    n = heic_container_find_thumbs(&doc->container,
+                                   doc->container.primary_item_id, thumbs, 8);
+    if (n <= 0
+        || heic_container_get_item(&doc->container, thumbs[0], &item) != 0)
+        return NULL;
+    return decode_item_to_image(doc, &item, format, NULL);
+}
+
+heic_image *heic_doc_decode_gain_map_abortable(
+    heic_doc *doc, heic_format format, heic_abort *ab)
+{
+    static const char gain_map_urn[] =
+        "urn:com:apple:photo:2020:aux:hdrgainmap";
+    uint32_t aux[8];
+    heic_item item;
+    int n;
+    if (!doc) return NULL;
+    n = heic_container_find_aux(&doc->container,
+                                doc->container.primary_item_id,
+                                gain_map_urn, aux, 8);
+    if (n <= 0
+        || heic_container_get_item(&doc->container, aux[0], &item) != 0)
+        return NULL;
+    return decode_item_to_image(doc, &item, format, ab);
+}
+
+heic_image *heic_doc_decode_gain_map(heic_doc *doc, heic_format format)
+{
+    return heic_doc_decode_gain_map_abortable(doc, format, NULL);
 }

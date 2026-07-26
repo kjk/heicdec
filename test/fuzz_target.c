@@ -98,6 +98,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         if (img) heic_image_destroy(ctx, img);
     }
 
+    if (info.has_gain_map) {
+        img = heic_doc_decode_gain_map(doc, HEIC_FORMAT_RGB);
+        if (img) heic_image_destroy(ctx, img);
+    }
+
     if (heic_doc_sequence_info(doc, &seq) == 0 && seq.frame_count) {
         uint32_t frame = seq.frame_count <= 32 ? seq.frame_count - 1 : 0;
         heic_sequence_decoder *decoder;

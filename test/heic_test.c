@@ -717,6 +717,62 @@ done:
     return rc;
 }
 
+static int do_verify_gain_map(const uint8_t *data, size_t len)
+{
+    heic_ctx *ctx = NULL;
+    heic_doc *doc = NULL;
+    heic_image *img = NULL;
+    uint8_t *ref = NULL;
+    int rw = 0, rh = 0, rstride = 0;
+    int x, y, maxd = 0, rc = 1;
+    uint64_t ndiff = 0;
+    double sse = 0.0;
+    char error[256];
+
+    if (heic_libheif_decode_gain_map_rgb(
+            data, len, &ref, &rw, &rh, &rstride,
+            error, sizeof error) != 0) {
+        printf("gain-map oracle failed: %s\n", error);
+        goto done;
+    }
+    ctx = heic_ctx_new(NULL, NULL, on_error_quiet, NULL);
+    if (!ctx) goto done;
+    doc = heic_doc_open(ctx, data, len);
+    if (!doc) goto done;
+    img = heic_doc_decode_gain_map(doc, HEIC_FORMAT_RGB);
+    if (!img) goto done;
+    if ((int)img->width != rw || (int)img->height != rh) {
+        printf("gain-map size mismatch heic=%ux%u libheif=%dx%d\n",
+               (unsigned)img->width, (unsigned)img->height, rw, rh);
+        goto done;
+    }
+    for (y = 0; y < rh; y++) {
+        const uint8_t *a =
+            img->data + (size_t)y * (size_t)img->stride;
+        const uint8_t *b =
+            ref + (size_t)y * (size_t)rstride;
+        for (x = 0; x < rw * 3; x++) {
+            int d = (int)a[x] - (int)b[x];
+            if (d < 0) d = -d;
+            if (d) {
+                ndiff++;
+                sse += (double)d * (double)d;
+                if (d > maxd) maxd = d;
+            }
+        }
+    }
+    printf("gain-map %dx%d mse=%.4f maxdiff=%d n_diff=%llu\n",
+           rw, rh, sse / ((double)rw * (double)rh * 3.0), maxd,
+           (unsigned long long)ndiff);
+    rc = 0;
+done:
+    if (img) heic_image_destroy(ctx, img);
+    if (doc) heic_doc_close(doc);
+    if (ctx) heic_ctx_free(ctx);
+    free(ref);
+    return rc;
+}
+
 static uint32_t sequence_presentation_rank(const heic_sequence *seq,
                                            uint32_t sample)
 {
@@ -881,7 +937,7 @@ int main(int argc, char **argv)
     const char *out_path = NULL;
     int do_info = 0, do_exif = 0, do_decode = 0, do_thumbnail = 0;
     int do_bench_mode = 0, do_verify_mode = 0;
-    int do_verify_sequence_mode = 0;
+    int do_verify_sequence_mode = 0, do_verify_gain_map_mode = 0;
     int do_hevc_sequence_mode = 0;
     int do_sequence_info = 0, sequence_frame = -1;
     int profile_heic_loops = 0, profile_libheif_loops = 0;
@@ -901,6 +957,8 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-rgba") == 0) want_rgba = 1;
         else if (strcmp(argv[i], "-bench") == 0) do_bench_mode = 1;
         else if (strcmp(argv[i], "-verify") == 0) do_verify_mode = 1;
+        else if (strcmp(argv[i], "-verify-gain-map") == 0)
+            do_verify_gain_map_mode = 1;
         else if (strcmp(argv[i], "-verify-sequence") == 0)
             do_verify_sequence_mode = 1;
         else if (strcmp(argv[i], "-sequence-info") == 0)
@@ -932,12 +990,13 @@ int main(int argc, char **argv)
     if (!path ||
         (!do_info && !do_exif && !do_decode && !do_bench_mode
          && !do_verify_mode && !do_hevc_sequence_mode
+         && !do_verify_gain_map_mode
          && !do_verify_sequence_mode
          && !do_sequence_info && sequence_frame < 0
          && !profile_heic_loops && !profile_libheif_loops)) {
         fprintf(stderr,
                 "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bench] [-verify] "
-                "[-verify-sequence] "
+                "[-verify-gain-map] [-verify-sequence] "
                 "[-sequence-info] [-sequence-frame N] "
                 "[-hevc-sequence [-hevc-frames N]] "
                 "[-profile-heic N] [-profile-libheif N] "
@@ -985,6 +1044,11 @@ int main(int argc, char **argv)
     }
 
 #ifdef HEIC_HAVE_LIBHEIF
+    if (do_verify_gain_map_mode) {
+        rc = do_verify_gain_map(data, len);
+        free(data);
+        return rc;
+    }
     if (do_verify_sequence_mode) {
         rc = do_verify_sequence(data, len);
         free(data);
@@ -996,6 +1060,11 @@ int main(int argc, char **argv)
         return rc;
     }
 #else
+    if (do_verify_gain_map_mode) {
+        fprintf(stderr, "verify-gain-map: needs HEIC_HAVE_LIBHEIF\n");
+        free(data);
+        return 2;
+    }
     if (do_verify_sequence_mode) {
         fprintf(stderr, "verify-sequence: needs HEIC_HAVE_LIBHEIF\n");
         free(data);
@@ -1027,9 +1096,10 @@ int main(int argc, char **argv)
             fprintf(stderr, "info failed\n");
             goto done;
         }
-        printf("%ux%u kind=%s bit_depth=%d alpha=%d exif=%d xmp=%d thumb=%d\n",
+        printf("%ux%u kind=%s bit_depth=%d alpha=%d gain_map=%d exif=%d xmp=%d thumb=%d\n",
                (unsigned)info.width, (unsigned)info.height, kind_str(heic_doc_kind(doc)),
-               info.bit_depth, info.has_alpha, info.has_exif, info.has_xmp,
+               info.bit_depth, info.has_alpha, info.has_gain_map,
+               info.has_exif, info.has_xmp,
                info.has_thumbnail);
         rc = 0;
     }

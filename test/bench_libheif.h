@@ -40,6 +40,12 @@ int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
                                      int *out_w, int *out_h, int *out_stride,
                                      char *error, size_t error_cap);
 
+/* Decode the Apple HDR gain-map auxiliary to tightly packed RGB8. */
+int heic_libheif_decode_gain_map_rgb(const uint8_t *data, size_t len,
+                                     uint8_t **out_rgb, int *out_w, int *out_h,
+                                     int *out_stride, char *error,
+                                     size_t error_cap);
+
 #ifdef __cplusplus
 }
 #endif

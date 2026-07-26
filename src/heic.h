@@ -192,6 +192,13 @@ int heic_doc_decode_into(heic_doc *doc, heic_format format,
 /* Decode embedded thumbnail if present. Returns NULL if none. */
 heic_image *heic_doc_decode_thumbnail(heic_doc *doc, heic_format format);
 
+/* Decode an Apple HDR auxiliary gain map as an independent 8-bit image.
+   No gain-map reconstruction or tone mapping is applied. Returns NULL when
+   the primary image has no supported gain-map auxiliary. */
+heic_image *heic_doc_decode_gain_map(heic_doc *doc, heic_format format);
+heic_image *heic_doc_decode_gain_map_abortable(
+    heic_doc *doc, heic_format format, heic_abort *ab);
+
 /* ----- metadata ----- */
 
 /* EXIF: returns 1 and sets out/out_len to a freshly allocated TIFF

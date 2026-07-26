@@ -8,6 +8,7 @@ Decode-only library for HEIC/HEIF/AVIF still images, aimed at easy embedding
 * **AV1**: [videolan dav1d](https://code.videolan.org/videolan/dav1d) (C; linked, not re-ported)
 * HEVC image sequences: presentation timing, edit-list loops, one-shot frame
   decode, and a stateful playback decoder that caches reconstructed pictures
+* Apple HDR auxiliary gain-map extraction (component decode only; no tone map)
 * simple drop-in amalgamation: `dist/heic.h` + `dist/heic.c` (+ link dav1d for AVIF)
 * verified against [libheif](https://github.com/strukturag/libheif)
 
