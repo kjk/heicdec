@@ -173,7 +173,8 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
 }
 
 void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
-                    uint32_t width_ctbs, uint32_t height_ctbs, uint32_t ctb_size)
+                    uint32_t width_ctbs, uint32_t height_ctbs, uint32_t ctb_size,
+                    const uint8_t *pcm_map, uint32_t pcm_stride)
 {
     uint32_t ctb_x, ctb_y;
     int need_y = 0, need_cb = 0, need_cr = 0;
@@ -191,9 +192,15 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
     {
         uint32_t i;
         for (i = 0; i < n_ctb; i++) {
-            if (map[i].sao_type_idx[0] == 2) need_y = 1;
-            if (map[i].sao_type_idx[1] == 2) need_cb = 1;
-            if (map[i].sao_type_idx[2] == 2) need_cr = 1;
+            if (map[i].sao_type_idx[0] == 2 ||
+                (pcm_map && map[i].sao_type_idx[0] != 0))
+                need_y = 1;
+            if (map[i].sao_type_idx[1] == 2 ||
+                (pcm_map && map[i].sao_type_idx[1] != 0))
+                need_cb = 1;
+            if (map[i].sao_type_idx[2] == 2 ||
+                (pcm_map && map[i].sao_type_idx[2] != 0))
+                need_cr = 1;
         }
     }
 
@@ -236,7 +243,8 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
             if (x_end > w) x_end = w;
             if (y_end > h) y_end = h;
 
-            if (sao->sao_type_idx[0] == 1 && frame->y) {
+            if (sao->sao_type_idx[0] == 1 && frame->y &&
+                (!pcm_map || orig_y)) {
                 apply_sao_band(frame->y, frame->y_stride, x_px, y_px, x_end, y_end,
                                sao->sao_band_position[0], sao->sao_offset_val[0],
                                frame->bit_depth);
@@ -255,7 +263,8 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                 if (cx1 > cw) cx1 = cw;
                 if (cy1 > ch) cy1 = ch;
 
-                if (sao->sao_type_idx[1] == 1) {
+                if (sao->sao_type_idx[1] == 1 &&
+                    (!pcm_map || orig_cb)) {
                     apply_sao_band(frame->cb, frame->c_stride, cx0, cy0, cx1, cy1,
                                    sao->sao_band_position[1], sao->sao_offset_val[1],
                                    frame->bit_depth);
@@ -264,7 +273,8 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                                    cy0, cx1, cy1, sao->sao_eo_class[1],
                                    sao->sao_offset_val[1], frame->bit_depth);
                 }
-                if (sao->sao_type_idx[2] == 1) {
+                if (sao->sao_type_idx[2] == 1 &&
+                    (!pcm_map || orig_cr)) {
                     apply_sao_band(frame->cr, frame->c_stride, cx0, cy0, cx1, cy1,
                                    sao->sao_band_position[2], sao->sao_offset_val[2],
                                    frame->bit_depth);
@@ -272,6 +282,32 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                     apply_sao_edge(orig_cr, frame->cr, frame->c_stride, cw, ch, cx0,
                                    cy0, cx1, cy1, sao->sao_eo_class[2],
                                    sao->sao_offset_val[2], frame->bit_depth);
+                }
+            }
+        }
+    }
+
+    if (pcm_map && pcm_stride > 0) {
+        int y, x;
+        if (orig_y && frame->y) {
+            for (y = 0; y < h; y++) {
+                for (x = 0; x < w; x++) {
+                    if (pcm_map[(size_t)(y / 4) * pcm_stride + x / 4])
+                        frame->y[(size_t)y * frame->y_stride + x] =
+                            orig_y[(size_t)y * frame->y_stride + x];
+                }
+            }
+        }
+        if (frame->chroma_format > 0) {
+            for (y = 0; y < ch; y++) {
+                for (x = 0; x < cw; x++) {
+                    size_t ci = (size_t)y * frame->c_stride + x;
+                    size_t pi =
+                        (size_t)((y * sub_y) / 4) * pcm_stride +
+                        (x * sub_x) / 4;
+                    if (!pcm_map[pi]) continue;
+                    if (orig_cb && frame->cb) frame->cb[ci] = orig_cb[ci];
+                    if (orig_cr && frame->cr) frame->cr[ci] = orig_cr[ci];
                 }
             }
         }

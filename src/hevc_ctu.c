@@ -43,6 +43,7 @@ typedef struct {
     /* Deblock maps at 4x4 luma granularity */
     uint8_t *deblock_flags;
     uint8_t *cbf_map;
+    uint8_t *pcm_map;
     int8_t  *deblock_qp;
     uint32_t deblock_stride;
     uint32_t deblock_n;
@@ -1735,6 +1736,123 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     return 0;
 }
 
+static int pcm_read_bits(const heic_cabac *c, size_t *bit_pos, int n,
+                         uint16_t *out)
+{
+    size_t total_bits;
+    uint16_t v = 0;
+    int i;
+    if (!c || !bit_pos || !out || n < 1 || n > 16 ||
+        c->len > SIZE_MAX / 8)
+        return -1;
+    total_bits = c->len * 8;
+    if (*bit_pos > total_bits || (size_t)n > total_bits - *bit_pos)
+        return -1;
+    for (i = 0; i < n; i++) {
+        size_t p = *bit_pos + (size_t)i;
+        v = (uint16_t)((v << 1) |
+                       ((c->data[p >> 3] >> (7 - (p & 7))) & 1));
+    }
+    *bit_pos += (size_t)n;
+    *out = v;
+    return 0;
+}
+
+static uint16_t pcm_scale_sample(uint16_t sample, int pcm_depth,
+                                 int frame_depth)
+{
+    if (pcm_depth < frame_depth)
+        return (uint16_t)(sample << (frame_depth - pcm_depth));
+    if (pcm_depth > frame_depth)
+        return (uint16_t)(sample >> (pcm_depth - frame_depth));
+    return sample;
+}
+
+static int decode_pcm_plane(heic_slice_ctx *sc, uint16_t *plane, int stride,
+                            int plane_w, int plane_h, uint32_t x0, uint32_t y0,
+                            uint32_t width, uint32_t height, int pcm_depth,
+                            int frame_depth, size_t *bit_pos)
+{
+    uint32_t x, y;
+    for (y = 0; y < height; y++) {
+        for (x = 0; x < width; x++) {
+            uint16_t sample;
+            if (pcm_read_bits(&sc->cabac, bit_pos, pcm_depth, &sample) != 0)
+                return -1;
+            if (plane && x0 + x < (uint32_t)plane_w &&
+                y0 + y < (uint32_t)plane_h)
+                plane[(size_t)(y0 + y) * (size_t)stride + x0 + x] =
+                    pcm_scale_sample(sample, pcm_depth, frame_depth);
+        }
+    }
+    return 0;
+}
+
+static int decode_pcm_cu(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
+                         uint8_t log2_cb)
+{
+    heic_frame *f = sc->frame;
+    uint32_t cb_size = 1u << log2_cb;
+    int pcm_y_depth = (int)sc->sps->pcm_sample_bit_depth_luma_minus1 + 1;
+    int pcm_c_depth = (int)sc->sps->pcm_sample_bit_depth_chroma_minus1 + 1;
+    int sub_x = 1, sub_y = 1;
+    size_t bit_pos;
+    uint32_t bx, by, dx, dy, n4;
+
+    if (pcm_y_depth < 1 || pcm_y_depth > 16 ||
+        pcm_c_depth < 1 || pcm_c_depth > 16 ||
+        sc->cabac.byte_pos > SIZE_MAX / 8)
+        return -1;
+    bit_pos = sc->cabac.byte_pos * 8;
+    if (decode_pcm_plane(sc, f->y, f->y_stride, f->width, f->height,
+                         x0, y0, cb_size, cb_size, pcm_y_depth,
+                         bit_depth_y(sc->sps), &bit_pos) != 0)
+        goto truncated;
+
+    if (f->chroma_format != 0) {
+        if (f->chroma_format == 1 || f->chroma_format == 2) sub_x = 2;
+        if (f->chroma_format == 1) sub_y = 2;
+        if (decode_pcm_plane(sc, f->cb, f->c_stride, f->c_width, f->c_height,
+                             x0 / (uint32_t)sub_x, y0 / (uint32_t)sub_y,
+                             cb_size / (uint32_t)sub_x,
+                             cb_size / (uint32_t)sub_y, pcm_c_depth,
+                             bit_depth_c(sc->sps), &bit_pos) != 0 ||
+            decode_pcm_plane(sc, f->cr, f->c_stride, f->c_width, f->c_height,
+                             x0 / (uint32_t)sub_x, y0 / (uint32_t)sub_y,
+                             cb_size / (uint32_t)sub_x,
+                             cb_size / (uint32_t)sub_y, pcm_c_depth,
+                             bit_depth_c(sc->sps), &bit_pos) != 0)
+            goto truncated;
+    }
+
+    if (bit_pos > SIZE_MAX - 7) goto truncated;
+    heic_cabac_seek(&sc->cabac, (bit_pos + 7) / 8);
+    heic_cabac_reinit(&sc->cabac);
+
+    store_intra_mode(sc, x0, y0, log2_cb, 1, 0);
+    store_intra_mode(sc, x0, y0, log2_cb, 1, 1);
+    heic_mark_tu_boundary(sc->deblock_flags, sc->deblock_stride,
+                          sc->deblock_n, x0, y0, cb_size);
+    heic_store_deblock_qp(sc->deblock_qp, sc->deblock_stride,
+                          sc->deblock_n, x0, y0, cb_size,
+                          (int8_t)sc->current_qpy);
+    bx = x0 / 4;
+    by = y0 / 4;
+    n4 = cb_size / 4;
+    for (dy = 0; dy < n4; dy++) {
+        for (dx = 0; dx < n4; dx++) {
+            size_t idx =
+                (size_t)(by + dy) * sc->deblock_stride + bx + dx;
+            if (idx < sc->deblock_n) sc->pcm_map[idx] = 1;
+        }
+    }
+    return 0;
+
+truncated:
+    heic_error(sc->hctx, HEIC_SEVERITY_ERROR, "truncated HEVC PCM samples");
+    return -1;
+}
+
 static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                               uint8_t log2_cb, uint8_t ct_depth)
 {
@@ -1790,27 +1908,29 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     store_pred_mode(sc, x0, y0, cb_size, cb_size,
                     (uint8_t)sc->cu_pred_mode);
 
-    /* PCM: if enabled and size in range, check pcm_flag via terminate */
+    if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
+        log2_cb == sc->sps->log2_min_cb_size) {
+        int pm = decode_part_mode_intra(sc, log2_cb);
+        if (pm < 0) return -1;
+        part_nxn = pm;
+    }
+
+    /* PCM is only allowed for an intra 2Nx2N coding unit. */
     if (sc->cu_pred_mode == HEIC_PRED_INTRA && sc->sps->pcm_enabled_flag) {
-        uint8_t log2_min = (uint8_t)(sc->sps->log2_min_pcm_luma_coding_block_size_minus3
-                                     + 3);
-        uint8_t log2_max =
-            (uint8_t)(log2_min + sc->sps->log2_diff_max_min_pcm_luma_coding_block_size);
-        if (log2_cb >= log2_min && log2_cb <= log2_max) {
+        int log2_min =
+            (int)sc->sps->log2_min_pcm_luma_coding_block_size_minus3 + 3;
+        int log2_max =
+            log2_min +
+            (int)sc->sps->log2_diff_max_min_pcm_luma_coding_block_size;
+        if (!part_nxn && log2_min >= 3 && log2_max <= 6 &&
+            log2_cb >= log2_min && log2_cb <= log2_max) {
             if (heic_cabac_decode_terminate(&sc->cabac) != 0) {
-                heic_error(sc->hctx, HEIC_SEVERITY_ERROR, "PCM mode not supported");
-                return -1;
+                return decode_pcm_cu(sc, x0, y0, log2_cb);
             }
         }
     }
 
     if (sc->cu_pred_mode == HEIC_PRED_INTRA) {
-        if (log2_cb == sc->sps->log2_min_cb_size) {
-            int pm = decode_part_mode_intra(sc, log2_cb);
-            if (pm < 0) return -1;
-            part_nxn = pm;
-        }
-
         if (!part_nxn) {
             int prev = decode_prev_intra_flag(sc);
             luma0 = derive_intra_luma(sc, x0, y0, prev);
@@ -2151,8 +2271,11 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
         sc->deblock_n = (uint32_t)db_n;
         sc->deblock_flags = (uint8_t *)heic_zalloc(ctx, db_n);
         sc->cbf_map = (uint8_t *)heic_zalloc(ctx, db_n);
+        sc->pcm_map = (uint8_t *)heic_zalloc(ctx, db_n);
         sc->deblock_qp = (int8_t *)heic_zalloc(ctx, db_n);
-        if (!sc->deblock_flags || !sc->cbf_map || !sc->deblock_qp) return -1;
+        if (!sc->deblock_flags || !sc->cbf_map || !sc->pcm_map ||
+            !sc->deblock_qp)
+            return -1;
         {
             size_t i;
             for (i = 0; i < db_n; i++) sc->deblock_qp[i] = (int8_t)sh->slice_qp_y;
@@ -2183,6 +2306,7 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->sao_map);
     heic_free_buf(sc->hctx, sc->deblock_flags);
     heic_free_buf(sc->hctx, sc->cbf_map);
+    heic_free_buf(sc->hctx, sc->pcm_map);
     heic_free_buf(sc->hctx, sc->deblock_qp);
     heic_free_buf(sc->hctx, sc->residual_buf);
     heic_free_buf(sc->hctx, sc->coeff);
@@ -2522,12 +2646,17 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
                            sc->intra_mode_stride, min_pu_size(sps),
                            sh->slice_type == HEIC_SLICE_I ? NULL : sc->cbf_map,
                            sh->slice_type == HEIC_SLICE_I ? NULL
-                                                        : out->ref_poc);
+                                                        : out->ref_poc,
+                           sps->pcm_loop_filter_disabled_flag
+                               ? sc->pcm_map
+                               : NULL);
     }
     if (sps->sample_adaptive_offset_enabled_flag &&
         (sh->slice_sao_luma_flag || sh->slice_sao_chroma_flag) && sc->sao_map) {
         heic_apply_sao(ctx, out, sc->sao_map, sps->pic_width_in_ctbs,
-                       sps->pic_height_in_ctbs, ctb_sz);
+                       sps->pic_height_in_ctbs, ctb_sz,
+                       sps->pcm_loop_filter_disabled_flag ? sc->pcm_map : NULL,
+                       sc->deblock_stride);
     }
 
     if (sh->slice_type != HEIC_SLICE_I) {

@@ -43,6 +43,13 @@ static int chroma_qp_mapping(int qp_i)
     return CHROMA_QP_TABLE[qp_i - 30];
 }
 
+static int pcm_at(const uint8_t *pcm_map, uint32_t stride,
+                  uint32_t x, uint32_t y)
+{
+    if (!pcm_map || stride == 0) return 0;
+    return pcm_map[(size_t)(y / 4) * stride + x / 4] != 0;
+}
+
 static int mv_diff_ge4(heic_mv a, heic_mv b)
 {
     return iabs((int)a.x - (int)b.x) >= 4 ||
@@ -122,7 +129,7 @@ static int compute_bs(uint32_t x, uint32_t y, int vertical,
 
 static void filter_edge_luma(heic_frame *frame, uint32_t x, uint32_t y,
                              int vertical, int qp_p, int qp_q, int beta_offset,
-                             int tc_offset, int bs)
+                             int tc_offset, int bs, int filter_p, int filter_q)
 {
     int bit_depth = frame->bit_depth;
     int max_val = (1 << bit_depth) - 1;
@@ -137,7 +144,7 @@ static void filter_edge_luma(heic_frame *frame, uint32_t x, uint32_t y,
     size_t k3;
     int k;
 
-    if (!plane || stride <= 0) return;
+    if (!plane || stride <= 0 || (!filter_p && !filter_q)) return;
 
     qp_l = (qp_q + qp_p + 1) >> 1;
     q_beta = clampi(qp_l + beta_offset, 0, 51);
@@ -200,8 +207,9 @@ static void filter_edge_luma(heic_frame *frame, uint32_t x, uint32_t y,
     d_ep = dp < ((beta + (beta >> 1)) >> 3);
     d_eq = dq < ((beta + (beta >> 1)) >> 3);
 
-    if (heic_simd_luma_filter4(plane, base_p, base_q, step_along, step_across, strong,
-                               d_ep, d_eq, tc, max_val))
+    if (filter_p && filter_q &&
+        heic_simd_luma_filter4(plane, base_p, base_q, step_along, step_across,
+                               strong, d_ep, d_eq, tc, max_val))
         return;
 
     for (k = 0; k < 4; k++) {
@@ -233,25 +241,33 @@ static void filter_edge_luma(heic_frame *frame, uint32_t x, uint32_t y,
             int q2_f = clampi(clampi((p0 + q0 + q1 + 3 * q2 + 2 * q3 + 4) >> 3,
                                      q2 - tc2, q2 + tc2),
                               0, max_val);
-            plane[base_p + k_off] = (uint16_t)p0_f;
-            plane[base_p + k_off - step_across] = (uint16_t)p1_f;
-            plane[base_p + k_off - 2 * step_across] = (uint16_t)p2_f;
-            plane[base_q + k_off] = (uint16_t)q0_f;
-            plane[base_q + k_off + step_across] = (uint16_t)q1_f;
-            plane[base_q + k_off + 2 * step_across] = (uint16_t)q2_f;
+            if (filter_p) {
+                plane[base_p + k_off] = (uint16_t)p0_f;
+                plane[base_p + k_off - step_across] = (uint16_t)p1_f;
+                plane[base_p + k_off - 2 * step_across] = (uint16_t)p2_f;
+            }
+            if (filter_q) {
+                plane[base_q + k_off] = (uint16_t)q0_f;
+                plane[base_q + k_off + step_across] = (uint16_t)q1_f;
+                plane[base_q + k_off + 2 * step_across] = (uint16_t)q2_f;
+            }
         } else {
             int delta = (9 * (q0 - p0) - 3 * (q1 - p1) + 8) >> 4;
             if (iabs(delta) < 10 * tc) {
                 delta = clampi(delta, -tc, tc);
-                plane[base_p + k_off] = (uint16_t)clampi(p0 + delta, 0, max_val);
-                plane[base_q + k_off] = (uint16_t)clampi(q0 - delta, 0, max_val);
-                if (d_ep) {
+                if (filter_p)
+                    plane[base_p + k_off] =
+                        (uint16_t)clampi(p0 + delta, 0, max_val);
+                if (filter_q)
+                    plane[base_q + k_off] =
+                        (uint16_t)clampi(q0 - delta, 0, max_val);
+                if (filter_p && d_ep) {
                     int delta_p = clampi(((((p2 + p0 + 1) >> 1) - p1 + delta) >> 1),
                                          -(tc >> 1), tc >> 1);
                     plane[base_p + k_off - step_across] =
                         (uint16_t)clampi(p1 + delta_p, 0, max_val);
                 }
-                if (d_eq) {
+                if (filter_q && d_eq) {
                     int delta_q = clampi(((((q2 + q0 + 1) >> 1) - q1 - delta) >> 1),
                                          -(tc >> 1), tc >> 1);
                     plane[base_q + k_off + step_across] =
@@ -269,7 +285,8 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                                     const heic_pb_motion *mv_info,
                                     uint32_t pu_stride, uint32_t min_pu,
                                     const uint8_t *cbf_map,
-                                    const int ref_poc[2][HEIC_MAX_REF_PICS])
+                                    const int ref_poc[2][HEIC_MAX_REF_PICS],
+                                    const uint8_t *pcm_map)
 {
     int w = frame->width, h = frame->height;
     int bit_depth_c = frame->bit_depth;
@@ -303,6 +320,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             uint32_t bx = x / 4, by = y / 4;
             size_t idx = (size_t)by * deblock_stride + bx;
             int bs, qp_q, qp_p, c_idx;
+            int filter_p, filter_q;
             uint32_t cx, cy;
 
             if ((flags[idx] & (uint8_t)vert_edge_mask) == 0) continue;
@@ -311,6 +329,9 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                             pred_mode, mv_info, pu_stride, min_pu, cbf_map,
                             deblock_stride, ref_poc);
             if (bs < 2) continue;
+            filter_p = !pcm_at(pcm_map, deblock_stride, x - 1, y);
+            filter_q = !pcm_at(pcm_map, deblock_stride, x, y);
+            if (!filter_p && !filter_q) continue;
             qp_q = (int)qp_map[idx];
             qp_p = bx > 0 ? (int)qp_map[(size_t)by * deblock_stride + (bx - 1)] : qp_q;
             cx = x / (uint32_t)sub_x;
@@ -331,7 +352,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                 num = 4;
                 if (cy + num > (uint32_t)c_height) num = (uint32_t)c_height - cy;
                 /* Vertical edge: samples along y (stride), across x (1). */
-                if (num == 4 &&
+                if (filter_p && filter_q && num == 4 &&
                     heic_simd_chroma_edge4(plane, c_stride,
                                            (size_t)cy * (size_t)c_stride + ci, 1, tc,
                                            max_val, 1))
@@ -352,8 +373,8 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                     else if (p0n > max_val) p0n = max_val;
                     if (q0n < 0) q0n = 0;
                     else if (q0n > max_val) q0n = max_val;
-                    plane[base - 1] = (uint16_t)p0n;
-                    plane[base] = (uint16_t)q0n;
+                    if (filter_p) plane[base - 1] = (uint16_t)p0n;
+                    if (filter_q) plane[base] = (uint16_t)q0n;
                 }
             }
         }
@@ -364,6 +385,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             uint32_t bx = x / 4, by = y / 4;
             size_t idx = (size_t)by * deblock_stride + bx;
             int bs, qp_q, qp_p, c_idx;
+            int filter_p, filter_q;
             uint32_t cx, cy;
 
             if ((flags[idx] & (uint8_t)horiz_edge_mask) == 0) continue;
@@ -372,6 +394,9 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                             pred_mode, mv_info, pu_stride, min_pu, cbf_map,
                             deblock_stride, ref_poc);
             if (bs < 2) continue;
+            filter_p = !pcm_at(pcm_map, deblock_stride, x, y - 1);
+            filter_q = !pcm_at(pcm_map, deblock_stride, x, y);
+            if (!filter_p && !filter_q) continue;
             qp_q = (int)qp_map[idx];
             qp_p = by > 0 ? (int)qp_map[(size_t)(by - 1) * deblock_stride + bx] : qp_q;
             cx = x / (uint32_t)sub_x;
@@ -394,7 +419,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                 num = 4;
                 if (cx + num > (uint32_t)c_width) num = (uint32_t)c_width - cx;
                 /* Horizontal edge: samples along x (1), across y (stride). */
-                if (num == 4 &&
+                if (filter_p && filter_q && num == 4 &&
                     heic_simd_chroma_edge4(plane, c_stride, row_q * cs + (size_t)cx,
                                            (int)cs, tc, max_val, 0))
                     continue;
@@ -414,8 +439,10 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                     else if (p0n > max_val) p0n = max_val;
                     if (q0n < 0) q0n = 0;
                     else if (q0n > max_val) q0n = max_val;
-                    plane[row_p * cs + col] = (uint16_t)p0n;
-                    plane[row_q * cs + col] = (uint16_t)q0n;
+                    if (filter_p)
+                        plane[row_p * cs + col] = (uint16_t)p0n;
+                    if (filter_q)
+                        plane[row_q * cs + col] = (uint16_t)q0n;
                 }
             }
         }
@@ -428,7 +455,8 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         const uint8_t *pred_mode,
                         const heic_pb_motion *mv_info, uint32_t pu_stride,
                         uint32_t min_pu, const uint8_t *cbf_map,
-                        const int ref_poc[2][HEIC_MAX_REF_PICS])
+                        const int ref_poc[2][HEIC_MAX_REF_PICS],
+                        const uint8_t *pcm_map)
 {
     uint32_t w, h, x, y;
     int vert_edge_mask = HEIC_DEBLOCK_FLAG_VERT | HEIC_DEBLOCK_PB_EDGE_VERT;
@@ -454,7 +482,10 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                             pred_mode, mv_info, pu_stride, min_pu, cbf_map,
                             deblock_stride, ref_poc);
             if (bs > 0)
-                filter_edge_luma(frame, x, y, 1, qp_p, qp_q, beta_offset, tc_offset, bs);
+                filter_edge_luma(
+                    frame, x, y, 1, qp_p, qp_q, beta_offset, tc_offset, bs,
+                    !pcm_at(pcm_map, deblock_stride, x - 1, y),
+                    !pcm_at(pcm_map, deblock_stride, x, y));
         }
     }
 
@@ -473,13 +504,16 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                             pred_mode, mv_info, pu_stride, min_pu, cbf_map,
                             deblock_stride, ref_poc);
             if (bs > 0)
-                filter_edge_luma(frame, x, y, 0, qp_p, qp_q, beta_offset, tc_offset, bs);
+                filter_edge_luma(
+                    frame, x, y, 0, qp_p, qp_q, beta_offset, tc_offset, bs,
+                    !pcm_at(pcm_map, deblock_stride, x, y - 1),
+                    !pcm_at(pcm_map, deblock_stride, x, y));
         }
     }
 
     apply_chroma_deblocking(frame, flags, qp_map, deblock_stride, tc_offset,
                             cb_qp_offset, cr_qp_offset, pred_mode, mv_info,
-                            pu_stride, min_pu, cbf_map, ref_poc);
+                            pu_stride, min_pu, cbf_map, ref_poc, pcm_map);
 }
 
 void heic_mark_tu_boundary(uint8_t *flags, uint32_t deblock_stride, uint32_t map_n,

@@ -54,7 +54,7 @@ const FOX_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v3-avif-fox+grid+alpha;unci-block;mini-hevc+av1;hevc-sequences";
+  "v4-avif-fox+grid+alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
@@ -63,6 +63,9 @@ const HEVC_SEQUENCE_SAMPLES = [
   "WP_A_Toshiba_3.bit",
   "WP_B_Toshiba_3.bit",
   "MERGE_A_TI_3.bit",
+  "ipcm_A_NEC_3.bit",
+  "ipcm_B_NEC_3.bit",
+  "ipcm_C_NEC_3.bit",
 ];
 
 async function download(url: string, dest: string): Promise<void> {

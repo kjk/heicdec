@@ -196,7 +196,8 @@
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)
-- [ ] PCM
+- [x] HEVC PCM: raw luma/chroma samples, CABAC restart, bit-depth scaling,
+      and PCM loop-filter exclusion; official `ipcm_A/B/C_NEC_3` oracles mse=0
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
 - [ ] sequence animation API / edit-list playback (public API decodes first sync frame)
 

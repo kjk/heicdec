@@ -972,7 +972,8 @@ typedef struct {
 } heic_sao_info;
 
 void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
-                    uint32_t width_ctbs, uint32_t height_ctbs, uint32_t ctb_size);
+                    uint32_t width_ctbs, uint32_t height_ctbs, uint32_t ctb_size,
+                    const uint8_t *pcm_map, uint32_t pcm_stride);
 
 /* ---- deblock filter (hevc_deblock.c) ---- */
 
@@ -990,7 +991,8 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         const uint8_t *pred_mode, const heic_pb_motion *mv_info,
                         uint32_t pu_stride, uint32_t min_pu,
                         const uint8_t *cbf_map,
-                        const int ref_poc[2][HEIC_MAX_REF_PICS]);
+                        const int ref_poc[2][HEIC_MAX_REF_PICS],
+                        const uint8_t *pcm_map);
 
 /* ---- inter prediction / CTU decode (hevc_inter.c, hevc_ctu.c) ---- */
 

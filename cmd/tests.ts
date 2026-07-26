@@ -89,6 +89,9 @@ const HEVC_SEQUENCE_TESTS = [
   { name: "WP_A_Toshiba_3.bit", frames: 17, mse: 8 },
   { name: "WP_B_Toshiba_3.bit", frames: 17, mse: 8 },
   { name: "MERGE_A_TI_3.bit", frames: 8, mse: 8 },
+  { name: "ipcm_A_NEC_3.bit", frames: 1, mse: 8 },
+  { name: "ipcm_B_NEC_3.bit", frames: 1, mse: 8 },
+  { name: "ipcm_C_NEC_3.bit", frames: 1, mse: 8 },
 ] as const;
 
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
