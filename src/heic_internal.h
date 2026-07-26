@@ -170,6 +170,16 @@ int   heic_abort_check(const heic_abort *ab);
 /* ---- HEIF container (heif.c) ---- */
 
 typedef struct {
+    int16_t x, y;
+} heic_mv;
+
+typedef struct {
+    uint8_t pred_flag[2];
+    int8_t ref_idx[2];
+    heic_mv mv[2];
+} heic_pb_motion;
+
+typedef struct {
     uint64_t offset;
     uint64_t length;
 } heic_extent;
@@ -444,6 +454,10 @@ int  heic_container_find_thumbs(const heic_container *c, uint32_t target_id,
 
 /* ---- HEVC (hevc_*.c) ---- */
 
+#define HEIC_MAX_REF_PICS 16
+#define HEIC_MAX_ST_RPS 64
+#define HEIC_MAX_LT_REF_PICS_SPS 32
+
 typedef struct {
     int width, height;           /* coded */
     int crop_left, crop_right, crop_top, crop_bottom;
@@ -464,17 +478,13 @@ typedef struct {
     int c_width, c_height;
     int poc;
     int poc_valid;
+    heic_pb_motion *motion;
+    uint8_t *motion_pred_mode;
+    size_t motion_n;
+    uint32_t motion_stride;
+    uint32_t motion_min_pu;
+    int ref_poc[2][HEIC_MAX_REF_PICS];
 } heic_frame;
-
-typedef struct {
-    int16_t x, y;
-} heic_mv;
-
-typedef struct {
-    uint8_t pred_flag[2];
-    int8_t ref_idx[2];
-    heic_mv mv[2];
-} heic_pb_motion;
 
 void heic_frame_free(heic_ctx *ctx, heic_frame *f);
 int  heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
@@ -599,10 +609,6 @@ typedef struct {
     uint8_t coef[4][6][64];
     uint8_t dc_coef[2][6];
 } heic_scaling_list;
-
-#define HEIC_MAX_REF_PICS 16
-#define HEIC_MAX_ST_RPS 64
-#define HEIC_MAX_LT_REF_PICS_SPS 32
 
 typedef struct {
     int32_t delta_poc_s0[HEIC_MAX_REF_PICS];

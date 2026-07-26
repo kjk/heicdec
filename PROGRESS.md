@@ -175,6 +175,8 @@
       SPS and slice long-term POC/use/delta-cycle fields for reference-list construction
 - [x] HEVC multiple L0 references: recursive `pred` dependencies, POC-based
       StCurrBefore/StCurrAfter/LtCurr lists, list modification, and CABAC `ref_idx_l0`
+- [x] HEVC temporal MVP for P pictures: retained per-PU motion state, collocated
+      bottom-right/center candidates, and POC-distance scaling for merge/AMVP
 - [x] HEVC image sequences (`moov`): first sync sample from `pict` (`vide`
       fallback), `stsd`/`stsz`/`stsc`/`stco`/`co64`/`stss`, and a smaller
       `pict` thumbnail track; Nokia `C026`–`C032`, `C036`–`C038`, and `C041`

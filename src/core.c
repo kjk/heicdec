@@ -151,6 +151,8 @@ void heic_frame_free(heic_ctx *ctx, heic_frame *f)
     heic_free_buf(ctx, f->cb);
     heic_free_buf(ctx, f->cr);
     heic_free_buf(ctx, f->a);
+    heic_free_buf(ctx, f->motion);
+    heic_free_buf(ctx, f->motion_pred_mode);
     memset(f, 0, sizeof(*f));
 }
 

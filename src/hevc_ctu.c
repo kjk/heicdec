@@ -598,6 +598,89 @@ static heic_pb_motion zero_motion(void)
     return m;
 }
 
+static int clip_int(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static heic_mv scale_mv(heic_mv mv, int dist_src, int dist_dst)
+{
+    heic_mv out = mv;
+    int td, tb, tx, scale;
+    int32_t vx, vy;
+    if (dist_src == 0 || dist_src == dist_dst) return mv;
+    td = clip_int(dist_src, -128, 127);
+    tb = clip_int(dist_dst, -128, 127);
+    tx = (16384 + (td < 0 ? -td : td) / 2) / td;
+    scale = clip_int((tb * tx + 32) >> 6, -4096, 4095);
+    vx = (int32_t)scale * mv.x;
+    vy = (int32_t)scale * mv.y;
+    out.x = (int16_t)clip_int(
+        (vx + 127 + (vx < 0)) >> 8, INT16_MIN, INT16_MAX);
+    out.y = (int16_t)clip_int(
+        (vy + 127 + (vy < 0)) >> 8, INT16_MIN, INT16_MAX);
+    return out;
+}
+
+static int derive_temporal_mv(const heic_slice_ctx *sc, const heic_pu *pu,
+                              int target_ref_idx, heic_mv *out)
+{
+    const heic_frame *col;
+    uint32_t pos[2][2];
+    int n_pos = 0;
+    int i;
+    if (!sc->sh->slice_temporal_mvp_enabled_flag || !out
+        || sc->sh->collocated_ref_idx >= sc->n_refs
+        || target_ref_idx < 0 || target_ref_idx >= sc->n_refs)
+        return 0;
+    col = sc->refs[sc->sh->collocated_ref_idx];
+    if (!col || !col->motion || !col->motion_pred_mode
+        || !col->motion_min_pu || !col->poc_valid
+        || !sc->refs[target_ref_idx]
+        || !sc->refs[target_ref_idx]->poc_valid)
+        return 0;
+
+    {
+        uint32_t br_x = pu->x + pu->w;
+        uint32_t br_y = pu->y + pu->h;
+        uint32_t ctb = ctb_size_px(sc->sps);
+        if (br_x < sc->sps->pic_width_in_luma_samples
+            && br_y < sc->sps->pic_height_in_luma_samples
+            && br_y / ctb == pu->y / ctb) {
+            pos[n_pos][0] = (br_x >> 4) << 4;
+            pos[n_pos++][1] = (br_y >> 4) << 4;
+        }
+        pos[n_pos][0] = ((pu->x + (pu->w >> 1)) >> 4) << 4;
+        pos[n_pos++][1] = ((pu->y + (pu->h >> 1)) >> 4) << 4;
+    }
+
+    for (i = 0; i < n_pos; i++) {
+        uint32_t mx = pos[i][0] / col->motion_min_pu;
+        uint32_t my = pos[i][1] / col->motion_min_pu;
+        size_t idx = (size_t)my * col->motion_stride + mx;
+        heic_pb_motion m;
+        int list, ref_idx, col_ref_poc, target_ref_poc;
+        if (idx >= col->motion_n
+            || (col->motion_pred_mode[idx] != HEIC_PRED_INTER
+                && col->motion_pred_mode[idx] != HEIC_PRED_SKIP))
+            continue;
+        m = col->motion[idx];
+        if (m.pred_flag[0]) list = 0;
+        else if (m.pred_flag[1]) list = 1;
+        else continue;
+        ref_idx = m.ref_idx[list];
+        if (ref_idx < 0 || ref_idx >= HEIC_MAX_REF_PICS) continue;
+        col_ref_poc = col->ref_poc[list][ref_idx];
+        target_ref_poc = sc->refs[target_ref_idx]->poc;
+        *out = scale_mv(m.mv[list], col->poc - col_ref_poc,
+                        sc->frame->poc - target_ref_poc);
+        return 1;
+    }
+    return 0;
+}
+
 static heic_pb_motion derive_merge(heic_slice_ctx *sc, const heic_pu *pu,
                                    int part_idx, int part_mode, int wanted)
 {
@@ -652,8 +735,14 @@ static heic_pb_motion derive_merge(heic_slice_ctx *sc, const heic_pu *pu,
         if (!dup && b1_avail && count > 1) dup = motion_eq(cand[1], m);
         if (!dup) cand[count++] = m;
     }
-    /* The referenced HEIF item is an intra picture, so its collocated motion
-       candidate is unavailable. Pad the remaining merge list with zero L0 MVs. */
+    if (count < max) {
+        heic_mv tmv;
+        if (derive_temporal_mv(sc, pu, 0, &tmv)) {
+            heic_pb_motion m = zero_motion();
+            m.mv[0] = tmv;
+            cand[count++] = m;
+        }
+    }
     while (count < max) cand[count++] = zero_motion();
     if (wanted < 0 || wanted >= max) wanted = 0;
     return cand[wanted];
@@ -672,7 +761,7 @@ static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu, int ref_idx,
         {(int32_t)pu->x - 1, (int32_t)pu->y - 1}
     };
     heic_mv a = {0, 0}, b = {0, 0};
-    int have_a = 0, have_b = 0, i;
+    int have_a = 0, have_b = 0, count = 0, i;
     mvp[0].x = mvp[0].y = mvp[1].x = mvp[1].y = 0;
     for (i = 0; i < 2 && !have_a; i++)
         if (inter_at(sc, apos[i][0], apos[i][1])) {
@@ -695,10 +784,19 @@ static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu, int ref_idx,
         have_a = 1;
     }
     if (have_a) {
-        mvp[0] = a;
-        if (have_b && (a.x != b.x || a.y != b.y)) mvp[1] = b;
+        mvp[count++] = a;
+        if (have_b && (a.x != b.x || a.y != b.y))
+            mvp[count++] = b;
     } else if (have_b) {
-        mvp[0] = b;
+        mvp[count++] = b;
+    }
+    if (count < 2 && !(have_a && have_b
+                       && (a.x != b.x || a.y != b.y))) {
+        heic_mv tmv;
+        if (derive_temporal_mv(sc, pu, ref_idx, &tmv)
+            && (count == 0
+                || tmv.x != mvp[0].x || tmv.y != mvp[0].y))
+            mvp[count] = tmv;
     }
 }
 
@@ -1934,6 +2032,19 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
         (sh->slice_sao_luma_flag || sh->slice_sao_chroma_flag) && sc->sao_map) {
         heic_apply_sao(ctx, out, sc->sao_map, sps->pic_width_in_ctbs,
                        sps->pic_height_in_ctbs, ctb_sz);
+    }
+
+    if (sh->slice_type != HEIC_SLICE_I) {
+        out->motion = sc->mv_info;
+        out->motion_pred_mode = sc->pred_mode_map;
+        out->motion_n = sc->intra_mode_n;
+        out->motion_stride = sc->intra_mode_stride;
+        out->motion_min_pu = min_pu_size(sps);
+        sc->mv_info = NULL;
+        sc->pred_mode_map = NULL;
+        for (i = 0; i < sc->n_refs && i < HEIC_MAX_REF_PICS; i++)
+            if (sc->refs[i] && sc->refs[i]->poc_valid)
+                out->ref_poc[0][i] = sc->refs[i]->poc;
     }
 
     heic_free_buf(ctx, tile_scan);
