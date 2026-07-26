@@ -6,7 +6,8 @@ Decode-only library for HEIC/HEIF/AVIF still images, aimed at easy embedding
 * plain C, jbig2dec-style API
 * **HEVC**: pure-C port of [imazen/heic](https://github.com/imazen/heic)
 * **AV1**: [videolan dav1d](https://code.videolan.org/videolan/dav1d) (C; linked, not re-ported)
-* HEVC image sequences: presentation timing, edit-list loops, and frame decode
+* HEVC image sequences: presentation timing, edit-list loops, one-shot frame
+  decode, and a stateful playback decoder that caches reconstructed pictures
 * simple drop-in amalgamation: `dist/heic.h` + `dist/heic.c` (+ link dav1d for AVIF)
 * verified against [libheif](https://github.com/strukturag/libheif)
 

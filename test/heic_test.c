@@ -733,6 +733,7 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
 {
     heic_ctx *ctx = NULL;
     heic_doc *doc = NULL;
+    heic_sequence_decoder *decoder = NULL;
     heic_sequence_info info;
     uint8_t *ref = NULL;
     uint32_t ref_frames = 0, frame;
@@ -754,6 +755,8 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     if (!doc || heic_doc_sequence_info(doc, &info) != 0
         || !doc->container.sequence)
         goto done;
+    decoder = heic_sequence_decoder_new(doc, HEIC_FORMAT_RGB);
+    if (!decoder) goto done;
     for (frame = 0; frame < info.frame_count; frame++) {
         const heic_sequence *seq = doc->container.sequence;
         uint32_t sample = seq->frame_samples[frame];
@@ -763,7 +766,7 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
         if (sample >= seq->sample_count) goto done;
         rank = sequence_presentation_rank(seq, sample);
         if (rank >= ref_frames) goto done;
-        img = heic_doc_decode_sequence_frame(doc, frame, HEIC_FORMAT_RGB);
+        img = heic_sequence_decoder_decode_frame(decoder, frame);
         if (!img) goto done;
         if ((int)img->width != rw || (int)img->height != rh) {
             heic_image_destroy(ctx, img);
@@ -794,6 +797,7 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
            maxd, (unsigned long long)ndiff);
     rc = 0;
 done:
+    heic_sequence_decoder_destroy(decoder);
     if (doc) heic_doc_close(doc);
     if (ctx) heic_ctx_free(ctx);
     free(ref);

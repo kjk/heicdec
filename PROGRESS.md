@@ -200,6 +200,9 @@
       from the preceding sync sample; all 11 Nokia sequence fixtures covered
 - [x] Every public HEVC sequence frame is compared in RGB against libheif's
       sequence API/libde265, including edit-list duplicates and hidden preroll
+- [x] Stateful HEVC sequence playback retains reconstructed pictures from the
+      active sync sample, avoiding repeated preroll decode and supporting
+      long-term reference candidates beyond the 16-entry active reference list
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)

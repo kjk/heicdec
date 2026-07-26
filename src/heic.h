@@ -53,6 +53,7 @@ void heic_abort_request(heic_abort *ab);
 
 typedef struct heic_ctx heic_ctx;
 typedef struct heic_doc heic_doc;
+typedef struct heic_sequence_decoder heic_sequence_decoder;
 
 /* Idempotent process-wide setup. Call once from the main thread before
    concurrent decode. Safe to call again; also invoked by heic_doc_open. */
@@ -161,6 +162,18 @@ heic_image *heic_doc_decode_sequence_frame(heic_doc *doc, uint32_t frame_index,
                                            heic_format format);
 heic_image *heic_doc_decode_sequence_frame_abortable(
     heic_doc *doc, uint32_t frame_index, heic_format format, heic_abort *ab);
+
+/* Stateful sequence playback. The decoder caches reconstructed coded pictures,
+   so increasing frame indices do not repeatedly decode from the sync sample.
+   The document and its input buffer must outlive the decoder. */
+heic_sequence_decoder *heic_sequence_decoder_new(heic_doc *doc,
+                                                 heic_format format);
+void heic_sequence_decoder_destroy(heic_sequence_decoder *decoder);
+void heic_sequence_decoder_reset(heic_sequence_decoder *decoder);
+heic_image *heic_sequence_decoder_decode_frame(
+    heic_sequence_decoder *decoder, uint32_t frame_index);
+heic_image *heic_sequence_decoder_decode_frame_abortable(
+    heic_sequence_decoder *decoder, uint32_t frame_index, heic_abort *ab);
 
 /* Decode the primary image. Returns NULL on error; free with
    heic_image_destroy(ctx, img). 8-bit output; 10/12-bit sources are

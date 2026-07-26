@@ -1147,19 +1147,86 @@ static heic_image *sequence_frame_to_image(heic_ctx *ctx, heic_frame *frame,
     return img;
 }
 
-heic_image *heic_doc_decode_sequence_frame_abortable(
-    heic_doc *doc, uint32_t frame_index, heic_format format, heic_abort *ab)
+struct heic_sequence_decoder {
+    heic_doc *doc;
+    heic_format format;
+    heic_frame *pictures;
+    const heic_frame **refs;
+    uint32_t sample_count;
+    uint32_t cache_start;
+    uint32_t next_sample;
+    int initialized;
+};
+
+static void sequence_decoder_clear(heic_sequence_decoder *decoder)
+{
+    uint32_t i;
+    if (!decoder || !decoder->pictures) return;
+    if (decoder->initialized) {
+        for (i = decoder->cache_start; i < decoder->next_sample; i++)
+            heic_frame_free(decoder->doc->ctx, &decoder->pictures[i]);
+    }
+    decoder->cache_start = 0;
+    decoder->next_sample = 0;
+    decoder->initialized = 0;
+}
+
+heic_sequence_decoder *heic_sequence_decoder_new(heic_doc *doc,
+                                                 heic_format format)
 {
     const heic_sequence *seq;
-    const heic_sequence_sample *sample;
+    heic_sequence_decoder *decoder;
+    size_t pictures_size, refs_size;
+    if (!doc || !(seq = doc->container.sequence) || !seq->sample_count)
+        return NULL;
+    if (format < HEIC_FORMAT_RGB || format > HEIC_FORMAT_BGRA)
+        return NULL;
+    if ((size_t)seq->sample_count > SIZE_MAX / sizeof(heic_frame)
+        || (size_t)seq->sample_count > SIZE_MAX / sizeof(heic_frame *))
+        return NULL;
+    pictures_size = (size_t)seq->sample_count * sizeof(heic_frame);
+    refs_size = (size_t)seq->sample_count * sizeof(heic_frame *);
+    decoder = (heic_sequence_decoder *)heic_zalloc(doc->ctx, sizeof(*decoder));
+    if (!decoder) return NULL;
+    decoder->doc = doc;
+    decoder->format = format;
+    decoder->sample_count = seq->sample_count;
+    decoder->pictures = (heic_frame *)heic_zalloc(doc->ctx, pictures_size);
+    decoder->refs =
+        (const heic_frame **)heic_zalloc(doc->ctx, refs_size);
+    if (!decoder->pictures || !decoder->refs) {
+        heic_sequence_decoder_destroy(decoder);
+        return NULL;
+    }
+    return decoder;
+}
+
+void heic_sequence_decoder_reset(heic_sequence_decoder *decoder)
+{
+    sequence_decoder_clear(decoder);
+}
+
+void heic_sequence_decoder_destroy(heic_sequence_decoder *decoder)
+{
+    heic_ctx *ctx;
+    if (!decoder) return;
+    ctx = decoder->doc->ctx;
+    sequence_decoder_clear(decoder);
+    heic_free_buf(ctx, decoder->refs);
+    heic_free_buf(ctx, decoder->pictures);
+    heic_free_buf(ctx, decoder);
+}
+
+heic_image *heic_sequence_decoder_decode_frame_abortable(
+    heic_sequence_decoder *decoder, uint32_t frame_index, heic_abort *ab)
+{
+    heic_doc *doc;
+    const heic_sequence *seq;
     heic_item item;
-    heic_frame refs[HEIC_MAX_REF_PICS];
-    const heic_frame *ref_ptrs[HEIC_MAX_REF_PICS];
-    heic_frame frame;
-    heic_image *img = NULL;
-    uint32_t target, start, i;
-    int n_refs = 0, j;
-    if (!doc || !(seq = doc->container.sequence)
+    uint32_t target, start, i, j;
+    if (!decoder || !(doc = decoder->doc)
+        || !(seq = doc->container.sequence)
+        || seq->sample_count != decoder->sample_count
         || frame_index >= seq->frame_count
         || heic_container_get_item(&doc->container,
                                    doc->container.primary_item_id, &item) != 0
@@ -1167,48 +1234,74 @@ heic_image *heic_doc_decode_sequence_frame_abortable(
         return NULL;
     target = seq->frame_samples[frame_index];
     if (target >= seq->sample_count) return NULL;
-    start = target;
-    while (start > 0 && !seq->samples[start].is_sync) start--;
-    if (!seq->samples[start].is_sync) return NULL;
 
-    memset(refs, 0, sizeof(refs));
-    memset(&frame, 0, sizeof(frame));
-    for (i = start; i <= target; i++) {
-        heic_frame decoded;
-        sample = &seq->samples[i];
-        if (heic_abort_check(ab)) goto done;
-        for (j = 0; j < n_refs; j++) ref_ptrs[j] = &refs[j];
-        memset(&decoded, 0, sizeof(decoded));
-        if (heic_hevc_decode_refs(doc->ctx, item.hvcc,
-                                  doc->data + sample->offset, sample->size,
-                                  ref_ptrs, n_refs, &decoded, ab) != 0) {
-            heic_frame_free(doc->ctx, &decoded);
-            goto done;
-        }
-        if (i == target) {
-            frame = decoded;
-            break;
-        }
-        if (n_refs == HEIC_MAX_REF_PICS) {
-            heic_frame_free(doc->ctx, &refs[n_refs - 1]);
-            n_refs--;
-        }
-        for (j = n_refs; j > 0; j--) refs[j] = refs[j - 1];
-        refs[0] = decoded;
-        n_refs++;
+    if (!decoder->initialized || target < decoder->cache_start) {
+        sequence_decoder_clear(decoder);
+        start = target;
+        while (start > 0 && !seq->samples[start].is_sync) start--;
+        if (!seq->samples[start].is_sync) return NULL;
+        decoder->cache_start = start;
+        decoder->next_sample = start;
+        decoder->initialized = 1;
     }
-    if (item.colr && item.colr->kind == HEIC_COLR_NCLX) {
-        frame.color_primaries = (uint8_t)item.colr->color_primaries;
-        frame.transfer_characteristics =
-            (uint8_t)item.colr->transfer_characteristics;
-        frame.matrix_coeffs = (uint8_t)item.colr->matrix_coefficients;
-        frame.full_range = item.colr->full_range;
+    if (target >= decoder->next_sample) {
+        for (i = decoder->next_sample; i <= target; i++) {
+            const heic_sequence_sample *sample = &seq->samples[i];
+            uint32_t n_refs;
+            heic_frame *decoded;
+            if (heic_abort_check(ab)) return NULL;
+            if (i > decoder->cache_start && sample->is_sync) {
+                sequence_decoder_clear(decoder);
+                decoder->cache_start = i;
+                decoder->next_sample = i;
+                decoder->initialized = 1;
+            }
+            n_refs = i - decoder->cache_start;
+            for (j = 0; j < n_refs; j++)
+                decoder->refs[j] = &decoder->pictures[i - 1 - j];
+            decoded = &decoder->pictures[i];
+            memset(decoded, 0, sizeof(*decoded));
+            if (heic_hevc_decode_refs(doc->ctx, item.hvcc,
+                                      doc->data + sample->offset, sample->size,
+                                      decoder->refs, (int)n_refs,
+                                      decoded, ab) != 0) {
+                heic_frame_free(doc->ctx, decoded);
+                decoder->next_sample = i;
+                return NULL;
+            }
+            if (item.colr && item.colr->kind == HEIC_COLR_NCLX) {
+                decoded->color_primaries =
+                    (uint8_t)item.colr->color_primaries;
+                decoded->transfer_characteristics =
+                    (uint8_t)item.colr->transfer_characteristics;
+                decoded->matrix_coeffs =
+                    (uint8_t)item.colr->matrix_coefficients;
+                decoded->full_range = item.colr->full_range;
+            }
+            decoder->next_sample = i + 1;
+        }
     }
-    if (apply_transforms(doc->ctx, &frame, &item) != 0) goto done;
-    img = sequence_frame_to_image(doc->ctx, &frame, format);
-done:
-    heic_frame_free(doc->ctx, &frame);
-    for (j = 0; j < n_refs; j++) heic_frame_free(doc->ctx, &refs[j]);
+    return sequence_frame_to_image(doc->ctx, &decoder->pictures[target],
+                                   decoder->format);
+}
+
+heic_image *heic_sequence_decoder_decode_frame(
+    heic_sequence_decoder *decoder, uint32_t frame_index)
+{
+    return heic_sequence_decoder_decode_frame_abortable(
+        decoder, frame_index, NULL);
+}
+
+heic_image *heic_doc_decode_sequence_frame_abortable(
+    heic_doc *doc, uint32_t frame_index, heic_format format, heic_abort *ab)
+{
+    heic_sequence_decoder *decoder =
+        heic_sequence_decoder_new(doc, format);
+    heic_image *img;
+    if (!decoder) return NULL;
+    img = heic_sequence_decoder_decode_frame_abortable(
+        decoder, frame_index, ab);
+    heic_sequence_decoder_destroy(decoder);
     return img;
 }
 

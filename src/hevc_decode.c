@@ -364,6 +364,8 @@ int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,
                           const heic_frame *const *refs, int n_refs,
                           heic_frame *out, const heic_abort *ab)
 {
-    if (n_refs < 0 || n_refs > HEIC_MAX_REF_PICS) return -1;
+    /* refs is the decoded-picture candidate set. The slice's active lists
+       remain capped at HEIC_MAX_REF_PICS after matching candidates by POC. */
+    if (n_refs < 0 || n_refs > (int)HEIC_MAX_ITEMS) return -1;
     return heic_hevc_decode_impl(ctx, cfg, data, len, refs, n_refs, out, ab);
 }

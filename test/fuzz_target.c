@@ -100,10 +100,22 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     if (heic_doc_sequence_info(doc, &seq) == 0 && seq.frame_count) {
         uint32_t frame = seq.frame_count <= 32 ? seq.frame_count - 1 : 0;
+        heic_sequence_decoder *decoder;
         (void)heic_doc_sequence_frame_info(doc, 0, &frame_info);
         (void)heic_doc_sequence_frame_info(doc, frame, &frame_info);
         img = heic_doc_decode_sequence_frame(doc, frame, HEIC_FORMAT_RGB);
         if (img) heic_image_destroy(ctx, img);
+        decoder = heic_sequence_decoder_new(doc, HEIC_FORMAT_RGB);
+        if (decoder) {
+            img = heic_sequence_decoder_decode_frame(decoder, 0);
+            if (img) heic_image_destroy(ctx, img);
+            img = heic_sequence_decoder_decode_frame(decoder, frame);
+            if (img) heic_image_destroy(ctx, img);
+            heic_sequence_decoder_reset(decoder);
+            img = heic_sequence_decoder_decode_frame(decoder, 0);
+            if (img) heic_image_destroy(ctx, img);
+            heic_sequence_decoder_destroy(decoder);
+        }
     }
 
     if (info.has_exif) {
