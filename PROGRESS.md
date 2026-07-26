@@ -190,6 +190,8 @@
       pictures, including cross-list B prediction order
 - [x] HEVC sequence oracles share the normal MSE <= 8 gate; corrected spatial
       merge-slot tracking, zero-MV candidate indices, and long-term MV scaling
+- [x] All libheif-rejected corpus files use compact alternate RGB pixel
+      oracles from imazen/heic or libde265; full tests have zero oracle skips
 - [x] HEVC image sequences (`moov`): first sync sample from `pict` (`vide`
       fallback), `stsd`/`stsz`/`stsc`/`stco`/`co64`/`stss`, and a smaller
       `pict` thumbnail track; Nokia `C026`–`C032`, `C036`–`C038`, and `C041`

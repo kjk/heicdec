@@ -10,11 +10,12 @@
 // on each file. Success = both decode RGB and mse <= threshold.
 // Failure = we cannot decode while libheif can, size mismatch, or bitmaps differ.
 // Ok (not decodable) = both sides fail to decode (no pixel oracle possible).
-// Skip = we decode but libheif does not (no oracle to compare).
+// When libheif rejects a valid file, compare a compact independently decoded
+// RGB oracle from test/no_libheif_oracles.json.
 //
 // Intentional bad inputs (ok-expect-fail if we fail as expected):
 //   broken containers; bad iovl version; oversize canvas.
-import { existsSync, rmSync } from "fs";
+import { existsSync, readFileSync, rmSync } from "fs";
 import { basename, join } from "path";
 import {
   build,
@@ -80,6 +81,127 @@ function classifyVerify(exitCode: number, out: string): VerifyKind {
   if (exitCode === 3) return "both_fail";
   if (exitCode === 4) return "libheif_fail";
   return "other";
+}
+
+type AltOracle = {
+  width: number;
+  height: number;
+  source: string;
+  rgb16: string;
+};
+
+const ALT_ORACLE_SIZE = 16;
+const ALT_ORACLE_MSE = 1;
+const ALT_ORACLES = JSON.parse(
+  readFileSync(
+    join(import.meta.dir, "..", "test", "no_libheif_oracles.json"),
+    "utf8",
+  ),
+) as Record<string, AltOracle>;
+
+function readPpm(path: string): { width: number; height: number; rgb: Uint8Array } {
+  const data = new Uint8Array(readFileSync(path));
+  let pos = 0;
+  const token = (): string => {
+    for (;;) {
+      while (pos < data.length && data[pos]! <= 32) pos++;
+      if (data[pos] !== 35) break;
+      while (pos < data.length && data[pos] !== 10) pos++;
+    }
+    let out = "";
+    while (pos < data.length && data[pos]! > 32)
+      out += String.fromCharCode(data[pos++]!);
+    return out;
+  };
+  if (token() !== "P6") throw new Error("not a P6 PPM");
+  const width = Number(token());
+  const height = Number(token());
+  if (Number(token()) !== 255 || width < 1 || height < 1)
+    throw new Error("invalid PPM header");
+  if (data[pos] === 13 && data[pos + 1] === 10) pos += 2;
+  else if (data[pos]! <= 32) pos++;
+  const n = width * height * 3;
+  if (!Number.isSafeInteger(n) || data.length - pos !== n)
+    throw new Error("invalid PPM pixel length");
+  return { width, height, rgb: data.subarray(pos) };
+}
+
+function downsampleRgb(
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+): Uint8Array {
+  const out = new Uint8Array(ALT_ORACLE_SIZE * ALT_ORACLE_SIZE * 3);
+  for (let ty = 0; ty < ALT_ORACLE_SIZE; ty++) {
+    const y0 = Math.floor((ty * height) / ALT_ORACLE_SIZE);
+    const y1 = Math.floor(((ty + 1) * height) / ALT_ORACLE_SIZE);
+    for (let tx = 0; tx < ALT_ORACLE_SIZE; tx++) {
+      const x0 = Math.floor((tx * width) / ALT_ORACLE_SIZE);
+      const x1 = Math.floor(((tx + 1) * width) / ALT_ORACLE_SIZE);
+      const count = (x1 - x0) * (y1 - y0);
+      const sum = [0, 0, 0];
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const i = (y * width + x) * 3;
+          sum[0] += rgb[i]!;
+          sum[1] += rgb[i + 1]!;
+          sum[2] += rgb[i + 2]!;
+        }
+      }
+      const o = (ty * ALT_ORACLE_SIZE + tx) * 3;
+      for (let c = 0; c < 3; c++)
+        out[o + c] = Math.floor((sum[c]! + count / 2) / count);
+    }
+  }
+  return out;
+}
+
+async function compareAltOracle(
+  exe: string,
+  file: string,
+  name: string,
+): Promise<{ ok: boolean; detail: string } | null> {
+  const key = name.replace(/\.[^.]+$/, "");
+  const oracle = ALT_ORACLES[key];
+  if (!oracle) return null;
+  const ppm = join(import.meta.dir, "..", "out", `alt-oracle-${key}.ppm`);
+  rmSync(ppm, { force: true });
+  try {
+    const p = await Bun.$`${exe} -out ${ppm} ${file}`.nothrow().quiet();
+    if (p.exitCode !== 0 || !existsSync(ppm))
+      return { ok: false, detail: `decode exit ${p.exitCode}` };
+    const image = readPpm(ppm);
+    if (image.width !== oracle.width || image.height !== oracle.height) {
+      return {
+        ok: false,
+        detail:
+          `size ${image.width}x${image.height} != ` +
+          `${oracle.width}x${oracle.height}`,
+      };
+    }
+    const actual = downsampleRgb(image.rgb, image.width, image.height);
+    const expected = new Uint8Array(Buffer.from(oracle.rgb16, "base64"));
+    if (actual.length !== expected.length)
+      return { ok: false, detail: "invalid alternate oracle length" };
+    let sse = 0;
+    let maxDiff = 0;
+    for (let i = 0; i < actual.length; i++) {
+      const d = Math.abs(actual[i]! - expected[i]!);
+      sse += d * d;
+      if (d > maxDiff) maxDiff = d;
+    }
+    const mse = sse / actual.length;
+    return {
+      ok: mse <= ALT_ORACLE_MSE,
+      detail:
+        `${oracle.source} rgb16 mse=${mse.toFixed(4)} ` +
+        `maxdiff=${maxDiff}`,
+    };
+  } catch (e) {
+    return { ok: false, detail: String(e) };
+  } finally {
+    rmSync(ppm, { force: true });
+  }
 }
 
 const HEVC_SEQUENCE_TESTS = [
@@ -272,9 +394,17 @@ async function main() {
         ok++;
         console.log(`[ok-expect-fail] ${f} (libheif fail)`);
       } else {
-        /* We decode; oracle rejects/unsupported — no mse compare. */
-        skip++;
-        console.log(`[skip] ${f} unsupported by libheif (heic ok, no oracle)`);
+        const alt = await compareAltOracle(exe, f, name);
+        if (!alt) {
+          skip++;
+          console.log(`[skip] ${f} unsupported by libheif (no alternate oracle)`);
+        } else if (alt.ok) {
+          ok++;
+          console.log(`[ok-alt] ${f} ${alt.detail}`);
+        } else {
+          fail++;
+          console.log(`[fail] ${f} alternate oracle: ${alt.detail}`);
+        }
       }
       continue;
     }
@@ -329,7 +459,8 @@ async function main() {
     `done: ${ok} ok, ${fail} fail, ${skip} skip / ${files.length + extra}` +
       (infoOnly
         ? " (info)"
-        : ` (libheif mse<=${mseThreshold}; skip=no oracle, not decodable counts as ok)`),
+        : ` (libheif mse<=${mseThreshold}; alternate rgb16 mse<=${ALT_ORACLE_MSE}; ` +
+          `skip=no oracle, not decodable counts as ok)`),
   );
   process.exit(fail ? 1 : 0);
 }
