@@ -998,7 +998,7 @@ int heic_decode_primary(heic_doc *doc, heic_format format,
     img->height = (uint32_t)out_h;
     img->format = format;
     img->stride = out_w * bpp;
-    img->data = (uint8_t *)heic_zalloc(doc->ctx, need);
+    img->data = (uint8_t *)doc->ctx->alloc(doc->ctx->user, doc->ctx, need);
     if (!img->data) {
         heic_free_buf(doc->ctx, img);
         heic_frame_free(doc->ctx, &frame);
@@ -1069,7 +1069,7 @@ heic_image *heic_doc_decode_thumbnail(heic_doc *doc, heic_format format)
     img->height = (uint32_t)h;
     img->format = format;
     img->stride = w * bpp;
-    img->data = (uint8_t *)heic_zalloc(doc->ctx, need);
+    img->data = (uint8_t *)doc->ctx->alloc(doc->ctx->user, doc->ctx, need);
     if (!img->data || heic_frame_to_rgb(doc->ctx, &frame, format, img->data, img->stride) != 0) {
         heic_image_destroy(doc->ctx, img);
         heic_frame_free(doc->ctx, &frame);

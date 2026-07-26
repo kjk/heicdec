@@ -128,6 +128,13 @@
     33.89ms (-3.0%).
   - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
     183 ok / 5 no-oracle skips / 0 failures.
+- **Uninitialized packed output allocation**:
+  - Allocate RGB/BGR/RGBA/BGRA output without clearing it first; color
+    conversion overwrites every output byte.
+  - HDR repeated median 31.78ms → **31.29ms** (-1.5%); winperf caller
+    attribution removed all 246 `memset` samples charged to primary decode.
+  - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
+    183 ok / 5 no-oracle skips / 0 failures.
 
 ## Next
 
