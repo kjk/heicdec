@@ -1,9 +1,92 @@
 /* hevc_decode.c -- HEVC still-image entry */
 #include "heic_internal.h"
 
+static int find_ref_by_poc(const heic_frame *const *refs, int n_refs,
+                           int poc, uint32_t poc_mask, int lsb_only)
+{
+    int i;
+    for (i = 0; i < n_refs; i++) {
+        if (!refs[i] || !refs[i]->poc_valid) continue;
+        if ((!lsb_only && refs[i]->poc == poc)
+            || (lsb_only
+                && (((uint32_t)refs[i]->poc & poc_mask)
+                    == ((uint32_t)poc & poc_mask))))
+            return i;
+    }
+    return -1;
+}
+
+static int build_l0_refs(heic_ctx *ctx, const heic_sps *sps,
+                         const heic_slice_header *sh,
+                         int curr_poc,
+                         const heic_frame *const *refs, int n_refs,
+                         const heic_frame **out)
+{
+    const heic_st_rps *rps = sh->has_inline_short_term_rps
+        ? &sh->inline_short_term_rps
+        : &sps->short_term_rps[sh->short_term_ref_pic_set_idx];
+    const heic_frame *temp[HEIC_MAX_REF_PICS];
+    uint32_t poc_mask =
+        (1u << (sps->log2_max_pic_order_cnt_lsb_minus4 + 4)) - 1u;
+    int n_temp = 0;
+    int i;
+
+    /* StCurrBefore, StCurrAfter, then LtCurr (H.265 8.3.4). */
+    for (i = 0; i < rps->num_negative_pics; i++) {
+        int idx;
+        if (!rps->used_by_curr_pic_s0[i]) continue;
+        idx = find_ref_by_poc(refs, n_refs,
+                              curr_poc + rps->delta_poc_s0[i],
+                              poc_mask, 0);
+        if (idx >= 0 && n_temp < HEIC_MAX_REF_PICS)
+            temp[n_temp++] = refs[idx];
+    }
+    for (i = 0; i < rps->num_positive_pics; i++) {
+        int idx;
+        if (!rps->used_by_curr_pic_s1[i]) continue;
+        idx = find_ref_by_poc(refs, n_refs,
+                              curr_poc + rps->delta_poc_s1[i],
+                              poc_mask, 0);
+        if (idx >= 0 && n_temp < HEIC_MAX_REF_PICS)
+            temp[n_temp++] = refs[idx];
+    }
+    for (i = 0; i < sh->num_long_term_sps + sh->num_long_term_pics; i++) {
+        int idx;
+        if (!sh->used_by_curr_pic_lt_flag[i]) continue;
+        idx = find_ref_by_poc(refs, n_refs, (int)sh->poc_lsb_lt[i],
+                              poc_mask, 1);
+        if (idx >= 0 && n_temp < HEIC_MAX_REF_PICS)
+            temp[n_temp++] = refs[idx];
+    }
+
+    /* Some HEIF writers leave POC metadata ambiguous across independent items.
+       Preserve iref order as a bounded fallback when no POC match was possible. */
+    if (n_temp == 0) {
+        for (i = 0; i < n_refs && n_temp < HEIC_MAX_REF_PICS; i++)
+            if (refs[i]) temp[n_temp++] = refs[i];
+    }
+    if (n_temp == 0) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "no supplied HEVC reference matches active RPS");
+        return -1;
+    }
+    for (i = 0; i < sh->num_ref_idx_l0_active; i++) {
+        int entry = sh->ref_pic_list_modification_flag_l0
+            ? sh->list_entry_l0[i]
+            : i % n_temp;
+        if (entry < 0 || entry >= n_temp) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "HEVC L0 list entry has no supplied reference");
+            return -1;
+        }
+        out[i] = temp[entry];
+    }
+    return sh->num_ref_idx_l0_active;
+}
+
 static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                                  const uint8_t *data, size_t len,
-                                 const heic_frame *ref,
+                                 const heic_frame *const *refs, int n_refs,
                                  heic_frame *out, const heic_abort *ab)
 {
     heic_nal *nals = NULL;
@@ -150,9 +233,41 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                         eps[ne++] = rel;
                     }
                 }
+                const heic_frame *l0[HEIC_MAX_REF_PICS];
+                int n_l0 = 0;
+                int poc_bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
+                uint32_t max_poc_lsb = 1u << poc_bits;
+                int is_irap = nals[i].type >= HEIC_NAL_BLA_W_LP
+                           && nals[i].type <= HEIC_NAL_CRA;
+                out->poc = (int)sh.slice_pic_order_cnt_lsb;
+                if (!is_irap && refs && n_refs > 0 && refs[0]
+                    && refs[0]->poc_valid) {
+                    uint32_t prev_lsb = (uint32_t)refs[0]->poc
+                                      & (max_poc_lsb - 1u);
+                    int prev_msb = refs[0]->poc - (int)prev_lsb;
+                    uint32_t curr_lsb = sh.slice_pic_order_cnt_lsb;
+                    if (curr_lsb < prev_lsb
+                        && prev_lsb - curr_lsb >= max_poc_lsb / 2)
+                        out->poc += prev_msb + (int)max_poc_lsb;
+                    else if (curr_lsb > prev_lsb
+                             && curr_lsb - prev_lsb > max_poc_lsb / 2)
+                        out->poc += prev_msb - (int)max_poc_lsb;
+                    else
+                        out->poc += prev_msb;
+                }
+                out->poc_valid = 1;
+                if (sh.slice_type != HEIC_SLICE_I) {
+                    n_l0 = build_l0_refs(ctx, &sps, &sh, out->poc,
+                                         refs, n_refs, l0);
+                    if (n_l0 < 0) {
+                        heic_free_buf(ctx, eps);
+                        heic_slice_header_free(ctx, &sh);
+                        break;
+                    }
+                }
                 if (heic_hevc_decode_slice(ctx, &sps, &pps, &sh, slice_data,
-                                           slice_len, eps, ne, ref, out, ab)
-                    == 0)
+                                           slice_len, eps, ne, l0, n_l0,
+                                           out, ab) == 0)
                     decode_ok = 1;
                 heic_free_buf(ctx, eps);
             }
@@ -176,7 +291,7 @@ int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab)
 {
-    return heic_hevc_decode_impl(ctx, cfg, data, len, NULL, out, ab);
+    return heic_hevc_decode_impl(ctx, cfg, data, len, NULL, 0, out, ab);
 }
 
 int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
@@ -184,5 +299,17 @@ int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
                          const heic_frame *ref, heic_frame *out,
                          const heic_abort *ab)
 {
-    return heic_hevc_decode_impl(ctx, cfg, data, len, ref, out, ab);
+    const heic_frame *refs[1];
+    refs[0] = ref;
+    return heic_hevc_decode_impl(ctx, cfg, data, len,
+                                 ref ? refs : NULL, ref ? 1 : 0, out, ab);
+}
+
+int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,
+                          const uint8_t *data, size_t len,
+                          const heic_frame *const *refs, int n_refs,
+                          heic_frame *out, const heic_abort *ab)
+{
+    if (n_refs < 0 || n_refs > HEIC_MAX_REF_PICS) return -1;
+    return heic_hevc_decode_impl(ctx, cfg, data, len, refs, n_refs, out, ab);
 }

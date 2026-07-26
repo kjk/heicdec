@@ -8,6 +8,10 @@ int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
                          const uint8_t *data, size_t len,
                          const heic_frame *ref, heic_frame *out,
                          const heic_abort *ab);
+int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,
+                          const uint8_t *data, size_t len,
+                          const heic_frame *const *refs, int n_refs,
+                          heic_frame *out, const heic_abort *ab);
 int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
                     const uint8_t *data, size_t len,
                     heic_frame *out, const heic_abort *ab);
@@ -25,7 +29,7 @@ static int decode_hevc_reference(heic_doc *doc, const heic_item *item,
     const uint8_t *data = NULL;
     size_t len = 0;
     int owned = 0;
-    uint32_t pred_ids[2];
+    uint32_t pred_ids[HEIC_MAX_REF_PICS + 1];
     int n_pred;
     int rc = -1;
 
@@ -38,21 +42,28 @@ static int decode_hevc_reference(heic_doc *doc, const heic_item *item,
                                  &owned) != 0)
         return -1;
     n_pred = heic_container_find_refs(&doc->container, item->id,
-                                      HEIC_REF_PRED, pred_ids, 2);
+                                      HEIC_REF_PRED, pred_ids,
+                                      HEIC_MAX_REF_PICS + 1);
     if (n_pred > 0) {
-        heic_item parent;
-        heic_frame ref;
-        memset(&ref, 0, sizeof(ref));
-        if (n_pred != 1 ||
-            heic_container_get_item(&doc->container, pred_ids[0], &parent) != 0)
+        heic_frame refs[HEIC_MAX_REF_PICS];
+        const heic_frame *ref_ptrs[HEIC_MAX_REF_PICS];
+        int i;
+        memset(refs, 0, sizeof(refs));
+        if (n_pred > HEIC_MAX_REF_PICS)
             goto done;
-        if (decode_hevc_reference(doc, &parent, &ref, ab, depth + 1) != 0) {
-            heic_frame_free(doc->ctx, &ref);
-            goto done;
+        for (i = 0; i < n_pred; i++) {
+            heic_item parent;
+            if (heic_container_get_item(&doc->container, pred_ids[i],
+                                        &parent) != 0
+                || decode_hevc_reference(doc, &parent, &refs[i], ab,
+                                         depth + 1) != 0)
+                break;
+            ref_ptrs[i] = &refs[i];
         }
-        rc = heic_hevc_decode_ref(doc->ctx, item->hvcc, data, len,
-                                  &ref, frame, ab);
-        heic_frame_free(doc->ctx, &ref);
+        if (i == n_pred)
+            rc = heic_hevc_decode_refs(doc->ctx, item->hvcc, data, len,
+                                       ref_ptrs, n_pred, frame, ab);
+        while (i-- > 0) heic_frame_free(doc->ctx, &refs[i]);
     } else {
         rc = heic_hevc_decode(doc->ctx, item->hvcc, data, len, frame, ab);
     }
@@ -837,33 +848,38 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
         return -1;
 
     if (item->item_type == HEIC_TYPE_HVC1 || item->hvcc) {
-        uint32_t pred_ids[2];
+        uint32_t pred_ids[HEIC_MAX_REF_PICS + 1];
         int n_pred;
         if (!item->hvcc) {
             heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "hvc1 item missing hvcC");
             goto done;
         }
         n_pred = heic_container_find_refs(&doc->container, item->id,
-                                          HEIC_REF_PRED, pred_ids, 2);
+                                          HEIC_REF_PRED, pred_ids,
+                                          HEIC_MAX_REF_PICS + 1);
         if (n_pred > 0) {
-            heic_item ref_item;
-            heic_frame ref;
-            memset(&ref, 0, sizeof(ref));
-            if (n_pred != 1 ||
-                heic_container_get_item(&doc->container, pred_ids[0],
-                                        &ref_item) != 0) {
+            heic_frame refs[HEIC_MAX_REF_PICS];
+            const heic_frame *ref_ptrs[HEIC_MAX_REF_PICS];
+            int i;
+            memset(refs, 0, sizeof(refs));
+            if (n_pred > HEIC_MAX_REF_PICS) {
                 heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
-                           "predictive item requires one pred reference");
+                           "predictive item has too many pred references");
                 goto done;
             }
-            if (decode_hevc_reference(doc, &ref_item, &ref, ab,
-                                      depth + 1) != 0) {
-                heic_frame_free(doc->ctx, &ref);
-                goto done;
+            for (i = 0; i < n_pred; i++) {
+                heic_item ref_item;
+                if (heic_container_get_item(&doc->container, pred_ids[i],
+                                            &ref_item) != 0
+                    || decode_hevc_reference(doc, &ref_item, &refs[i], ab,
+                                             depth + 1) != 0)
+                    break;
+                ref_ptrs[i] = &refs[i];
             }
-            rc = heic_hevc_decode_ref(doc->ctx, item->hvcc, data, len,
-                                      &ref, frame, ab);
-            heic_frame_free(doc->ctx, &ref);
+            if (i == n_pred)
+                rc = heic_hevc_decode_refs(doc->ctx, item->hvcc, data, len,
+                                           ref_ptrs, n_pred, frame, ab);
+            while (i-- > 0) heic_frame_free(doc->ctx, &refs[i]);
         } else {
             rc = heic_hevc_decode(doc->ctx, item->hvcc, data, len, frame, ab);
         }

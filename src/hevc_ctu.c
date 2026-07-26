@@ -27,7 +27,8 @@ typedef struct {
     heic_pb_motion *mv_info;
     uint32_t intra_mode_stride;
     size_t   intra_mode_n;
-    const heic_frame *ref;
+    const heic_frame *refs[HEIC_MAX_REF_PICS];
+    int n_refs;
     int cu_pred_mode;
     int8_t *qp_map;
     uint32_t qp_map_stride;
@@ -534,6 +535,27 @@ static heic_pb_coding decode_inter_pu(heic_slice_ctx *sc, int skip)
         c.merge_idx = decode_merge_idx(sc);
         return c;
     }
+    if (sc->sh->num_ref_idx_l0_active > 1) {
+        int c_max = sc->sh->num_ref_idx_l0_active - 1;
+        int first = heic_cabac_decode_bin(
+            &sc->cabac, &sc->models[HEIC_CTX_REF_IDX]);
+        if (!first) {
+            c.ref_idx = 0;
+        } else if (c_max == 1) {
+            c.ref_idx = 1;
+        } else {
+            int second = heic_cabac_decode_bin(
+                &sc->cabac, &sc->models[HEIC_CTX_REF_IDX + 1]);
+            if (!second) {
+                c.ref_idx = 1;
+            } else {
+                int idx = 2;
+                while (idx < c_max && heic_cabac_decode_bypass(&sc->cabac))
+                    idx++;
+                c.ref_idx = (int8_t)idx;
+            }
+        }
+    }
     decode_mvd(sc, &c.mvd_x, &c.mvd_y);
     c.mvp_flag = heic_cabac_decode_bin(
                      &sc->cabac, &sc->models[HEIC_CTX_MVP_LX_FLAG])
@@ -637,7 +659,8 @@ static heic_pb_motion derive_merge(heic_slice_ctx *sc, const heic_pu *pu,
     return cand[wanted];
 }
 
-static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu, heic_mv mvp[2])
+static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu, int ref_idx,
+                        heic_mv mvp[2])
 {
     const int32_t apos[2][2] = {
         {(int32_t)pu->x - 1, (int32_t)(pu->y + pu->h)},
@@ -654,7 +677,7 @@ static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu, heic_mv mvp[2])
     for (i = 0; i < 2 && !have_a; i++)
         if (inter_at(sc, apos[i][0], apos[i][1])) {
             heic_pb_motion m = get_motion(sc, apos[i][0], apos[i][1]);
-            if (m.pred_flag[0] && m.ref_idx[0] == 0) {
+            if (m.pred_flag[0] && m.ref_idx[0] == ref_idx) {
                 a = m.mv[0];
                 have_a = 1;
             }
@@ -662,7 +685,7 @@ static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu, heic_mv mvp[2])
     for (i = 0; i < 3 && !have_b; i++)
         if (inter_at(sc, bpos[i][0], bpos[i][1])) {
             heic_pb_motion m = get_motion(sc, bpos[i][0], bpos[i][1]);
-            if (m.pred_flag[0] && m.ref_idx[0] == 0) {
+            if (m.pred_flag[0] && m.ref_idx[0] == ref_idx) {
                 b = m.mv[0];
                 have_b = 1;
             }
@@ -688,7 +711,8 @@ static heic_pb_motion resolve_motion(heic_slice_ctx *sc, heic_pb_coding coding,
     {
         heic_mv mvp[2];
         heic_pb_motion out = zero_motion();
-        derive_amvp(sc, pu, mvp);
+        derive_amvp(sc, pu, coding.ref_idx, mvp);
+        out.ref_idx[0] = coding.ref_idx;
         out.mv[0].x = (int16_t)(mvp[coding.mvp_flag].x + coding.mvd_x);
         out.mv[0].y = (int16_t)(mvp[coding.mvp_flag].y + coding.mvd_y);
         return out;
@@ -698,12 +722,17 @@ static heic_pb_motion resolve_motion(heic_slice_ctx *sc, heic_pb_coding coding,
 static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
                         heic_pb_motion motion)
 {
-    if (!sc->ref || !motion.pred_flag[0] || motion.ref_idx[0] != 0) return -1;
-    if (heic_mc_luma(sc->ref, sc->frame, motion.mv[0],
+    const heic_frame *ref;
+    if (!motion.pred_flag[0] || motion.ref_idx[0] < 0
+        || motion.ref_idx[0] >= sc->n_refs)
+        return -1;
+    ref = sc->refs[motion.ref_idx[0]];
+    if (!ref) return -1;
+    if (heic_mc_luma(ref, sc->frame, motion.mv[0],
                      pu->x, pu->y, pu->w, pu->h,
                      sc->mc_scratch, 72u * 72u) != 0)
         return -1;
-    return heic_mc_chroma(sc->ref, sc->frame, motion.mv[0],
+    return heic_mc_chroma(ref, sc->frame, motion.mv[0],
                           pu->x, pu->y, pu->w, pu->h,
                           sc->mc_scratch, 72u * 72u);
 }
@@ -1472,7 +1501,8 @@ static int decode_ctu(heic_slice_ctx *sc, uint32_t x_ctb, uint32_t y_ctb)
 static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps,
                           const heic_pps *pps, const heic_slice_header *sh,
                           const uint8_t *data, size_t len,
-                          const heic_frame *ref, heic_frame *frame)
+                          const heic_frame *const *refs, int n_refs,
+                          heic_frame *frame)
 {
     uint32_t min_cb = 1u << sps->log2_min_cb_size;
     uint32_t min_pu = min_pu_size(sps);
@@ -1486,7 +1516,12 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     sc->pps = pps;
     sc->sh = sh;
     sc->frame = frame;
-    sc->ref = ref;
+    if (n_refs > HEIC_MAX_REF_PICS) n_refs = HEIC_MAX_REF_PICS;
+    sc->n_refs = n_refs;
+    if (refs && n_refs > 0) {
+        int i;
+        for (i = 0; i < n_refs; i++) sc->refs[i] = refs[i];
+    }
     sc->current_qg_x = -1;
     sc->current_qg_y = -1;
     sc->current_qpy = sh->slice_qp_y;
@@ -1694,7 +1729,8 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
                            const heic_pps *pps, const heic_slice_header *sh,
                            const uint8_t *data, size_t len,
                            const uint32_t *ep_positions, int n_ep,
-                           const heic_frame *ref, heic_frame *out,
+                           const heic_frame *const *refs, int n_refs,
+                           heic_frame *out,
                            const heic_abort *ab)
 {
     heic_slice_work *work;
@@ -1713,7 +1749,7 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
         heic_error(ctx, HEIC_SEVERITY_ERROR, "B-slice CTU path not implemented");
         return -1;
     }
-    if (sh->slice_type == HEIC_SLICE_P && !ref) {
+    if (sh->slice_type == HEIC_SLICE_P && (!refs || n_refs <= 0)) {
         heic_error(ctx, HEIC_SEVERITY_ERROR,
                    "P-slice missing predictive reference frame");
         return -1;
@@ -1729,7 +1765,7 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
     if (!work) return -1;
     sc = &work->sc;
 
-    if (slice_ctx_init(sc, ctx, sps, pps, sh, data, len, ref, out) != 0) {
+    if (slice_ctx_init(sc, ctx, sps, pps, sh, data, len, refs, n_refs, out) != 0) {
         slice_ctx_free(sc);
         heic_free_buf(ctx, work);
         return -1;

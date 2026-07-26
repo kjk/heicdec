@@ -462,6 +462,8 @@ typedef struct {
     int c_stride;
     int a_stride;                /* usually == y_stride when a present */
     int c_width, c_height;
+    int poc;
+    int poc_valid;
 } heic_frame;
 
 typedef struct {
@@ -486,6 +488,10 @@ int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
                          const uint8_t *data, size_t len,
                          const heic_frame *ref, heic_frame *out,
                          const heic_abort *ab);
+int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,
+                          const uint8_t *data, size_t len,
+                          const heic_frame *const *refs, int n_refs,
+                          heic_frame *out, const heic_abort *ab);
 
 /* Decode AV1 still via dav1d (requires HEIC_HAVE_DAV1D + link dav1d). */
 void heic_dav1d_ctx_close(heic_ctx *ctx); /* free cached dav1d on heic_ctx */
@@ -812,6 +818,10 @@ typedef struct {
     int      slice_sao_chroma_flag;
     uint8_t  num_ref_idx_l0_active;
     uint8_t  num_ref_idx_l1_active;
+    int      ref_pic_list_modification_flag_l0;
+    int      ref_pic_list_modification_flag_l1;
+    uint8_t  list_entry_l0[HEIC_MAX_REF_PICS];
+    uint8_t  list_entry_l1[HEIC_MAX_REF_PICS];
     int      mvd_l1_zero_flag;
     int      collocated_from_l0_flag;
     uint8_t  collocated_ref_idx;
@@ -980,7 +990,8 @@ int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
                            const heic_pps *pps, const heic_slice_header *sh,
                            const uint8_t *data, size_t len,
                            const uint32_t *ep_positions, int n_ep,
-                           const heic_frame *ref, heic_frame *out,
+                           const heic_frame *const *refs, int n_refs,
+                           heic_frame *out,
                            const heic_abort *ab);
 
 /* ---- decode orchestration (decode.c) ---- */

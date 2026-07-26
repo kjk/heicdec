@@ -177,11 +177,6 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                        "B-slice predictive items not supported");
             return -1;
         }
-        if (out->num_ref_idx_l0_active != 1) {
-            heic_error(ctx, HEIC_SEVERITY_ERROR,
-                       "predictive item requires exactly one L0 reference");
-            return -1;
-        }
         if (pps->lists_modification_present_flag) {
             const heic_st_rps *rps = out->has_inline_short_term_rps
                 ? &out->inline_short_term_rps
@@ -194,11 +189,14 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             for (i = 0; i < out->num_long_term_sps + out->num_long_term_pics; i++)
                 used += out->used_by_curr_pic_lt_flag[i] != 0;
             if (used > 1) {
-                int modify = heic_bs_bit(&bs);
-                if (modify) {
-                    heic_error(ctx, HEIC_SEVERITY_ERROR,
-                               "reference-list modification not supported");
-                    return -1;
+                int bits = ceil_log2((uint32_t)used);
+                out->ref_pic_list_modification_flag_l0 = heic_bs_bit(&bs);
+                if (out->ref_pic_list_modification_flag_l0) {
+                    for (i = 0; i < out->num_ref_idx_l0_active; i++) {
+                        uint32_t entry = heic_bs_bits(&bs, bits);
+                        if (entry >= (uint32_t)used) return -1;
+                        out->list_entry_l0[i] = (uint8_t)entry;
+                    }
                 }
             }
         }
