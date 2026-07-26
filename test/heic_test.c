@@ -165,6 +165,11 @@ static double bench_best2(double a, double b)
     return a < b ? a : b;
 }
 
+static double bench_best3(double a, double b, double c)
+{
+    return bench_best2(bench_best2(a, b), c);
+}
+
 static int bench_ours_session(const uint8_t *data, size_t len, bench_session *out)
 {
     heic_ctx *ctx;
@@ -300,11 +305,11 @@ static void bench_print_compare_table(const bench_cmp_row *rows, int nrows)
 
 static int do_bench(const uint8_t *data, size_t len)
 {
-    const int RUNS = 2;
-    bench_session ours[2];
+    const int RUNS = 3;
+    bench_session ours[3];
 #ifdef HEIC_HAVE_LIBHEIF
-    heic_bench_session libraw[2];
-    bench_session lib[2];
+    heic_bench_session libraw[3];
+    bench_session lib[3];
 #endif
     int r;
 
@@ -335,7 +340,17 @@ static int do_bench(const uint8_t *data, size_t len)
 
 #ifdef HEIC_HAVE_LIBHEIF
     /* Both sides failed every run → unsupported (unci, etc.); skip quietly. */
-    if (!(ours[0].ok || ours[1].ok) && !(lib[0].ok || lib[1].ok)) {
+    if (!(ours[0].ok || ours[1].ok || ours[2].ok) &&
+        !(lib[0].ok || lib[1].ok || lib[2].ok)) {
+        const char *lib_error = libraw[0].error[0] ? libraw[0].error
+                                : libraw[1].error[0] ? libraw[1].error
+                                : libraw[2].error[0] ? libraw[2].error
+                                                    : "unknown error";
+        printf("BENCH_RESULT ours_ok=0 libheif_ok=0 "
+               "ours_open=-1 ours_decode=-1 ours_close=-1 ours_total=-1 "
+               "libheif_open=-1 libheif_decode=-1 libheif_close=-1 "
+               "libheif_total=-1\n");
+        printf("BENCH_LIBHEIF_ERROR %s\n", lib_error);
         printf("skip: both heic and libheif failed (unsupported / not decodable)\n");
         return 0;
     }
@@ -356,27 +371,30 @@ static int do_bench(const uint8_t *data, size_t len)
     fprintf(stderr,
             "bench: built without libheif (rebuild with bun cmd/build.ts -libheif)\n");
     {
-        double bo = bench_best2(ours[0].open_ms, ours[1].open_ms);
-        double bd = bench_best2(ours[0].decode_ms, ours[1].decode_ms);
-        double bc = bench_best2(ours[0].close_ms, ours[1].close_ms);
-        double bt = bench_best2(ours[0].total_ms, ours[1].total_ms);
+        double bo = bench_best3(ours[0].open_ms, ours[1].open_ms, ours[2].open_ms);
+        double bd = bench_best3(ours[0].decode_ms, ours[1].decode_ms, ours[2].decode_ms);
+        double bc = bench_best3(ours[0].close_ms, ours[1].close_ms, ours[2].close_ms);
+        double bt = bench_best3(ours[0].total_ms, ours[1].total_ms, ours[2].total_ms);
         printf("BENCH heic open=%.4f decode=%.4f close=%.4f total=%.4f size=%ux%u ok=%d\n",
-               bo, bd, bc, bt, (unsigned)(ours[0].width ? ours[0].width : ours[1].width),
-               (unsigned)(ours[0].height ? ours[0].height : ours[1].height),
-               ours[0].ok || ours[1].ok);
+               bo, bd, bc, bt,
+               (unsigned)(ours[0].width ? ours[0].width
+                          : ours[1].width ? ours[1].width : ours[2].width),
+               (unsigned)(ours[0].height ? ours[0].height
+                          : ours[1].height ? ours[1].height : ours[2].height),
+               ours[0].ok || ours[1].ok || ours[2].ok);
     }
-    return (ours[0].ok || ours[1].ok) ? 0 : 1;
+    return (ours[0].ok || ours[1].ok || ours[2].ok) ? 0 : 1;
 #else
     {
         bench_cmp_row rows[4];
-        double o_open = bench_best2(ours[0].open_ms, ours[1].open_ms);
-        double o_dec = bench_best2(ours[0].decode_ms, ours[1].decode_ms);
-        double o_close = bench_best2(ours[0].close_ms, ours[1].close_ms);
-        double o_tot = bench_best2(ours[0].total_ms, ours[1].total_ms);
-        double l_open = bench_best2(lib[0].open_ms, lib[1].open_ms);
-        double l_dec = bench_best2(lib[0].decode_ms, lib[1].decode_ms);
-        double l_close = bench_best2(lib[0].close_ms, lib[1].close_ms);
-        double l_tot = bench_best2(lib[0].total_ms, lib[1].total_ms);
+        double o_open = bench_best3(ours[0].open_ms, ours[1].open_ms, ours[2].open_ms);
+        double o_dec = bench_best3(ours[0].decode_ms, ours[1].decode_ms, ours[2].decode_ms);
+        double o_close = bench_best3(ours[0].close_ms, ours[1].close_ms, ours[2].close_ms);
+        double o_tot = bench_best3(ours[0].total_ms, ours[1].total_ms, ours[2].total_ms);
+        double l_open = bench_best3(lib[0].open_ms, lib[1].open_ms, lib[2].open_ms);
+        double l_dec = bench_best3(lib[0].decode_ms, lib[1].decode_ms, lib[2].decode_ms);
+        double l_close = bench_best3(lib[0].close_ms, lib[1].close_ms, lib[2].close_ms);
+        double l_tot = bench_best3(lib[0].total_ms, lib[1].total_ms, lib[2].total_ms);
 
         strcpy(rows[0].op, "open");
         rows[0].ours = o_open;
@@ -392,17 +410,32 @@ static int do_bench(const uint8_t *data, size_t len)
         rows[3].lib = l_tot;
 
         {
-            int ours_ok = ours[0].ok || ours[1].ok;
-            int lib_ok = lib[0].ok || lib[1].ok;
+            int ours_ok = ours[0].ok || ours[1].ok || ours[2].ok;
+            int lib_ok = lib[0].ok || lib[1].ok || lib[2].ok;
+            const char *lib_error = libraw[0].error[0] ? libraw[0].error
+                                    : libraw[1].error[0] ? libraw[1].error
+                                    : libraw[2].error[0] ? libraw[2].error
+                                                        : "unknown error";
 
             printf("(best of %d runs; + = heic slower)\n", RUNS);
             bench_print_compare_table(rows, 4);
+            printf("BENCH_RESULT ours_ok=%d libheif_ok=%d "
+                   "ours_open=%.4f ours_decode=%.4f ours_close=%.4f ours_total=%.4f "
+                   "libheif_open=%.4f libheif_decode=%.4f libheif_close=%.4f "
+                   "libheif_total=%.4f\n",
+                   ours_ok, lib_ok, o_open, o_dec, o_close, o_tot,
+                   l_open, l_dec, l_close, l_tot);
+            if (!lib_ok) printf("BENCH_LIBHEIF_ERROR %s\n", lib_error);
 
             if (ours_ok && lib_ok) {
-                uint32_t ow = ours[0].width ? ours[0].width : ours[1].width;
-                uint32_t oh = ours[0].height ? ours[0].height : ours[1].height;
-                uint32_t lw = lib[0].width ? lib[0].width : lib[1].width;
-                uint32_t lh = lib[0].height ? lib[0].height : lib[1].height;
+                uint32_t ow = ours[0].width ? ours[0].width
+                              : ours[1].width ? ours[1].width : ours[2].width;
+                uint32_t oh = ours[0].height ? ours[0].height
+                              : ours[1].height ? ours[1].height : ours[2].height;
+                uint32_t lw = lib[0].width ? lib[0].width
+                              : lib[1].width ? lib[1].width : lib[2].width;
+                uint32_t lh = lib[0].height ? lib[0].height
+                              : lib[1].height ? lib[1].height : lib[2].height;
                 if (ow != lw || oh != lh)
                     printf("note: size heic=%ux%u libheif=%ux%u\n", (unsigned)ow,
                            (unsigned)oh, (unsigned)lw, (unsigned)lh);

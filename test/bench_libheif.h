@@ -20,6 +20,7 @@ typedef struct heic_bench_session {
     double total_ms;
     uint32_t width, height;
     int ok;
+    char error[256];
 } heic_bench_session;
 
 /* Monotonic ms (same clock used for our decoder timings). */

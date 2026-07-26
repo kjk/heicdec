@@ -40,7 +40,8 @@ bun cmd/build.ts -clang -dav1d
 bun cmd/tests.ts -all            # decode all corpus files; RGB mse vs libheif
 bun cmd/tests.ts -info -all      # open/probe only
 bun cmd/build.ts -libheif        # also link strukturag libheif oracle
-bun cmd/bench.ts -rand 5         # open/decode/close timing vs libheif
+bun cmd/bench.ts -rand 5         # compact best-of-3 timing vs libheif
+bun cmd/bench.ts -verbose -rand 5 # also show open/decode/close timing
 bun cmd/fuzz.ts                  # libFuzzer + ASan (seeded from deps corpus)
 bun cmd/build-dist.ts            # amalgamation → dist/ (+ split JS/WASM demo)
 bun cmd/build-wasm.ts            # WebAssembly drop only (bootstraps emsdk if needed)
