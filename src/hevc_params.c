@@ -30,53 +30,202 @@ static void skip_profile_tier_level(heic_bs *bs, int max_sub_layers_minus1)
     (void)j;
 }
 
-static void skip_scaling_list_data(heic_bs *bs)
+static const uint8_t HEIC_DEFAULT_INTRA_8X8[64] = {
+    16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 17, 16, 17, 16, 17, 18,
+    17, 18, 18, 17, 18, 21, 19, 20, 21, 20, 19, 21, 24, 22, 22, 24,
+    24, 22, 22, 24, 25, 25, 27, 30, 27, 25, 25, 29, 31, 35, 35, 31,
+    29, 36, 41, 44, 41, 36, 47, 54, 54, 47, 65, 70, 65, 88, 88, 115
+};
+
+static const uint8_t HEIC_DEFAULT_INTER_8X8[64] = {
+    16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 17, 17, 17, 17, 17, 18,
+    18, 18, 18, 18, 18, 20, 20, 20, 20, 20, 20, 20, 24, 24, 24, 24,
+    24, 24, 24, 24, 25, 25, 25, 25, 25, 25, 25, 28, 28, 28, 28, 28,
+    28, 33, 33, 33, 33, 33, 41, 41, 41, 41, 54, 54, 54, 71, 71, 91
+};
+
+static void scaling_list_default(heic_scaling_list *out)
 {
-    int sizeId, matrixId;
-    for (sizeId = 0; sizeId < 4; sizeId++) {
-        for (matrixId = 0; matrixId < (sizeId == 3 ? 2 : 6); matrixId++) {
-            if (!heic_bs_bit(bs)) {
-                (void)heic_bs_ue(bs); /* pred matrix id delta */
-            } else {
-                int coefNum = HEIC_MIN(64, 1 << (4 + (sizeId << 1)));
-                int i;
-                if (sizeId > 1) (void)heic_bs_se(bs); /* dc coef */
-                for (i = 0; i < coefNum; i++) (void)heic_bs_se(bs);
-            }
-        }
+    int size_id, matrix_id;
+    memset(out, 16, sizeof(*out));
+    for (size_id = 1; size_id < 4; size_id++) {
+        for (matrix_id = 0; matrix_id < 3; matrix_id++)
+            memcpy(out->coef[size_id][matrix_id], HEIC_DEFAULT_INTRA_8X8, 64);
+        for (matrix_id = 3; matrix_id < 6; matrix_id++)
+            memcpy(out->coef[size_id][matrix_id], HEIC_DEFAULT_INTER_8X8, 64);
     }
 }
 
-static void skip_st_ref_pic_set(heic_bs *bs, int stRpsIdx, int num_short_term_ref_pic_sets)
+static int parse_scaling_list_data(heic_bs *bs, heic_scaling_list *out)
 {
-    int inter_ref_pic_set_prediction_flag = 0;
-    if (stRpsIdx != 0) inter_ref_pic_set_prediction_flag = heic_bs_bit(bs);
-    if (inter_ref_pic_set_prediction_flag) {
-        if (stRpsIdx == num_short_term_ref_pic_sets) (void)heic_bs_ue(bs);
-        (void)heic_bs_bit(bs);
-        (void)heic_bs_ue(bs);
-        /* Simplified: full inter-RPS syntax still TODO. HEIC stills often have
-           num_short_term_ref_pic_sets==0 so this path is rare. */
-        bs->error = 1;
-    } else {
+    int size_id, matrix_id;
+    scaling_list_default(out);
+    for (size_id = 0; size_id < 4; size_id++) {
+        int matrix_step = size_id == 3 ? 3 : 1;
+        for (matrix_id = 0; matrix_id < 6; matrix_id += matrix_step) {
+            if (!heic_bs_bit(bs)) {
+                uint32_t delta = heic_bs_ue(bs);
+                uint32_t scaled_delta = delta * (uint32_t)matrix_step;
+                if (scaled_delta > (uint32_t)matrix_id) {
+                    bs->error = 1;
+                    return -1;
+                }
+                if (delta != 0) {
+                    int ref_id = matrix_id - (int)scaled_delta;
+                    memcpy(out->coef[size_id][matrix_id],
+                           out->coef[size_id][ref_id], 64);
+                    if (size_id >= 2)
+                        out->dc_coef[size_id - 2][matrix_id] =
+                            out->dc_coef[size_id - 2][ref_id];
+                }
+            } else {
+                int coef_num = HEIC_MIN(64, 1 << (4 + (size_id << 1)));
+                int next_coef = 8;
+                int i;
+                if (size_id > 1) {
+                    int32_t dc_minus8 = heic_bs_se(bs);
+                    if (dc_minus8 < -7 || dc_minus8 > 247) {
+                        bs->error = 1;
+                        return -1;
+                    }
+                    next_coef = (int)dc_minus8 + 8;
+                    out->dc_coef[size_id - 2][matrix_id] = (uint8_t)next_coef;
+                }
+                for (i = 0; i < coef_num; i++) {
+                    int32_t delta = heic_bs_se(bs);
+                    if (delta < -128 || delta > 127) {
+                        bs->error = 1;
+                        return -1;
+                    }
+                    next_coef = (next_coef + (int)delta + 256) & 255;
+                    out->coef[size_id][matrix_id][i] = (uint8_t)next_coef;
+                }
+            }
+        }
+    }
+    return bs->error ? -1 : 0;
+}
+
+static void sort_rps(int32_t *delta, uint8_t *used, int n, int increasing)
+{
+    int i;
+    for (i = 1; i < n; i++) {
+        int32_t d = delta[i];
+        uint8_t u = used[i];
+        int j = i;
+        while (j > 0 && (increasing ? delta[j - 1] > d : delta[j - 1] < d)) {
+            delta[j] = delta[j - 1];
+            used[j] = used[j - 1];
+            j--;
+        }
+        delta[j] = d;
+        used[j] = u;
+    }
+}
+
+static int parse_st_ref_pic_set(heic_bs *bs, int idx, int num_sets,
+                                heic_st_rps *sets)
+{
+    heic_st_rps *out = &sets[idx];
+    int inter = idx != 0 ? heic_bs_bit(bs) : 0;
+    memset(out, 0, sizeof(*out));
+    if (!inter) {
         uint32_t num_neg = heic_bs_ue(bs);
         uint32_t num_pos = heic_bs_ue(bs);
         uint32_t i;
-        /* H.265: num_negative/positive_pics ≤ max_dec_pic_buffering (≤16).
-         * Uncapped UE values turn this into a multi-second/infinite loop. */
-        if (num_neg > 16 || num_pos > 16 || num_neg + num_pos > 16) {
+        int32_t prev = 0;
+        if (num_neg > HEIC_MAX_REF_PICS || num_pos > HEIC_MAX_REF_PICS ||
+            num_neg + num_pos > HEIC_MAX_REF_PICS) {
             bs->error = 1;
-            return;
+            return -1;
         }
+        out->num_negative_pics = (uint8_t)num_neg;
+        out->num_positive_pics = (uint8_t)num_pos;
         for (i = 0; i < num_neg; i++) {
-            (void)heic_bs_ue(bs);
-            (void)heic_bs_bit(bs);
+            uint32_t minus1 = heic_bs_ue(bs);
+            prev -= (int32_t)minus1 + 1;
+            out->delta_poc_s0[i] = prev;
+            out->used_by_curr_pic_s0[i] = (uint8_t)heic_bs_bit(bs);
         }
+        prev = 0;
         for (i = 0; i < num_pos; i++) {
-            (void)heic_bs_ue(bs);
-            (void)heic_bs_bit(bs);
+            uint32_t minus1 = heic_bs_ue(bs);
+            prev += (int32_t)minus1 + 1;
+            out->delta_poc_s1[i] = prev;
+            out->used_by_curr_pic_s1[i] = (uint8_t)heic_bs_bit(bs);
         }
+        return bs->error ? -1 : 0;
     }
+
+    {
+        uint32_t delta_idx_minus1 = idx == num_sets ? heic_bs_ue(bs) : 0;
+        int ref_idx = idx - (int)delta_idx_minus1 - 1;
+        int sign, delta_rps;
+        uint32_t abs_minus1;
+        const heic_st_rps *ref;
+        int ref_count, j, neg = 0, pos = 0;
+        int32_t ref_delta[HEIC_MAX_REF_PICS];
+        uint8_t used[HEIC_MAX_REF_PICS + 1];
+        uint8_t use_delta[HEIC_MAX_REF_PICS + 1];
+
+        if (ref_idx < 0 || ref_idx >= idx) {
+            bs->error = 1;
+            return -1;
+        }
+        sign = heic_bs_bit(bs);
+        abs_minus1 = heic_bs_ue(bs);
+        if (abs_minus1 > INT32_MAX - 1u) {
+            bs->error = 1;
+            return -1;
+        }
+        delta_rps = (sign ? -1 : 1) * ((int)abs_minus1 + 1);
+        ref = &sets[ref_idx];
+        ref_count = ref->num_negative_pics + ref->num_positive_pics;
+        if (ref_count > HEIC_MAX_REF_PICS) {
+            bs->error = 1;
+            return -1;
+        }
+        for (j = 0; j < ref->num_negative_pics; j++)
+            ref_delta[j] = ref->delta_poc_s0[j];
+        for (j = 0; j < ref->num_positive_pics; j++)
+            ref_delta[ref->num_negative_pics + j] = ref->delta_poc_s1[j];
+        memset(used, 0, sizeof(used));
+        memset(use_delta, 1, sizeof(use_delta));
+        for (j = 0; j <= ref_count; j++) {
+            used[j] = (uint8_t)heic_bs_bit(bs);
+            if (!used[j]) use_delta[j] = (uint8_t)heic_bs_bit(bs);
+        }
+        if ((used[ref_count] || use_delta[ref_count]) && delta_rps != 0) {
+            if (delta_rps < 0) {
+                out->delta_poc_s0[neg] = delta_rps;
+                out->used_by_curr_pic_s0[neg++] = used[ref_count];
+            } else {
+                out->delta_poc_s1[pos] = delta_rps;
+                out->used_by_curr_pic_s1[pos++] = used[ref_count];
+            }
+        }
+        for (j = 0; j < ref_count; j++) {
+            int32_t d;
+            if (!used[j] && !use_delta[j]) continue;
+            d = ref_delta[j] + delta_rps;
+            if (d < 0 && neg < HEIC_MAX_REF_PICS) {
+                out->delta_poc_s0[neg] = d;
+                out->used_by_curr_pic_s0[neg++] = used[j];
+            } else if (d > 0 && pos < HEIC_MAX_REF_PICS) {
+                out->delta_poc_s1[pos] = d;
+                out->used_by_curr_pic_s1[pos++] = used[j];
+            }
+        }
+        if (neg + pos > HEIC_MAX_REF_PICS) {
+            bs->error = 1;
+            return -1;
+        }
+        out->num_negative_pics = (uint8_t)neg;
+        out->num_positive_pics = (uint8_t)pos;
+        sort_rps(out->delta_poc_s0, out->used_by_curr_pic_s0, neg, 0);
+        sort_rps(out->delta_poc_s1, out->used_by_curr_pic_s1, pos, 1);
+    }
+    return bs->error ? -1 : 0;
 }
 
 int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out)
@@ -86,6 +235,7 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
     uint32_t num_st_rps, i;
 
     memset(out, 0, sizeof(*out));
+    scaling_list_default(&out->scaling_list);
     if (!rbsp || len < 4) return -1;
     heic_bs_init(&bs, rbsp, len);
 
@@ -158,7 +308,10 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
 
     out->scaling_list_enabled_flag = heic_bs_bit(&bs);
     if (out->scaling_list_enabled_flag) {
-        if (heic_bs_bit(&bs)) skip_scaling_list_data(&bs);
+        out->sps_scaling_list_data_present_flag = heic_bs_bit(&bs);
+        if (out->sps_scaling_list_data_present_flag
+            && parse_scaling_list_data(&bs, &out->scaling_list) != 0)
+            return -1;
     }
 
     out->amp_enabled_flag = heic_bs_bit(&bs);
@@ -174,7 +327,11 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
 
     num_st_rps = heic_bs_ue(&bs);
     if (num_st_rps > 64) return -1;
-    for (i = 0; i < num_st_rps; i++) skip_st_ref_pic_set(&bs, (int)i, (int)num_st_rps);
+    out->num_short_term_ref_pic_sets = (uint8_t)num_st_rps;
+    for (i = 0; i < num_st_rps; i++)
+        if (parse_st_ref_pic_set(&bs, (int)i, (int)num_st_rps,
+                                 out->short_term_rps) != 0)
+            return -1;
 
     out->long_term_ref_pics_present_flag = heic_bs_bit(&bs);
     if (out->long_term_ref_pics_present_flag) {
@@ -259,6 +416,7 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
 {
     heic_bs bs;
     memset(out, 0, sizeof(*out));
+    scaling_list_default(&out->scaling_list);
     if (!rbsp || len < 1) return -1;
     heic_bs_init(&bs, rbsp, len);
 
@@ -331,7 +489,8 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
     }
     out->pps_scaling_list_data_present_flag = heic_bs_bit(&bs);
     if (out->pps_scaling_list_data_present_flag)
-        skip_scaling_list_data(&bs);
+        if (parse_scaling_list_data(&bs, &out->scaling_list) != 0)
+            return -1;
     out->lists_modification_present_flag = heic_bs_bit(&bs);
     out->log2_parallel_merge_level_minus2 = (uint8_t)heic_bs_ue(&bs);
     out->slice_segment_header_extension_present_flag = heic_bs_bit(&bs);

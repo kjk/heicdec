@@ -319,10 +319,31 @@ int heic_doc_xmp(heic_doc *doc, uint8_t **out, size_t *out_len)
 int heic_doc_icc(heic_doc *doc, uint8_t **out, size_t *out_len)
 {
     heic_item item;
+    int i, j;
     if (!doc || !out || !out_len) return 0;
     *out = NULL;
     *out_len = 0;
     if (primary_item(doc, &item) != 0) return 0;
+    if (!item.colr || item.colr->kind != HEIC_COLR_ICC || !item.colr->icc) {
+        /* An item may carry both ICC and nclx; get_item intentionally exposes
+           the last color property for decode, so search all associations here. */
+        for (i = 0; i < doc->container.n_property_associations; i++) {
+            const heic_ipma *a = &doc->container.property_associations[i];
+            if (a->item_id != item.id) continue;
+            for (j = 0; j < a->n_props; j++) {
+                uint16_t pi = a->prop_indices[j];
+                const heic_property *p;
+                if (!pi || pi > (uint16_t)doc->container.n_properties) continue;
+                p = &doc->container.properties[pi - 1];
+                if (p->kind == HEIC_PROP_COLR && p->colr.kind == HEIC_COLR_ICC
+                    && p->colr.icc) {
+                    item.colr = &p->colr;
+                    break;
+                }
+            }
+            if (item.colr && item.colr->kind == HEIC_COLR_ICC) break;
+        }
+    }
     if (!item.colr || item.colr->kind != HEIC_COLR_ICC || !item.colr->icc) return 0;
     {
         uint8_t *copy = (uint8_t *)heic_zalloc(doc->ctx, item.colr->icc_len ? item.colr->icc_len : 1);

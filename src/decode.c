@@ -4,12 +4,62 @@
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab);
+int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
+                         const uint8_t *data, size_t len,
+                         const heic_frame *ref, heic_frame *out,
+                         const heic_abort *ab);
 int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
                     const uint8_t *data, size_t len,
                     heic_frame *out, const heic_abort *ab);
 
 static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
                        const heic_abort *ab, int depth);
+
+/* Decode an hvc1 prediction reference in coded-picture space. Item display
+   transforms are deliberately deferred: HEVC motion vectors address the
+   reconstructed reference picture, not its rotated/cropped presentation. */
+static int decode_hevc_reference(heic_doc *doc, const heic_item *item,
+                                 heic_frame *frame, const heic_abort *ab,
+                                 int depth)
+{
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    int owned = 0;
+    uint32_t pred_ids[2];
+    int n_pred;
+    int rc = -1;
+
+    if (depth > 4 || !item->hvcc) {
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                   "invalid HEVC predictive reference chain");
+        return -1;
+    }
+    if (heic_container_item_data(&doc->container, item->id, &data, &len,
+                                 &owned) != 0)
+        return -1;
+    n_pred = heic_container_find_refs(&doc->container, item->id,
+                                      HEIC_REF_PRED, pred_ids, 2);
+    if (n_pred > 0) {
+        heic_item parent;
+        heic_frame ref;
+        memset(&ref, 0, sizeof(ref));
+        if (n_pred != 1 ||
+            heic_container_get_item(&doc->container, pred_ids[0], &parent) != 0)
+            goto done;
+        if (decode_hevc_reference(doc, &parent, &ref, ab, depth + 1) != 0) {
+            heic_frame_free(doc->ctx, &ref);
+            goto done;
+        }
+        rc = heic_hevc_decode_ref(doc->ctx, item->hvcc, data, len,
+                                  &ref, frame, ab);
+        heic_frame_free(doc->ctx, &ref);
+    } else {
+        rc = heic_hevc_decode(doc->ctx, item->hvcc, data, len, frame, ab);
+    }
+done:
+    if (owned) heic_free_buf(doc->ctx, (void *)data);
+    return rc;
+}
 
 /* ---- spatial transforms on heic_frame ---- */
 
@@ -787,11 +837,36 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
         return -1;
 
     if (item->item_type == HEIC_TYPE_HVC1 || item->hvcc) {
+        uint32_t pred_ids[2];
+        int n_pred;
         if (!item->hvcc) {
             heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "hvc1 item missing hvcC");
             goto done;
         }
-        rc = heic_hevc_decode(doc->ctx, item->hvcc, data, len, frame, ab);
+        n_pred = heic_container_find_refs(&doc->container, item->id,
+                                          HEIC_REF_PRED, pred_ids, 2);
+        if (n_pred > 0) {
+            heic_item ref_item;
+            heic_frame ref;
+            memset(&ref, 0, sizeof(ref));
+            if (n_pred != 1 ||
+                heic_container_get_item(&doc->container, pred_ids[0],
+                                        &ref_item) != 0) {
+                heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                           "predictive item requires one pred reference");
+                goto done;
+            }
+            if (decode_hevc_reference(doc, &ref_item, &ref, ab,
+                                      depth + 1) != 0) {
+                heic_frame_free(doc->ctx, &ref);
+                goto done;
+            }
+            rc = heic_hevc_decode_ref(doc->ctx, item->hvcc, data, len,
+                                      &ref, frame, ab);
+            heic_frame_free(doc->ctx, &ref);
+        } else {
+            rc = heic_hevc_decode(doc->ctx, item->hvcc, data, len, frame, ab);
+        }
     } else if (item->item_type == HEIC_TYPE_AV01 || item->av1c) {
         if (!item->av1c) {
             heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "av01 item missing av1C");

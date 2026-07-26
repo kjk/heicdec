@@ -424,6 +424,66 @@ void heic_dequantize(int16_t *coeffs, int n, int qp, int bit_depth,
     }
 }
 
+void heic_dequantize_scaled(int16_t *coeffs, int n, int qp, int bit_depth,
+                            uint8_t log2_tr_size, const heic_scaling_list *list,
+                            uint8_t matrix_id)
+{
+    static const int32_t LEVEL_SCALE[6] = {40, 45, 51, 57, 64, 72};
+    static const uint8_t DIAG_INV_4X4[16] = {
+        0, 1, 3, 6, 2, 4, 7, 10, 5, 8, 11, 13, 9, 12, 14, 15
+    };
+    static const uint8_t DIAG_INV_8X8[64] = {
+         0,  1,  3,  6, 10, 15, 21, 28,
+         2,  4,  7, 11, 16, 22, 29, 36,
+         5,  8, 12, 17, 23, 30, 37, 43,
+         9, 13, 18, 24, 31, 38, 44, 49,
+        14, 19, 25, 32, 39, 45, 50, 54,
+        20, 26, 33, 40, 46, 51, 55, 58,
+        27, 34, 41, 47, 52, 56, 59, 61,
+        35, 42, 48, 53, 57, 60, 62, 63
+    };
+    int size = 1 << log2_tr_size;
+    int size_id = (int)log2_tr_size - 2;
+    int qp_clamped = qp > 180 ? 180 : qp;
+    int qp_per = qp_clamped / 6;
+    int qp_rem = qp_clamped % 6;
+    int shift = bit_depth + (int)log2_tr_size - 5;
+    int64_t qp_scale = 1LL << qp_per;
+    int64_t add = shift > 0 ? 1LL << (shift - 1) : 0;
+    int i;
+
+    if (!list || size_id < 0 || size_id > 3 || matrix_id > 5) {
+        heic_dequantize(coeffs, n, qp, bit_depth, log2_tr_size);
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        int x = i % size, y = i / size;
+        uint8_t scale;
+        int64_t value;
+        if (size_id == 0) {
+            scale = list->coef[0][matrix_id][DIAG_INV_4X4[i]];
+        } else if (size_id == 1) {
+            scale = list->coef[1][matrix_id][DIAG_INV_8X8[i]];
+        } else {
+            int divisor = size_id == 2 ? 2 : 4;
+            int sx = x / divisor, sy = y / divisor;
+            if (x == 0 && y == 0)
+                scale = list->dc_coef[size_id - 2][matrix_id];
+            else
+                scale = list->coef[size_id][matrix_id]
+                                  [DIAG_INV_8X8[sy * 8 + sx]];
+        }
+        value = (int64_t)coeffs[i] * scale * LEVEL_SCALE[qp_rem] * qp_scale;
+        if (shift >= 0)
+            value = (value + add) >> shift;
+        else
+            value <<= -shift;
+        if (value < -32768) value = -32768;
+        if (value > 32767) value = 32767;
+        coeffs[i] = (int16_t)value;
+    }
+}
+
 void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,
                             int bit_depth, int is_intra_4x4_luma)
 {

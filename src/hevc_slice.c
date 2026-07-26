@@ -75,8 +75,6 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
     if (!nal_is_idr(nal->type)) {
         int poc_bits = sps->log2_max_pic_order_cnt_lsb_minus4 + 4;
         out->slice_pic_order_cnt_lsb = heic_bs_bits(&bs, poc_bits);
-        /* short_term_ref_pic_set / long-term / temporal MVP — skip with minimal
-           parsing for non-IDR stills (rare in HEIC). Full RPS later. */
         {
             int short_term_ref_pic_set_sps_flag = heic_bs_bit(&bs);
             if (!short_term_ref_pic_set_sps_flag) {
@@ -84,15 +82,21 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                            "inline short-term RPS not yet parsed");
                 return -1;
             }
-            /* If num_short_term_ref_pic_sets > 1 would read index; SPS path
-               currently doesn't store num_st_rps count for selection. OK when 0/1. */
+            if (sps->num_short_term_ref_pic_sets > 1) {
+                int bits = ceil_log2(sps->num_short_term_ref_pic_sets);
+                out->short_term_ref_pic_set_idx =
+                    (uint8_t)heic_bs_bits(&bs, bits);
+                if (out->short_term_ref_pic_set_idx
+                    >= sps->num_short_term_ref_pic_sets)
+                    return -1;
+            }
         }
         if (sps->long_term_ref_pics_present_flag) {
             heic_error(ctx, HEIC_SEVERITY_ERROR, "long-term RPS not yet parsed");
             return -1;
         }
         if (sps->sps_temporal_mvp_enabled_flag)
-            (void)heic_bs_bit(&bs); /* slice_temporal_mvp_enabled_flag */
+            out->slice_temporal_mvp_enabled_flag = heic_bs_bit(&bs);
     }
 
     if (sps->sample_adaptive_offset_enabled_flag) {
@@ -101,10 +105,69 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             out->slice_sao_chroma_flag = heic_bs_bit(&bs);
     }
 
+    out->num_ref_idx_l0_active =
+        (uint8_t)(pps->num_ref_idx_l0_default_active_minus1 + 1);
+    out->num_ref_idx_l1_active =
+        out->slice_type == HEIC_SLICE_B
+            ? (uint8_t)(pps->num_ref_idx_l1_default_active_minus1 + 1)
+            : 0;
+    out->collocated_from_l0_flag = 1;
+    out->max_num_merge_cand = 5;
+
     if (out->slice_type != HEIC_SLICE_I) {
-        /* Inter slice fields — HEIC stills are I-only; reject for now. */
-        heic_error(ctx, HEIC_SEVERITY_ERROR, "P/B slices not yet supported");
-        return -1;
+        int override = heic_bs_bit(&bs);
+        if (override) {
+            uint32_t n = heic_bs_ue(&bs);
+            if (n > 14) return -1;
+            out->num_ref_idx_l0_active = (uint8_t)(n + 1);
+            if (out->slice_type == HEIC_SLICE_B) {
+                n = heic_bs_ue(&bs);
+                if (n > 14) return -1;
+                out->num_ref_idx_l1_active = (uint8_t)(n + 1);
+            }
+        }
+        if (out->slice_type == HEIC_SLICE_B) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "B-slice predictive items not supported");
+            return -1;
+        }
+        if (out->num_ref_idx_l0_active != 1) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "predictive item requires exactly one L0 reference");
+            return -1;
+        }
+        if (pps->lists_modification_present_flag) {
+            const heic_st_rps *rps =
+                &sps->short_term_rps[out->short_term_ref_pic_set_idx];
+            int used = 0;
+            for (i = 0; i < rps->num_negative_pics; i++)
+                used += rps->used_by_curr_pic_s0[i] != 0;
+            for (i = 0; i < rps->num_positive_pics; i++)
+                used += rps->used_by_curr_pic_s1[i] != 0;
+            if (used > 1) {
+                int modify = heic_bs_bit(&bs);
+                if (modify) {
+                    heic_error(ctx, HEIC_SEVERITY_ERROR,
+                               "reference-list modification not supported");
+                    return -1;
+                }
+            }
+        }
+        if (pps->cabac_init_present_flag)
+            out->cabac_init_flag = heic_bs_bit(&bs);
+        if (out->slice_temporal_mvp_enabled_flag
+            && out->num_ref_idx_l0_active > 1)
+            out->collocated_ref_idx = (uint8_t)heic_bs_ue(&bs);
+        if (pps->weighted_pred_flag) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "weighted P prediction not supported");
+            return -1;
+        }
+        {
+            uint32_t five_minus = heic_bs_ue(&bs);
+            if (five_minus > 4) return -1;
+            out->max_num_merge_cand = (uint8_t)(5 - five_minus);
+        }
     }
 
     out->slice_qp_delta = (int8_t)heic_bs_se(&bs);

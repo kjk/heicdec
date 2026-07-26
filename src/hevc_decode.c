@@ -1,9 +1,10 @@
 /* hevc_decode.c -- HEVC still-image entry */
 #include "heic_internal.h"
 
-int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
-                     const uint8_t *data, size_t len,
-                     heic_frame *out, const heic_abort *ab)
+static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
+                                 const uint8_t *data, size_t len,
+                                 const heic_frame *ref,
+                                 heic_frame *out, const heic_abort *ab)
 {
     heic_nal *nals = NULL;
     int n_nals = 0, i;
@@ -149,8 +150,8 @@ int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                         eps[ne++] = rel;
                     }
                 }
-                if (heic_hevc_decode_slice_i(ctx, &sps, &pps, &sh, slice_data, slice_len,
-                                            eps, ne, out, ab)
+                if (heic_hevc_decode_slice(ctx, &sps, &pps, &sh, slice_data,
+                                           slice_len, eps, ne, ref, out, ab)
                     == 0)
                     decode_ok = 1;
                 heic_free_buf(ctx, eps);
@@ -169,4 +170,19 @@ int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
         return -1;
     }
     return 0;
+}
+
+int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
+                     const uint8_t *data, size_t len,
+                     heic_frame *out, const heic_abort *ab)
+{
+    return heic_hevc_decode_impl(ctx, cfg, data, len, NULL, out, ab);
+}
+
+int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
+                         const uint8_t *data, size_t len,
+                         const heic_frame *ref, heic_frame *out,
+                         const heic_abort *ab)
+{
+    return heic_hevc_decode_impl(ctx, cfg, data, len, ref, out, ab);
 }

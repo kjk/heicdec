@@ -165,12 +165,18 @@
 - [x] 4:4:4 chroma QP: Table 8-10 only for 4:2:0 (Min(qPi,51) for 422/444)
 - [x] nokia_444 WPP: residual already matched libde265; RGB gap was matrix default
       (VUI without colour_description → BT.601/6 like libheif, not BT.709/1); mse≈0.005
+- [x] HEVC scaling lists (SPS/PPS default, predicted, and explicit matrices);
+      `apple-hdr/hdr-sample.heic` exercises scaling-list-enabled decoding
+- [x] HEIF Mini v0 (integer HEVC/AV1, alpha, orientation, NCLX, ICC, EXIF/XMP);
+      official `hevc32-mini.heif` and `avif32-mini.heif` fixtures
+- [x] HEVC predictive image items: single-reference P pictures with merge/AMVP,
+      fractional motion compensation, residuals, deblock, and SAO; Nokia `C044.heic`
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)
-- [ ] Scaling lists, PCM
+- [ ] PCM
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
-- [ ] image sequences (`moov`) / HEIF Mini (`mini`) still out of scope
+- [ ] image sequences (`moov`)
 
 ## Investigation notes
 

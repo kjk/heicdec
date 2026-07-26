@@ -49,6 +49,7 @@ export const SRCS = [
   "src/hevc_transform.c",
   "src/hevc_simd.c",
   "src/hevc_intra.c",
+  "src/hevc_inter.c",
   "src/hevc_ctu.c",
   "src/hevc_sao.c",
   "src/hevc_deblock.c",

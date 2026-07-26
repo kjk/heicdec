@@ -27,7 +27,6 @@ import { selectFiles, corpusSummary } from "./corpus";
 
 /** Open / decode expected to fail (intentionally invalid or out of scope). */
 const EXPECT_FAIL = new Set([
-  "lightning_mini.heif", // sequence / moov
   "meta_size_zero.avif",
   "mini_size_zero.avif",
   "iovl_badver.heic",

@@ -3,10 +3,10 @@
 //   bun cmd/get-deps.ts
 //
 // Clones into deps/ (skipped if present). deps/ is gitignored.
-// Also fills deps/testimages/ by downloading AVIF samples and regenerating
-// grid/alpha + unci block fixtures (no checked-in binary images).
+// Also fills deps/testimages/ with AVIF samples, official HEIF Mini samples,
+// and regenerated grid/alpha + unci block fixtures (no checked-in binaries).
 import { $ } from "bun";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { generateAvifFixtures } from "./gen_avif_fixtures";
 import { generateUnciBlockFixtures } from "./gen_unci_block_fixtures";
@@ -21,7 +21,7 @@ export const LIBDE265_DIR = join(DEPS_DIR, "libde265");
 export const ZLIB_DIR = join(DEPS_DIR, "zlib");
 export const BROTLI_DIR = join(DEPS_DIR, "brotli");
 export const HEIF_CONFORMANCE_DIR = join(DEPS_DIR, "heif_conformance");
-/** Downloaded + generated test images (AVIF grid/alpha, unci block). */
+/** Downloaded + generated test images (AVIF, HEIF Mini, unci block). */
 export const TESTIMAGES_DIR = join(DEPS_DIR, "testimages");
 
 const REPOS = [
@@ -53,7 +53,7 @@ const FOX_SAMPLES = [
 ];
 
 const STAMP = ".heic_testimages_stamp";
-const STAMP_WANT = "v1-avif-fox+grid+alpha;unci-block";
+const STAMP_WANT = "v2-avif-fox+grid+alpha;unci-block;mini-hevc+av1";
 
 async function download(url: string, dest: string): Promise<void> {
   const res = await fetch(url);
@@ -68,13 +68,16 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   const root = TESTIMAGES_DIR;
   const avifDir = join(root, "avif");
   const unciDir = join(root, "unci_block");
+  const miniDir = join(root, "mini");
   const stampPath = join(root, STAMP);
   if (
     !opts.force &&
     existsSync(stampPath) &&
     existsSync(join(avifDir, "grid_2x2.avif")) &&
     existsSync(join(avifDir, "alpha.avif")) &&
-    existsSync(join(unciDir, "rgb8_block_pixel_le.heif"))
+    existsSync(join(unciDir, "rgb8_block_pixel_le.heif")) &&
+    existsSync(join(miniDir, "hevc32-mini.heif")) &&
+    existsSync(join(miniDir, "avif32-mini.heif"))
   ) {
     const prev = (await Bun.file(stampPath).text()).trim();
     if (prev === STAMP_WANT) {
@@ -85,6 +88,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
 
   mkdirSync(join(avifDir, "_src"), { recursive: true });
   mkdirSync(unciDir, { recursive: true });
+  mkdirSync(miniDir, { recursive: true });
 
   for (const name of FOX_SAMPLES) {
     const dest =
@@ -101,6 +105,15 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   generateAvifFixtures(avifDir);
   console.log("deps/testimages: generating unci block HEIFs…");
   generateUnciBlockFixtures(unciDir);
+  console.log("deps/testimages: installing HEVC/AV1 Mini fixtures…");
+  copyFileSync(
+    join(LIBHEIF_DIR, "fuzzing", "data", "corpus", "hevc32-mini.heif"),
+    join(miniDir, "hevc32-mini.heif"),
+  );
+  copyFileSync(
+    join(LIBHEIF_DIR, "fuzzing", "data", "corpus", "avif32-mini.heif"),
+    join(miniDir, "avif32-mini.heif"),
+  );
   writeFileSync(stampPath, STAMP_WANT);
   console.log(`deps/testimages: ready (${STAMP_WANT})`);
 }

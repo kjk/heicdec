@@ -23,8 +23,12 @@ typedef struct {
     size_t   ct_depth_n;
     uint8_t *intra_mode_map;
     uint8_t *intra_chroma_mode_map;
+    uint8_t *pred_mode_map;
+    heic_pb_motion *mv_info;
     uint32_t intra_mode_stride;
     size_t   intra_mode_n;
+    const heic_frame *ref;
+    int cu_pred_mode;
     int8_t *qp_map;
     uint32_t qp_map_stride;
     size_t   qp_map_n;
@@ -37,13 +41,33 @@ typedef struct {
 
     /* Deblock maps at 4x4 luma granularity */
     uint8_t *deblock_flags;
+    uint8_t *cbf_map;
     int8_t  *deblock_qp;
     uint32_t deblock_stride;
     uint32_t deblock_n;
 
     int16_t *residual_buf; /* HEIC_MAX_COEFF, heap (keep CTU frame small for ASan) */
     heic_coeff_buf *coeff; /* residual decode scratch (2KB; not on recursive stack) */
+    int32_t *mc_scratch; /* max 64x(64+8), shared by luma/chroma MC */
 } heic_slice_ctx;
+
+enum {
+    HEIC_PRED_UNAVAILABLE = 0,
+    HEIC_PRED_INTRA = 1,
+    HEIC_PRED_INTER = 2,
+    HEIC_PRED_SKIP = 3
+};
+
+enum {
+    HEIC_PART_2NX2N = 0,
+    HEIC_PART_2NXN = 1,
+    HEIC_PART_NX2N = 2,
+    HEIC_PART_NXN = 3,
+    HEIC_PART_2NXNU = 4,
+    HEIC_PART_2NXND = 5,
+    HEIC_PART_NLX2N = 6,
+    HEIC_PART_NRX2N = 7
+};
 
 static int bit_depth_y(const heic_sps *s) { return 8 + s->bit_depth_luma_minus8; }
 static int bit_depth_c(const heic_sps *s) { return 8 + s->bit_depth_chroma_minus8; }
@@ -133,6 +157,80 @@ static uint8_t get_intra_mode(const heic_slice_ctx *sc, uint32_t x, uint32_t y, 
     const uint8_t *map = chroma ? sc->intra_chroma_mode_map : sc->intra_mode_map;
     if (idx >= sc->intra_mode_n) return 1; /* DC */
     return map[idx];
+}
+
+static uint8_t get_pred_mode(const heic_slice_ctx *sc, int32_t x, int32_t y)
+{
+    uint32_t mpu;
+    size_t idx;
+    if (x < 0 || y < 0 ||
+        (uint32_t)x >= sc->sps->pic_width_in_luma_samples ||
+        (uint32_t)y >= sc->sps->pic_height_in_luma_samples)
+        return HEIC_PRED_UNAVAILABLE;
+    mpu = min_pu_size(sc->sps);
+    idx = (size_t)((uint32_t)y / mpu) * sc->intra_mode_stride +
+          (uint32_t)x / mpu;
+    return idx < sc->intra_mode_n ? sc->pred_mode_map[idx]
+                                  : HEIC_PRED_UNAVAILABLE;
+}
+
+static void store_pred_mode(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
+                            uint32_t w, uint32_t h, uint8_t mode)
+{
+    uint32_t mpu = min_pu_size(sc->sps);
+    uint32_t sx = x0 / mpu, sy = y0 / mpu;
+    uint32_t nx = (w + mpu - 1) / mpu, ny = (h + mpu - 1) / mpu;
+    uint32_t dx, dy;
+    for (dy = 0; dy < ny; dy++)
+        for (dx = 0; dx < nx; dx++) {
+            size_t idx = (size_t)(sy + dy) * sc->intra_mode_stride + sx + dx;
+            if (idx < sc->intra_mode_n) sc->pred_mode_map[idx] = mode;
+        }
+}
+
+static heic_pb_motion get_motion(const heic_slice_ctx *sc, int32_t x, int32_t y)
+{
+    heic_pb_motion none;
+    uint32_t mpu;
+    size_t idx;
+    memset(&none, 0, sizeof(none));
+    none.ref_idx[0] = none.ref_idx[1] = -1;
+    if (get_pred_mode(sc, x, y) != HEIC_PRED_INTER &&
+        get_pred_mode(sc, x, y) != HEIC_PRED_SKIP)
+        return none;
+    mpu = min_pu_size(sc->sps);
+    idx = (size_t)((uint32_t)y / mpu) * sc->intra_mode_stride +
+          (uint32_t)x / mpu;
+    return idx < sc->intra_mode_n ? sc->mv_info[idx] : none;
+}
+
+static void store_motion(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
+                         uint32_t w, uint32_t h, heic_pb_motion motion)
+{
+    uint32_t mpu = min_pu_size(sc->sps);
+    uint32_t sx = x0 / mpu, sy = y0 / mpu;
+    uint32_t nx = (w + mpu - 1) / mpu, ny = (h + mpu - 1) / mpu;
+    uint32_t dx, dy;
+    for (dy = 0; dy < ny; dy++)
+        for (dx = 0; dx < nx; dx++) {
+            size_t idx = (size_t)(sy + dy) * sc->intra_mode_stride + sx + dx;
+            if (idx < sc->intra_mode_n) sc->mv_info[idx] = motion;
+        }
+}
+
+static void store_cbf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
+                      uint32_t size, int has_coeff)
+{
+    uint32_t sx = x0 / 4, sy = y0 / 4;
+    uint32_t n = (size + 3) / 4, dx, dy;
+    if (!sc->cbf_map) return;
+    for (dy = 0; dy < n; dy++)
+        for (dx = 0; dx < n; dx++) {
+            size_t idx =
+                (size_t)(sy + dy) * sc->deblock_stride + sx + dx;
+            if (idx < sc->deblock_n)
+                sc->cbf_map[idx] = (uint8_t)(has_coeff != 0);
+        }
 }
 
 static uint8_t neighbor_intra_left(const heic_slice_ctx *sc, uint32_t x0, uint32_t y0)
@@ -275,6 +373,371 @@ static int decode_part_mode_intra(heic_slice_ctx *sc, uint8_t log2_cb)
     if (bin != 0) return 0; /* 2Nx2N */
     if (log2_cb == sc->sps->log2_min_cb_size) return 1; /* NxN */
     return -1;
+}
+
+typedef struct {
+    int merge_flag;
+    uint8_t merge_idx;
+    int8_t ref_idx;
+    int16_t mvd_x, mvd_y;
+    int mvp_flag;
+} heic_pb_coding;
+
+typedef struct {
+    uint32_t x, y, w, h;
+} heic_pu;
+
+static int decode_cu_skip(heic_slice_ctx *sc, uint32_t x0, uint32_t y0)
+{
+    int inc = 0;
+    if (get_pred_mode(sc, (int32_t)x0 - 1, (int32_t)y0) == HEIC_PRED_SKIP)
+        inc++;
+    if (get_pred_mode(sc, (int32_t)x0, (int32_t)y0 - 1) == HEIC_PRED_SKIP)
+        inc++;
+    return heic_cabac_decode_bin(&sc->cabac,
+                                 &sc->models[HEIC_CTX_CU_SKIP_FLAG + inc])
+           != 0;
+}
+
+static int decode_part_mode_inter(heic_slice_ctx *sc, uint8_t log2_cb)
+{
+    int b0 = heic_cabac_decode_bin(&sc->cabac,
+                                   &sc->models[HEIC_CTX_PART_MODE]);
+    if (b0) return HEIC_PART_2NX2N;
+    if (log2_cb == sc->sps->log2_min_cb_size) {
+        int b1 = heic_cabac_decode_bin(&sc->cabac,
+                                       &sc->models[HEIC_CTX_PART_MODE + 1]);
+        if (b1) return HEIC_PART_2NXN;
+        if (log2_cb > 3) {
+            int b2 = heic_cabac_decode_bin(&sc->cabac,
+                                           &sc->models[HEIC_CTX_PART_MODE + 2]);
+            return b2 ? HEIC_PART_NX2N : HEIC_PART_NXN;
+        }
+        return HEIC_PART_NX2N;
+    }
+    if (sc->sps->amp_enabled_flag) {
+        int b1 = heic_cabac_decode_bin(&sc->cabac,
+                                       &sc->models[HEIC_CTX_PART_MODE + 1]);
+        int b3 = heic_cabac_decode_bin(&sc->cabac,
+                                       &sc->models[HEIC_CTX_PART_MODE + 3]);
+        if (b1) {
+            if (b3) return HEIC_PART_2NXN;
+            return heic_cabac_decode_bypass(&sc->cabac)
+                       ? HEIC_PART_2NXND
+                       : HEIC_PART_2NXNU;
+        }
+        if (b3) return HEIC_PART_NX2N;
+        return heic_cabac_decode_bypass(&sc->cabac)
+                   ? HEIC_PART_NRX2N
+                   : HEIC_PART_NLX2N;
+    }
+    return heic_cabac_decode_bin(&sc->cabac,
+                                 &sc->models[HEIC_CTX_PART_MODE + 1])
+               ? HEIC_PART_2NXN
+               : HEIC_PART_NX2N;
+}
+
+static int partition_to_pus(int mode, uint32_t x, uint32_t y, uint32_t n,
+                            heic_pu pu[4])
+{
+    uint32_t h = n / 2, q = n / 4;
+    switch (mode) {
+    case HEIC_PART_2NX2N:
+        pu[0] = (heic_pu){x, y, n, n}; return 1;
+    case HEIC_PART_2NXN:
+        pu[0] = (heic_pu){x, y, n, h};
+        pu[1] = (heic_pu){x, y + h, n, h}; return 2;
+    case HEIC_PART_NX2N:
+        pu[0] = (heic_pu){x, y, h, n};
+        pu[1] = (heic_pu){x + h, y, h, n}; return 2;
+    case HEIC_PART_NXN:
+        pu[0] = (heic_pu){x, y, h, h};
+        pu[1] = (heic_pu){x + h, y, h, h};
+        pu[2] = (heic_pu){x, y + h, h, h};
+        pu[3] = (heic_pu){x + h, y + h, h, h}; return 4;
+    case HEIC_PART_2NXNU:
+        pu[0] = (heic_pu){x, y, n, q};
+        pu[1] = (heic_pu){x, y + q, n, n - q}; return 2;
+    case HEIC_PART_2NXND:
+        pu[0] = (heic_pu){x, y, n, n - q};
+        pu[1] = (heic_pu){x, y + n - q, n, q}; return 2;
+    case HEIC_PART_NLX2N:
+        pu[0] = (heic_pu){x, y, q, n};
+        pu[1] = (heic_pu){x + q, y, n - q, n}; return 2;
+    case HEIC_PART_NRX2N:
+        pu[0] = (heic_pu){x, y, n - q, n};
+        pu[1] = (heic_pu){x + n - q, y, q, n}; return 2;
+    default:
+        return 0;
+    }
+}
+
+static uint8_t decode_merge_idx(heic_slice_ctx *sc)
+{
+    uint8_t idx = 0;
+    if (sc->sh->max_num_merge_cand <= 1) return 0;
+    if (!heic_cabac_decode_bin(&sc->cabac, &sc->models[HEIC_CTX_MERGE_IDX]))
+        return 0;
+    idx = 1;
+    while (idx < sc->sh->max_num_merge_cand - 1) {
+        if (!heic_cabac_decode_bypass(&sc->cabac)) break;
+        idx++;
+    }
+    return idx;
+}
+
+static int16_t decode_mvd_component(heic_slice_ctx *sc, int gt0, int gt1)
+{
+    int v, sign;
+    if (!gt0) return 0;
+    v = gt1 ? (int)heic_cabac_decode_egk(&sc->cabac, 1) + 2 : 1;
+    if (v > INT16_MAX) {
+        sc->cabac.error = 1;
+        return 0;
+    }
+    sign = heic_cabac_decode_bypass(&sc->cabac);
+    return (int16_t)(sign ? -v : v);
+}
+
+static void decode_mvd(heic_slice_ctx *sc, int16_t *mx, int16_t *my)
+{
+    int gx = heic_cabac_decode_bin(
+        &sc->cabac, &sc->models[HEIC_CTX_ABS_MVD_GREATER0_FLAG]);
+    int gy = heic_cabac_decode_bin(
+        &sc->cabac, &sc->models[HEIC_CTX_ABS_MVD_GREATER0_FLAG]);
+    int g1x = gx ? heic_cabac_decode_bin(
+                       &sc->cabac,
+                       &sc->models[HEIC_CTX_ABS_MVD_GREATER0_FLAG + 1])
+                 : 0;
+    int g1y = gy ? heic_cabac_decode_bin(
+                       &sc->cabac,
+                       &sc->models[HEIC_CTX_ABS_MVD_GREATER0_FLAG + 1])
+                 : 0;
+    *mx = decode_mvd_component(sc, gx, g1x);
+    *my = decode_mvd_component(sc, gy, g1y);
+}
+
+static heic_pb_coding decode_inter_pu(heic_slice_ctx *sc, int skip)
+{
+    heic_pb_coding c;
+    memset(&c, 0, sizeof(c));
+    c.ref_idx = 0;
+    if (skip) {
+        c.merge_flag = 1;
+        c.merge_idx = decode_merge_idx(sc);
+        return c;
+    }
+    c.merge_flag = heic_cabac_decode_bin(
+                       &sc->cabac, &sc->models[HEIC_CTX_MERGE_FLAG])
+                   != 0;
+    if (c.merge_flag) {
+        c.merge_idx = decode_merge_idx(sc);
+        return c;
+    }
+    decode_mvd(sc, &c.mvd_x, &c.mvd_y);
+    c.mvp_flag = heic_cabac_decode_bin(
+                     &sc->cabac, &sc->models[HEIC_CTX_MVP_LX_FLAG])
+                 != 0;
+    return c;
+}
+
+static int motion_eq(heic_pb_motion a, heic_pb_motion b)
+{
+    return a.pred_flag[0] == b.pred_flag[0] &&
+           a.pred_flag[1] == b.pred_flag[1] &&
+           a.ref_idx[0] == b.ref_idx[0] &&
+           a.ref_idx[1] == b.ref_idx[1] &&
+           a.mv[0].x == b.mv[0].x && a.mv[0].y == b.mv[0].y &&
+           a.mv[1].x == b.mv[1].x && a.mv[1].y == b.mv[1].y;
+}
+
+static int same_merge_region(const heic_slice_ctx *sc, uint32_t x, uint32_t y,
+                             int32_t nx, int32_t ny)
+{
+    int shift = sc->pps->log2_parallel_merge_level_minus2 + 2;
+    if (nx < 0 || ny < 0) return 0;
+    return (x >> shift) == ((uint32_t)nx >> shift) &&
+           (y >> shift) == ((uint32_t)ny >> shift);
+}
+
+static int inter_at(const heic_slice_ctx *sc, int32_t x, int32_t y)
+{
+    uint8_t p = get_pred_mode(sc, x, y);
+    return p == HEIC_PRED_INTER || p == HEIC_PRED_SKIP;
+}
+
+static heic_pb_motion zero_motion(void)
+{
+    heic_pb_motion m;
+    memset(&m, 0, sizeof(m));
+    m.pred_flag[0] = 1;
+    m.ref_idx[0] = 0;
+    m.ref_idx[1] = -1;
+    return m;
+}
+
+static heic_pb_motion derive_merge(heic_slice_ctx *sc, const heic_pu *pu,
+                                   int part_idx, int part_mode, int wanted)
+{
+    heic_pb_motion cand[5];
+    int count = 0, max = sc->sh->max_num_merge_cand;
+    int32_t ax = (int32_t)pu->x - 1;
+    int32_t ay = (int32_t)(pu->y + pu->h - 1);
+    int32_t b1x = (int32_t)(pu->x + pu->w - 1);
+    int32_t b1y = (int32_t)pu->y - 1;
+    int32_t b0x = (int32_t)(pu->x + pu->w);
+    int32_t b0y = b1y;
+    int32_t a0x = ax;
+    int32_t a0y = (int32_t)(pu->y + pu->h);
+    int32_t b2x = ax;
+    int32_t b2y = b1y;
+    int a1_avail, b1_avail;
+
+    if (max < 1) max = 1;
+    if (max > 5) max = 5;
+    a1_avail = inter_at(sc, ax, ay) &&
+               !same_merge_region(sc, pu->x, pu->y, ax, ay) &&
+               !(part_idx == 1 &&
+                 (part_mode == HEIC_PART_NX2N ||
+                  part_mode == HEIC_PART_NLX2N ||
+                  part_mode == HEIC_PART_NRX2N));
+    if (a1_avail && count < max) cand[count++] = get_motion(sc, ax, ay);
+
+    b1_avail = inter_at(sc, b1x, b1y) &&
+               !same_merge_region(sc, pu->x, pu->y, b1x, b1y) &&
+               !(part_idx == 1 &&
+                 (part_mode == HEIC_PART_2NXN ||
+                  part_mode == HEIC_PART_2NXNU ||
+                  part_mode == HEIC_PART_2NXND));
+    if (b1_avail && count < max) {
+        heic_pb_motion m = get_motion(sc, b1x, b1y);
+        if (!a1_avail || !motion_eq(cand[0], m)) cand[count++] = m;
+    }
+    if (inter_at(sc, b0x, b0y) &&
+        !same_merge_region(sc, pu->x, pu->y, b0x, b0y) && count < max) {
+        heic_pb_motion m = get_motion(sc, b0x, b0y);
+        if (!b1_avail || !motion_eq(cand[count - 1], m)) cand[count++] = m;
+    }
+    if (inter_at(sc, a0x, a0y) &&
+        !same_merge_region(sc, pu->x, pu->y, a0x, a0y) && count < max) {
+        heic_pb_motion m = get_motion(sc, a0x, a0y);
+        if (!a1_avail || !motion_eq(cand[0], m)) cand[count++] = m;
+    }
+    if (count < 4 && count < max && inter_at(sc, b2x, b2y) &&
+        !same_merge_region(sc, pu->x, pu->y, b2x, b2y)) {
+        heic_pb_motion m = get_motion(sc, b2x, b2y);
+        int dup = (a1_avail && motion_eq(cand[0], m));
+        if (!dup && b1_avail && count > 1) dup = motion_eq(cand[1], m);
+        if (!dup) cand[count++] = m;
+    }
+    /* The referenced HEIF item is an intra picture, so its collocated motion
+       candidate is unavailable. Pad the remaining merge list with zero L0 MVs. */
+    while (count < max) cand[count++] = zero_motion();
+    if (wanted < 0 || wanted >= max) wanted = 0;
+    return cand[wanted];
+}
+
+static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu, heic_mv mvp[2])
+{
+    const int32_t apos[2][2] = {
+        {(int32_t)pu->x - 1, (int32_t)(pu->y + pu->h)},
+        {(int32_t)pu->x - 1, (int32_t)(pu->y + pu->h - 1)}
+    };
+    const int32_t bpos[3][2] = {
+        {(int32_t)(pu->x + pu->w), (int32_t)pu->y - 1},
+        {(int32_t)(pu->x + pu->w - 1), (int32_t)pu->y - 1},
+        {(int32_t)pu->x - 1, (int32_t)pu->y - 1}
+    };
+    heic_mv a = {0, 0}, b = {0, 0};
+    int have_a = 0, have_b = 0, i;
+    mvp[0].x = mvp[0].y = mvp[1].x = mvp[1].y = 0;
+    for (i = 0; i < 2 && !have_a; i++)
+        if (inter_at(sc, apos[i][0], apos[i][1])) {
+            heic_pb_motion m = get_motion(sc, apos[i][0], apos[i][1]);
+            if (m.pred_flag[0] && m.ref_idx[0] == 0) {
+                a = m.mv[0];
+                have_a = 1;
+            }
+        }
+    for (i = 0; i < 3 && !have_b; i++)
+        if (inter_at(sc, bpos[i][0], bpos[i][1])) {
+            heic_pb_motion m = get_motion(sc, bpos[i][0], bpos[i][1]);
+            if (m.pred_flag[0] && m.ref_idx[0] == 0) {
+                b = m.mv[0];
+                have_b = 1;
+            }
+        }
+    if (!have_a && have_b) {
+        a = b;
+        have_a = 1;
+    }
+    if (have_a) {
+        mvp[0] = a;
+        if (have_b && (a.x != b.x || a.y != b.y)) mvp[1] = b;
+    } else if (have_b) {
+        mvp[0] = b;
+    }
+}
+
+static heic_pb_motion resolve_motion(heic_slice_ctx *sc, heic_pb_coding coding,
+                                     const heic_pu *pu, int part_idx,
+                                     int part_mode)
+{
+    if (coding.merge_flag)
+        return derive_merge(sc, pu, part_idx, part_mode, coding.merge_idx);
+    {
+        heic_mv mvp[2];
+        heic_pb_motion out = zero_motion();
+        derive_amvp(sc, pu, mvp);
+        out.mv[0].x = (int16_t)(mvp[coding.mvp_flag].x + coding.mvd_x);
+        out.mv[0].y = (int16_t)(mvp[coding.mvp_flag].y + coding.mvd_y);
+        return out;
+    }
+}
+
+static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
+                        heic_pb_motion motion)
+{
+    if (!sc->ref || !motion.pred_flag[0] || motion.ref_idx[0] != 0) return -1;
+    if (heic_mc_luma(sc->ref, sc->frame, motion.mv[0],
+                     pu->x, pu->y, pu->w, pu->h,
+                     sc->mc_scratch, 72u * 72u) != 0)
+        return -1;
+    return heic_mc_chroma(sc->ref, sc->frame, motion.mv[0],
+                          pu->x, pu->y, pu->w, pu->h,
+                          sc->mc_scratch, 72u * 72u);
+}
+
+static int decode_rqt_root_cbf(heic_slice_ctx *sc)
+{
+    return heic_cabac_decode_bin(&sc->cabac,
+                                 &sc->models[HEIC_CTX_RQT_ROOT_CBF])
+           != 0;
+}
+
+static void mark_inter_pb_boundaries(heic_slice_ctx *sc, int mode,
+                                     uint32_t x, uint32_t y, uint32_t n)
+{
+    uint32_t h = n / 2, q = n / 4;
+    if (!sc->deblock_flags) return;
+    if (mode == HEIC_PART_NX2N || mode == HEIC_PART_NXN)
+        heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride,
+                              sc->deblock_n, x + h, y, n, n, 1);
+    if (mode == HEIC_PART_2NXN || mode == HEIC_PART_NXN)
+        heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride,
+                              sc->deblock_n, x, y + h, n, n, 0);
+    if (mode == HEIC_PART_NLX2N)
+        heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride,
+                              sc->deblock_n, x + q, y, n, n, 1);
+    if (mode == HEIC_PART_NRX2N)
+        heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride,
+                              sc->deblock_n, x + n - q, y, n, n, 1);
+    if (mode == HEIC_PART_2NXNU)
+        heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride,
+                              sc->deblock_n, x, y + q, n, n, 0);
+    if (mode == HEIC_PART_2NXND)
+        heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride,
+                              sc->deblock_n, x, y + n - q, n, n, 0);
 }
 
 static int decode_prev_intra_flag(heic_slice_ctx *sc)
@@ -430,7 +893,17 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         return 0;
     }
 
-    heic_dequantize(coeff->coeffs, num, qp, bd, log2_size);
+    if (sc->sps->scaling_list_enabled_flag && !transform_skip) {
+        const heic_scaling_list *list =
+            sc->pps->pps_scaling_list_data_present_flag
+                ? &sc->pps->scaling_list
+                : &sc->sps->scaling_list;
+        heic_dequantize_scaled(coeff->coeffs, num, qp, bd, log2_size,
+                               list, (uint8_t)(c_idx +
+                                   (sc->cu_pred_mode == HEIC_PRED_INTRA ? 0 : 3)));
+    } else {
+        heic_dequantize(coeff->coeffs, num, qp, bd, log2_size);
+    }
 
     if (transform_skip) {
         int ts_shift = 5 + (int)log2_size;
@@ -443,7 +916,8 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
             sc->residual_buf[i] = (int16_t)((c + rnd) >> bd_shift);
         }
     } else {
-        is_intra_4x4 = (log2_size == 2 && c_idx == 0);
+        is_intra_4x4 = (log2_size == 2 && c_idx == 0 &&
+                        sc->cu_pred_mode == HEIC_PRED_INTRA);
         heic_inverse_transform(coeff->coeffs, sc->residual_buf, size, bd, is_intra_4x4);
     }
 
@@ -474,7 +948,8 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                           int cbf_cr);
 static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                            uint8_t log2_size, uint8_t trafo_depth,
-                           int intra_split, int cbf_cb_parent, int cbf_cr_parent);
+                           int intra_split, int inter_split,
+                           int cbf_cb_parent, int cbf_cr_parent);
 
 static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                           uint8_t log2_size, uint8_t trafo_depth, int cbf_cb,
@@ -484,10 +959,15 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     uint8_t luma_mode, chroma_mode;
     int ctx_off, ctx_idx;
 
-    /* I-slice always MODE_INTRA → cbf_luma always coded */
-    ctx_off = trafo_depth == 0 ? 1 : 0;
-    ctx_idx = HEIC_CTX_CBF_LUMA + ctx_off;
-    cbf_luma = heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx_idx]) != 0;
+    if (sc->cu_pred_mode == HEIC_PRED_INTRA || trafo_depth != 0 ||
+        cbf_cb || cbf_cr) {
+        ctx_off = trafo_depth == 0 ? 1 : 0;
+        ctx_idx = HEIC_CTX_CBF_LUMA + ctx_off;
+        cbf_luma =
+            heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx_idx]) != 0;
+    } else {
+        cbf_luma = 1;
+    }
 
     if ((cbf_luma || cbf_cb || cbf_cr) && sc->pps->cu_qp_delta_enabled_flag
         && !sc->is_cu_qp_delta_coded) {
@@ -506,9 +986,12 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
 
     luma_mode = get_intra_mode(sc, x0, y0, 0);
     sis = sc->sps->strong_intra_smoothing_enabled_flag;
-    if (heic_predict_intra(sc->frame, x0, y0, log2_size, luma_mode, 0, sis) != 0)
+    if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
+        heic_predict_intra(sc->frame, x0, y0, log2_size, luma_mode, 0, sis) != 0)
         return -1;
-    scan = heic_get_scan_order(log2_size, luma_mode, 0, 0);
+    scan = sc->cu_pred_mode == HEIC_PRED_INTRA
+               ? heic_get_scan_order(log2_size, luma_mode, 0, 0)
+               : HEIC_SCAN_DIAG;
     if (cbf_luma) {
         if (decode_and_apply_residual(sc, x0, y0, log2_size, 0, scan) != 0)
             return -1;
@@ -521,6 +1004,7 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                               x0, y0, tu_size);
         heic_store_deblock_qp(sc->deblock_qp, sc->deblock_stride, sc->deblock_n,
                               x0, y0, tu_size, (int8_t)sc->current_qpy);
+        store_cbf(sc, x0, y0, tu_size, cbf_luma || cbf_cb || cbf_cr);
     }
 
     is_444 = sc->frame->chroma_format == 3;
@@ -539,14 +1023,18 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
             cy = y0 / 2;
         }
         chroma_mode = get_intra_mode(sc, x0, y0, 1);
-        cscan = heic_get_scan_order(clog2, chroma_mode, 1, is_444);
-        if (heic_predict_intra(sc->frame, cx, cy, clog2, chroma_mode, 1, sis) != 0)
+        cscan = sc->cu_pred_mode == HEIC_PRED_INTRA
+                    ? heic_get_scan_order(clog2, chroma_mode, 1, is_444)
+                    : HEIC_SCAN_DIAG;
+        if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
+            heic_predict_intra(sc->frame, cx, cy, clog2, chroma_mode, 1, sis) != 0)
             return -1;
         if (cbf_cb) {
             if (decode_and_apply_residual(sc, cx, cy, clog2, 1, cscan) != 0)
                 return -1;
         }
-        if (heic_predict_intra(sc->frame, cx, cy, clog2, chroma_mode, 2, sis) != 0)
+        if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
+            heic_predict_intra(sc->frame, cx, cy, clog2, chroma_mode, 2, sis) != 0)
             return -1;
         if (cbf_cr) {
             if (decode_and_apply_residual(sc, cx, cy, clog2, 2, cscan) != 0)
@@ -558,10 +1046,14 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
 
 static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                            uint8_t log2_size, uint8_t trafo_depth,
-                           int intra_split, int cbf_cb_parent, int cbf_cr_parent)
+                           int intra_split, int inter_split,
+                           int cbf_cb_parent, int cbf_cr_parent)
 {
-    uint8_t max_depth = (uint8_t)(sc->sps->max_transform_hierarchy_depth_intra
-                                  + (intra_split ? 1 : 0));
+    uint8_t max_depth =
+        sc->cu_pred_mode == HEIC_PRED_INTRA
+            ? (uint8_t)(sc->sps->max_transform_hierarchy_depth_intra
+                        + (intra_split ? 1 : 0))
+            : sc->sps->max_transform_hierarchy_depth_inter;
     uint8_t log2_min = sc->sps->log2_min_tb_size;
     uint8_t log2_max = sc->sps->log2_max_tb_size;
     int split, cbf_cb, cbf_cr, cat;
@@ -578,7 +1070,8 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                   + ((5 - (int)log2_size) < 2 ? (5 - (int)log2_size) : 2);
         if (ctx < HEIC_CTX_SPLIT_TRANSFORM_FLAG) ctx = HEIC_CTX_SPLIT_TRANSFORM_FLAG;
         split = heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx]) != 0;
-    } else if ((log2_size > log2_max || (intra_split && trafo_depth == 0))
+    } else if ((log2_size > log2_max || (intra_split && trafo_depth == 0) ||
+                (inter_split && trafo_depth == 0))
                && log2_size > log2_min) {
         /* Force split only while we can still shrink without underflow. */
         split = 1;
@@ -610,13 +1103,17 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         uint32_t half = 1u << (log2_size - 1);
         uint8_t nd = (uint8_t)(trafo_depth + 1);
         uint8_t nl = (uint8_t)(log2_size - 1);
-        if (decode_tt_inner(sc, x0, y0, nl, nd, intra_split, cbf_cb, cbf_cr) != 0)
+        if (decode_tt_inner(sc, x0, y0, nl, nd, intra_split, inter_split,
+                            cbf_cb, cbf_cr) != 0)
             return -1;
-        if (decode_tt_inner(sc, x0 + half, y0, nl, nd, intra_split, cbf_cb, cbf_cr) != 0)
+        if (decode_tt_inner(sc, x0 + half, y0, nl, nd, intra_split, inter_split,
+                            cbf_cb, cbf_cr) != 0)
             return -1;
-        if (decode_tt_inner(sc, x0, y0 + half, nl, nd, intra_split, cbf_cb, cbf_cr) != 0)
+        if (decode_tt_inner(sc, x0, y0 + half, nl, nd, intra_split, inter_split,
+                            cbf_cb, cbf_cr) != 0)
             return -1;
-        if (decode_tt_inner(sc, x0 + half, y0 + half, nl, nd, intra_split, cbf_cb, cbf_cr)
+        if (decode_tt_inner(sc, x0 + half, y0 + half, nl, nd, intra_split,
+                            inter_split, cbf_cb, cbf_cr)
             != 0)
             return -1;
 
@@ -624,13 +1121,17 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         if (log2_size == 3 && sc->frame->chroma_format != 3 && cat != 0) {
             int sis = sc->sps->strong_intra_smoothing_enabled_flag;
             uint8_t cm = get_intra_mode(sc, x0, y0, 1);
-            int scan = heic_get_scan_order(2, cm, 1, 0);
-            if (heic_predict_intra(sc->frame, x0 / 2, y0 / 2, 2, cm, 1, sis) != 0)
+            int scan = sc->cu_pred_mode == HEIC_PRED_INTRA
+                           ? heic_get_scan_order(2, cm, 1, 0)
+                           : HEIC_SCAN_DIAG;
+            if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
+                heic_predict_intra(sc->frame, x0 / 2, y0 / 2, 2, cm, 1, sis) != 0)
                 return -1;
             if (cbf_cb
                 && decode_and_apply_residual(sc, x0 / 2, y0 / 2, 2, 1, scan) != 0)
                 return -1;
-            if (heic_predict_intra(sc->frame, x0 / 2, y0 / 2, 2, cm, 2, sis) != 0)
+            if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
+                heic_predict_intra(sc->frame, x0 / 2, y0 / 2, 2, cm, 2, sis) != 0)
                 return -1;
             if (cbf_cr
                 && decode_and_apply_residual(sc, x0 / 2, y0 / 2, 2, 2, scan) != 0)
@@ -650,6 +1151,8 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     int part_nxn = 0;
     uint8_t luma0 = 1, chroma = 1;
     int intra_split;
+    int is_intra_slice = sc->sh->slice_type == HEIC_SLICE_I;
+    int cu_skip = 0;
 
     sc->cu_base_x = x0;
     sc->cu_base_y = y0;
@@ -658,6 +1161,25 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     store_qpy(sc, x0, y0, log2_cb, sc->current_qpy);
     set_ct_depth(sc, x0, y0, log2_cb, ct_depth);
 
+    if (!is_intra_slice) cu_skip = decode_cu_skip(sc, x0, y0);
+    if (cu_skip) {
+        heic_pu pu = {x0, y0, cb_size, cb_size};
+        heic_pb_coding coding;
+        heic_pb_motion motion;
+        sc->cu_pred_mode = HEIC_PRED_SKIP;
+        store_pred_mode(sc, x0, y0, cb_size, cb_size, HEIC_PRED_SKIP);
+        coding = decode_inter_pu(sc, 1);
+        motion = resolve_motion(sc, coding, &pu, 0, HEIC_PART_2NX2N);
+        store_motion(sc, x0, y0, cb_size, cb_size, motion);
+        if (apply_motion(sc, &pu, motion) != 0) return -1;
+        heic_mark_tu_boundary(sc->deblock_flags, sc->deblock_stride,
+                              sc->deblock_n, x0, y0, cb_size);
+        heic_store_deblock_qp(sc->deblock_qp, sc->deblock_stride,
+                              sc->deblock_n, x0, y0, cb_size,
+                              (int8_t)sc->current_qpy);
+        return 0;
+    }
+
     sc->cu_transquant_bypass = 0;
     if (sc->pps->transquant_bypass_enabled_flag)
         sc->cu_transquant_bypass =
@@ -665,8 +1187,20 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                                   &sc->models[HEIC_CTX_CU_TRANSQUANT_BYPASS_FLAG])
             != 0;
 
+    if (!is_intra_slice) {
+        sc->cu_pred_mode =
+            heic_cabac_decode_bin(&sc->cabac,
+                                  &sc->models[HEIC_CTX_PRED_MODE_FLAG])
+                ? HEIC_PRED_INTRA
+                : HEIC_PRED_INTER;
+    } else {
+        sc->cu_pred_mode = HEIC_PRED_INTRA;
+    }
+    store_pred_mode(sc, x0, y0, cb_size, cb_size,
+                    (uint8_t)sc->cu_pred_mode);
+
     /* PCM: if enabled and size in range, check pcm_flag via terminate */
-    if (sc->sps->pcm_enabled_flag) {
+    if (sc->cu_pred_mode == HEIC_PRED_INTRA && sc->sps->pcm_enabled_flag) {
         uint8_t log2_min = (uint8_t)(sc->sps->log2_min_pcm_luma_coding_block_size_minus3
                                      + 3);
         uint8_t log2_max =
@@ -679,62 +1213,97 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         }
     }
 
-    if (log2_cb == sc->sps->log2_min_cb_size) {
-        int pm = decode_part_mode_intra(sc, log2_cb);
-        if (pm < 0) return -1;
-        part_nxn = pm;
-    }
+    if (sc->cu_pred_mode == HEIC_PRED_INTRA) {
+        if (log2_cb == sc->sps->log2_min_cb_size) {
+            int pm = decode_part_mode_intra(sc, log2_cb);
+            if (pm < 0) return -1;
+            part_nxn = pm;
+        }
 
-    if (!part_nxn) {
-        int prev = decode_prev_intra_flag(sc);
-        luma0 = derive_intra_luma(sc, x0, y0, prev);
-        store_intra_mode(sc, x0, y0, log2_cb, luma0, 0);
-        chroma = decode_intra_chroma(sc, luma0);
-        store_intra_mode(sc, x0, y0, log2_cb, chroma, 1);
-    } else {
-        uint32_t half = cb_size / 2;
-        uint8_t log2_pu = (uint8_t)(log2_cb - 1);
-        int pf[4];
-        uint8_t lm[4];
-        int i;
-        for (i = 0; i < 4; i++) pf[i] = decode_prev_intra_flag(sc);
-        lm[0] = derive_intra_luma(sc, x0, y0, pf[0]);
-        store_intra_mode(sc, x0, y0, log2_pu, lm[0], 0);
-        lm[1] = derive_intra_luma(sc, x0 + half, y0, pf[1]);
-        store_intra_mode(sc, x0 + half, y0, log2_pu, lm[1], 0);
-        lm[2] = derive_intra_luma(sc, x0, y0 + half, pf[2]);
-        store_intra_mode(sc, x0, y0 + half, log2_pu, lm[2], 0);
-        lm[3] = derive_intra_luma(sc, x0 + half, y0 + half, pf[3]);
-        store_intra_mode(sc, x0 + half, y0 + half, log2_pu, lm[3], 0);
-        if (chroma_array_type(sc->sps) == 3) {
-            uint8_t cm;
-            cm = decode_intra_chroma(sc, lm[0]);
-            store_intra_mode(sc, x0, y0, log2_pu, cm, 1);
-            cm = decode_intra_chroma(sc, lm[1]);
-            store_intra_mode(sc, x0 + half, y0, log2_pu, cm, 1);
-            cm = decode_intra_chroma(sc, lm[2]);
-            store_intra_mode(sc, x0, y0 + half, log2_pu, cm, 1);
-            cm = decode_intra_chroma(sc, lm[3]);
-            store_intra_mode(sc, x0 + half, y0 + half, log2_pu, cm, 1);
-            chroma = cm;
-        } else {
-            chroma = decode_intra_chroma(sc, lm[0]);
+        if (!part_nxn) {
+            int prev = decode_prev_intra_flag(sc);
+            luma0 = derive_intra_luma(sc, x0, y0, prev);
+            store_intra_mode(sc, x0, y0, log2_cb, luma0, 0);
+            chroma = decode_intra_chroma(sc, luma0);
             store_intra_mode(sc, x0, y0, log2_cb, chroma, 1);
+        } else {
+            uint32_t half = cb_size / 2;
+            uint8_t log2_pu = (uint8_t)(log2_cb - 1);
+            int pf[4];
+            uint8_t lm[4];
+            int i;
+            for (i = 0; i < 4; i++) pf[i] = decode_prev_intra_flag(sc);
+            lm[0] = derive_intra_luma(sc, x0, y0, pf[0]);
+            store_intra_mode(sc, x0, y0, log2_pu, lm[0], 0);
+            lm[1] = derive_intra_luma(sc, x0 + half, y0, pf[1]);
+            store_intra_mode(sc, x0 + half, y0, log2_pu, lm[1], 0);
+            lm[2] = derive_intra_luma(sc, x0, y0 + half, pf[2]);
+            store_intra_mode(sc, x0, y0 + half, log2_pu, lm[2], 0);
+            lm[3] = derive_intra_luma(sc, x0 + half, y0 + half, pf[3]);
+            store_intra_mode(sc, x0 + half, y0 + half, log2_pu, lm[3], 0);
+            if (chroma_array_type(sc->sps) == 3) {
+                uint8_t cm;
+                cm = decode_intra_chroma(sc, lm[0]);
+                store_intra_mode(sc, x0, y0, log2_pu, cm, 1);
+                cm = decode_intra_chroma(sc, lm[1]);
+                store_intra_mode(sc, x0 + half, y0, log2_pu, cm, 1);
+                cm = decode_intra_chroma(sc, lm[2]);
+                store_intra_mode(sc, x0, y0 + half, log2_pu, cm, 1);
+                cm = decode_intra_chroma(sc, lm[3]);
+                store_intra_mode(sc, x0 + half, y0 + half, log2_pu, cm, 1);
+                chroma = cm;
+            } else {
+                chroma = decode_intra_chroma(sc, lm[0]);
+                store_intra_mode(sc, x0, y0, log2_cb, chroma, 1);
+            }
+            luma0 = lm[0];
+            if (sc->deblock_flags) {
+                heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride,
+                                      sc->deblock_n, x0 + half, y0, half,
+                                      cb_size, 1);
+                heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride,
+                                      sc->deblock_n, x0, y0 + half, cb_size,
+                                      half, 0);
+            }
         }
-        luma0 = lm[0];
-        /* Intra PART_NxN: internal PB edges for deblock (I-slice bS still 2). */
-        if (sc->deblock_flags) {
-            heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride, sc->deblock_n,
-                                  x0 + half, y0, half, cb_size, 1);
-            heic_mark_pb_boundary(sc->deblock_flags, sc->deblock_stride, sc->deblock_n,
-                                  x0, y0 + half, cb_size, half, 0);
-        }
+        intra_split = part_nxn;
+        return decode_tt_inner(sc, x0, y0, log2_cb, 0, intra_split, 0, 1, 1);
     }
-    (void)luma0;
-    (void)chroma;
 
-    intra_split = part_nxn;
-    return decode_tt_inner(sc, x0, y0, log2_cb, 0, intra_split, 1, 1);
+    {
+        int part_mode = decode_part_mode_inter(sc, log2_cb);
+        heic_pu pus[4];
+        int n_pu = partition_to_pus(part_mode, x0, y0, cb_size, pus);
+        int i, any_merge = 0;
+        int has_residual;
+        if (n_pu <= 0) return -1;
+        for (i = 0; i < n_pu; i++) {
+            heic_pb_coding coding = decode_inter_pu(sc, 0);
+            heic_pb_motion motion =
+                resolve_motion(sc, coding, &pus[i], i, part_mode);
+            any_merge |= coding.merge_flag;
+            store_motion(sc, pus[i].x, pus[i].y, pus[i].w, pus[i].h, motion);
+            if (apply_motion(sc, &pus[i], motion) != 0) return -1;
+        }
+        mark_inter_pb_boundaries(sc, part_mode, x0, y0, cb_size);
+        has_residual =
+            (part_mode == HEIC_PART_2NX2N && any_merge)
+                ? 1
+                : decode_rqt_root_cbf(sc);
+        if (has_residual) {
+            int inter_split =
+                sc->sps->max_transform_hierarchy_depth_inter == 0 &&
+                part_mode != HEIC_PART_2NX2N;
+            return decode_tt_inner(sc, x0, y0, log2_cb, 0, 0,
+                                   inter_split, 1, 1);
+        }
+        heic_mark_tu_boundary(sc->deblock_flags, sc->deblock_stride,
+                              sc->deblock_n, x0, y0, cb_size);
+        heic_store_deblock_qp(sc->deblock_qp, sc->deblock_stride,
+                              sc->deblock_n, x0, y0, cb_size,
+                              (int8_t)sc->current_qpy);
+    }
+    return 0;
 }
 
 static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
@@ -902,7 +1471,8 @@ static int decode_ctu(heic_slice_ctx *sc, uint32_t x_ctb, uint32_t y_ctb)
 
 static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps,
                           const heic_pps *pps, const heic_slice_header *sh,
-                          const uint8_t *data, size_t len, heic_frame *frame)
+                          const uint8_t *data, size_t len,
+                          const heic_frame *ref, heic_frame *frame)
 {
     uint32_t min_cb = 1u << sps->log2_min_cb_size;
     uint32_t min_pu = min_pu_size(sps);
@@ -916,6 +1486,7 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     sc->pps = pps;
     sc->sh = sh;
     sc->frame = frame;
+    sc->ref = ref;
     sc->current_qg_x = -1;
     sc->current_qg_y = -1;
     sc->current_qpy = sh->slice_qp_y;
@@ -942,7 +1513,12 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     sc->intra_mode_n = pu_n;
     sc->intra_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
     sc->intra_chroma_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
-    if (!sc->intra_mode_map || !sc->intra_chroma_mode_map) return -1;
+    sc->pred_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
+    sc->mv_info =
+        (heic_pb_motion *)heic_zalloc(ctx, pu_n * sizeof(heic_pb_motion));
+    if (!sc->intra_mode_map || !sc->intra_chroma_mode_map ||
+        !sc->pred_mode_map || !sc->mv_info)
+        return -1;
     memset(sc->intra_mode_map, 1, pu_n); /* DC default */
     memset(sc->intra_chroma_mode_map, 1, pu_n);
 
@@ -969,8 +1545,9 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
         size_t db_n = (size_t)sc->deblock_stride * db_h;
         sc->deblock_n = (uint32_t)db_n;
         sc->deblock_flags = (uint8_t *)heic_zalloc(ctx, db_n);
+        sc->cbf_map = (uint8_t *)heic_zalloc(ctx, db_n);
         sc->deblock_qp = (int8_t *)heic_zalloc(ctx, db_n);
-        if (!sc->deblock_flags || !sc->deblock_qp) return -1;
+        if (!sc->deblock_flags || !sc->cbf_map || !sc->deblock_qp) return -1;
         {
             size_t i;
             for (i = 0; i < db_n; i++) sc->deblock_qp[i] = (int8_t)sh->slice_qp_y;
@@ -979,7 +1556,9 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     sc->residual_buf =
         (int16_t *)heic_zalloc(ctx, (size_t)HEIC_MAX_COEFF * sizeof(int16_t));
     sc->coeff = (heic_coeff_buf *)heic_zalloc(ctx, sizeof(heic_coeff_buf));
-    if (!sc->residual_buf || !sc->coeff) return -1;
+    sc->mc_scratch =
+        (int32_t *)heic_zalloc(ctx, 72u * 72u * sizeof(int32_t));
+    if (!sc->residual_buf || !sc->coeff || !sc->mc_scratch) return -1;
     return 0;
 }
 
@@ -989,12 +1568,16 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->ct_depth_map);
     heic_free_buf(sc->hctx, sc->intra_mode_map);
     heic_free_buf(sc->hctx, sc->intra_chroma_mode_map);
+    heic_free_buf(sc->hctx, sc->pred_mode_map);
+    heic_free_buf(sc->hctx, sc->mv_info);
     heic_free_buf(sc->hctx, sc->qp_map);
     heic_free_buf(sc->hctx, sc->sao_map);
     heic_free_buf(sc->hctx, sc->deblock_flags);
+    heic_free_buf(sc->hctx, sc->cbf_map);
     heic_free_buf(sc->hctx, sc->deblock_qp);
     heic_free_buf(sc->hctx, sc->residual_buf);
     heic_free_buf(sc->hctx, sc->coeff);
+    heic_free_buf(sc->hctx, sc->mc_scratch);
     memset(sc, 0, sizeof(*sc));
 }
 
@@ -1107,11 +1690,12 @@ typedef struct {
     heic_ctx_model   wpp_saved[HEIC_NUM_CONTEXTS];
 } heic_slice_work;
 
-int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
-                             const heic_pps *pps, const heic_slice_header *sh,
-                             const uint8_t *data, size_t len,
-                             const uint32_t *ep_positions, int n_ep,
-                             heic_frame *out, const heic_abort *ab)
+int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
+                           const heic_pps *pps, const heic_slice_header *sh,
+                           const uint8_t *data, size_t len,
+                           const uint32_t *ep_positions, int n_ep,
+                           const heic_frame *ref, heic_frame *out,
+                           const heic_abort *ab)
 {
     heic_slice_work *work;
     heic_slice_ctx *sc;
@@ -1125,8 +1709,13 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
     int i;
 
     if (!ctx || !sps || !pps || !sh || !data || !out) return -1;
-    if (sh->slice_type != HEIC_SLICE_I) {
-        heic_error(ctx, HEIC_SEVERITY_ERROR, "only I-slice CTU path implemented");
+    if (sh->slice_type == HEIC_SLICE_B) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "B-slice CTU path not implemented");
+        return -1;
+    }
+    if (sh->slice_type == HEIC_SLICE_P && !ref) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "P-slice missing predictive reference frame");
         return -1;
     }
     total = sps->pic_size_in_ctbs;
@@ -1140,7 +1729,7 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
     if (!work) return -1;
     sc = &work->sc;
 
-    if (slice_ctx_init(sc, ctx, sps, pps, sh, data, len, out) != 0) {
+    if (slice_ctx_init(sc, ctx, sps, pps, sh, data, len, ref, out) != 0) {
         slice_ctx_free(sc);
         heic_free_buf(ctx, work);
         return -1;
@@ -1287,7 +1876,8 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
         }
     }
 
-    heic_error(ctx, HEIC_SEVERITY_INFO, "I-slice decoded %u CTUs", (unsigned)ctb);
+    heic_error(ctx, HEIC_SEVERITY_INFO, "%c-slice decoded %u CTUs",
+               sh->slice_type == HEIC_SLICE_I ? 'I' : 'P', (unsigned)ctb);
 
     /* Loop filters: deblock then SAO (H.265 8.7). */
     if (!sh->slice_deblocking_filter_disabled_flag && sc->deblock_flags &&
@@ -1297,7 +1887,12 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
         int cb_off = (int)pps->pps_cb_qp_offset + (int)sh->slice_cb_qp_offset;
         int cr_off = (int)pps->pps_cr_qp_offset + (int)sh->slice_cr_qp_offset;
         heic_apply_deblock(out, sc->deblock_flags, sc->deblock_qp, sc->deblock_stride,
-                           beta, tc, cb_off, cr_off);
+                           beta, tc, cb_off, cr_off,
+                           sh->slice_type == HEIC_SLICE_I ? NULL
+                                                        : sc->pred_mode_map,
+                           sh->slice_type == HEIC_SLICE_I ? NULL : sc->mv_info,
+                           sc->intra_mode_stride, min_pu_size(sps),
+                           sh->slice_type == HEIC_SLICE_I ? NULL : sc->cbf_map);
     }
     if (sps->sample_adaptive_offset_enabled_flag &&
         (sh->slice_sao_luma_flag || sh->slice_sao_chroma_flag) && sc->sao_map) {

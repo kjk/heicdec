@@ -88,6 +88,7 @@ typedef uint32_t heic_fourcc;
 #define HEIC_BOX_ICEF HEIC_FCC('i', 'c', 'e', 'f')
 #define HEIC_BOX_CLLI HEIC_FCC('c', 'L', 'L', 'i')
 #define HEIC_BOX_MDCV HEIC_FCC('m', 'D', 'C', 'v')
+#define HEIC_BOX_MINI HEIC_FCC('m', 'i', 'n', 'i')
 #define HEIC_BOX_MOOV HEIC_FCC('m', 'o', 'o', 'v')
 #define HEIC_BOX_TRAK HEIC_FCC('t', 'r', 'a', 'k')
 #define HEIC_BOX_TKHD HEIC_FCC('t', 'k', 'h', 'd')
@@ -123,6 +124,7 @@ typedef uint32_t heic_fourcc;
 #define HEIC_REF_AUXL HEIC_FCC('a', 'u', 'x', 'l')
 #define HEIC_REF_THMB HEIC_FCC('t', 'h', 'm', 'b')
 #define HEIC_REF_CDSC HEIC_FCC('c', 'd', 's', 'c')
+#define HEIC_REF_PRED HEIC_FCC('p', 'r', 'e', 'd')
 
 /* ---- byte readers (big-endian ISOBMFF) ---- */
 
@@ -378,6 +380,7 @@ typedef struct {
     const uint8_t     *data;
     size_t             len;
     heic_fourcc        brand;
+    heic_fourcc        minor_brand;
     heic_fourcc       *compatible_brands;
     int                n_compatible_brands;
     uint32_t           primary_item_id;
@@ -460,6 +463,16 @@ typedef struct {
     int c_width, c_height;
 } heic_frame;
 
+typedef struct {
+    int16_t x, y;
+} heic_mv;
+
+typedef struct {
+    uint8_t pred_flag[2];
+    int8_t ref_idx[2];
+    heic_mv mv[2];
+} heic_pb_motion;
+
 void heic_frame_free(heic_ctx *ctx, heic_frame *f);
 int  heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
                       int bit_depth, int chroma_format);
@@ -468,6 +481,10 @@ int  heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab);
+int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
+                         const uint8_t *data, size_t len,
+                         const heic_frame *ref, heic_frame *out,
+                         const heic_abort *ab);
 
 /* Decode AV1 still via dav1d (requires HEIC_HAVE_DAV1D + link dav1d). */
 void heic_dav1d_ctx_close(heic_ctx *ctx); /* free cached dav1d on heic_ctx */
@@ -570,6 +587,25 @@ size_t   heic_bs_bits_left(const heic_bs *bs);
 /* ---- SPS/PPS (hevc_params.c) ---- */
 
 typedef struct {
+    /* Coefficients are stored in HEVC diagonal scan order. 16x16 and 32x32
+       matrices hold their signaled 8x8 coefficients plus a separate DC. */
+    uint8_t coef[4][6][64];
+    uint8_t dc_coef[2][6];
+} heic_scaling_list;
+
+#define HEIC_MAX_REF_PICS 16
+#define HEIC_MAX_ST_RPS 64
+
+typedef struct {
+    int32_t delta_poc_s0[HEIC_MAX_REF_PICS];
+    int32_t delta_poc_s1[HEIC_MAX_REF_PICS];
+    uint8_t used_by_curr_pic_s0[HEIC_MAX_REF_PICS];
+    uint8_t used_by_curr_pic_s1[HEIC_MAX_REF_PICS];
+    uint8_t num_negative_pics;
+    uint8_t num_positive_pics;
+} heic_st_rps;
+
+typedef struct {
     uint8_t  sps_video_parameter_set_id;
     uint8_t  sps_max_sub_layers_minus1;
     int      sps_temporal_id_nesting_flag;
@@ -595,6 +631,8 @@ typedef struct {
     uint8_t  max_transform_hierarchy_depth_inter;
     uint8_t  max_transform_hierarchy_depth_intra;
     int      scaling_list_enabled_flag;
+    int      sps_scaling_list_data_present_flag;
+    heic_scaling_list scaling_list;
     int      amp_enabled_flag;
     int      sample_adaptive_offset_enabled_flag;
     int      pcm_enabled_flag;
@@ -603,6 +641,8 @@ typedef struct {
     uint8_t  pcm_sample_bit_depth_chroma_minus1;
     uint8_t  log2_min_pcm_luma_coding_block_size_minus3;
     uint8_t  log2_diff_max_min_pcm_luma_coding_block_size;
+    uint8_t  num_short_term_ref_pic_sets;
+    heic_st_rps short_term_rps[HEIC_MAX_ST_RPS];
     int      long_term_ref_pics_present_flag;
     int      sps_temporal_mvp_enabled_flag;
     int      strong_intra_smoothing_enabled_flag;
@@ -662,6 +702,7 @@ typedef struct {
     int8_t   pps_beta_offset_div2;
     int8_t   pps_tc_offset_div2;
     int      pps_scaling_list_data_present_flag;
+    heic_scaling_list scaling_list;
     int      lists_modification_present_flag;
     uint8_t  log2_parallel_merge_level_minus2;
     int      slice_segment_header_extension_present_flag;
@@ -683,6 +724,13 @@ void heic_pps_free(heic_ctx *ctx, heic_pps *pps);
 #define HEIC_CTX_PART_MODE                  9
 #define HEIC_CTX_PREV_INTRA_LUMA_PRED_FLAG  13
 #define HEIC_CTX_INTRA_CHROMA_PRED_MODE     14
+#define HEIC_CTX_INTER_PRED_IDC             15
+#define HEIC_CTX_MERGE_FLAG                 20
+#define HEIC_CTX_MERGE_IDX                  21
+#define HEIC_CTX_MVP_LX_FLAG                22
+#define HEIC_CTX_REF_IDX                    23
+#define HEIC_CTX_ABS_MVD_GREATER0_FLAG      25
+#define HEIC_CTX_RQT_ROOT_CBF               27
 #define HEIC_CTX_SPLIT_TRANSFORM_FLAG       28
 #define HEIC_CTX_CBF_LUMA                   31
 #define HEIC_CTX_CBF_CBCR                   33
@@ -742,8 +790,16 @@ typedef struct {
     int      pic_output_flag;
     uint8_t  colour_plane_id;
     uint32_t slice_pic_order_cnt_lsb;
+    uint8_t  short_term_ref_pic_set_idx;
+    int      slice_temporal_mvp_enabled_flag;
     int      slice_sao_luma_flag;
     int      slice_sao_chroma_flag;
+    uint8_t  num_ref_idx_l0_active;
+    uint8_t  num_ref_idx_l1_active;
+    int      mvd_l1_zero_flag;
+    int      collocated_from_l0_flag;
+    uint8_t  collocated_ref_idx;
+    uint8_t  max_num_merge_cand;
     int8_t   slice_qp_delta;
     int8_t   slice_cb_qp_offset;
     int8_t   slice_cr_qp_offset;
@@ -801,6 +857,9 @@ void heic_idct32(const int16_t *coeffs /*1024*/, int16_t *out, int bit_depth);
 int32_t *heic_idct_scratch_buf(void);
 void heic_dequantize(int16_t *coeffs, int n, int qp, int bit_depth,
                      uint8_t log2_tr_size);
+void heic_dequantize_scaled(int16_t *coeffs, int n, int qp, int bit_depth,
+                            uint8_t log2_tr_size, const heic_scaling_list *list,
+                            uint8_t matrix_id);
 void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,
                             int bit_depth, int is_intra_4x4_luma);
 void heic_add_residual(uint16_t *plane, int stride, int x0, int y0,
@@ -887,15 +946,26 @@ void heic_mark_pb_boundary(uint8_t *flags, uint32_t deblock_stride, uint32_t map
 /* I-slice deblock: bS=2 on all marked edges. Offsets are * 2 (div2 * 2). */
 void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *qp_map,
                         uint32_t deblock_stride, int beta_offset, int tc_offset,
-                        int cb_qp_offset, int cr_qp_offset);
+                        int cb_qp_offset, int cr_qp_offset,
+                        const uint8_t *pred_mode, const heic_pb_motion *mv_info,
+                        uint32_t pu_stride, uint32_t min_pu,
+                        const uint8_t *cbf_map);
 
-/* ---- CTU / I-slice decode (hevc_ctu.c) ---- */
+/* ---- inter prediction / CTU decode (hevc_inter.c, hevc_ctu.c) ---- */
 
-int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
-                             const heic_pps *pps, const heic_slice_header *sh,
-                             const uint8_t *data, size_t len,
-                             const uint32_t *ep_positions, int n_ep,
-                             heic_frame *out, const heic_abort *ab);
+int heic_mc_luma(const heic_frame *ref, heic_frame *dst, heic_mv mv,
+                 uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                 int32_t *scratch, size_t scratch_n);
+int heic_mc_chroma(const heic_frame *ref, heic_frame *dst, heic_mv mv,
+                   uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                   int32_t *scratch, size_t scratch_n);
+
+int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
+                           const heic_pps *pps, const heic_slice_header *sh,
+                           const uint8_t *data, size_t len,
+                           const uint32_t *ep_positions, int n_ep,
+                           const heic_frame *ref, heic_frame *out,
+                           const heic_abort *ab);
 
 /* ---- decode orchestration (decode.c) ---- */
 int heic_decode_primary(heic_doc *doc, heic_format format,

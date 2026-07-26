@@ -17,6 +17,8 @@ export function corpusRoots(): string[] {
     /* Downloaded + generated fixtures (get-deps → deps/testimages). */
     join(TESTIMAGES_DIR, "avif"),
     join(TESTIMAGES_DIR, "unci_block"),
+    /* ISO/IEC 14496-15 HEVC and AV1 Mini boxes copied from libheif's corpus. */
+    join(TESTIMAGES_DIR, "mini"),
   ];
 }
 

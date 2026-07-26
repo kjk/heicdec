@@ -202,6 +202,7 @@ static int parse_ftyp(heic_ctx *ctx, const heic_box *b, heic_container *c)
         return -1;
     }
     c->brand = heic_read_fcc(b->content);
+    c->minor_brand = heic_read_fcc(b->content + 4);
     pos = 8;
     while (pos + 4 <= b->content_len && n < HEIC_MAX_COMPAT_BRANDS) n++, pos += 4;
     if (n > 0) {
@@ -222,6 +223,424 @@ static int parse_ftyp(heic_ctx *ctx, const heic_box *b, heic_container *c)
             return -1;
         }
     }
+    return 0;
+}
+
+/* ---- MinimizedImageBox (ISO/IEC 23008-12 Annex O) ---- */
+
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t bit_pos;
+    int error;
+} heic_mini_bits;
+
+static uint32_t mini_bits(heic_mini_bits *b, int n)
+{
+    uint32_t v = 0;
+    int i;
+    if (!b || n < 0 || n > 32 || b->bit_pos > b->len * 8u
+        || (size_t)n > b->len * 8u - b->bit_pos) {
+        if (b) b->error = 1;
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        size_t p = b->bit_pos++;
+        v = (v << 1) | ((b->data[p >> 3] >> (7 - (p & 7))) & 1);
+    }
+    return v;
+}
+
+static heic_fourcc mini_fcc(heic_mini_bits *b)
+{
+    uint8_t a = (uint8_t)mini_bits(b, 8);
+    uint8_t c = (uint8_t)mini_bits(b, 8);
+    uint8_t d = (uint8_t)mini_bits(b, 8);
+    uint8_t e = (uint8_t)mini_bits(b, 8);
+    return HEIC_FCC(a, c, d, e);
+}
+
+static int mini_add_property(heic_container *c, const heic_property *p)
+{
+    c->properties[c->n_properties] = *p;
+    return ++c->n_properties; /* 1-based property index */
+}
+
+static int mini_make_assoc(heic_ctx *ctx, heic_ipma *a, uint32_t item_id,
+                           const uint16_t *indices, int n)
+{
+    int i;
+    memset(a, 0, sizeof(*a));
+    a->item_id = item_id;
+    a->prop_indices = (uint16_t *)heic_zalloc(ctx, (size_t)n * sizeof(uint16_t));
+    a->essential = (uint8_t *)heic_zalloc(ctx, (size_t)n);
+    if ((!a->prop_indices || !a->essential) && n) return -1;
+    for (i = 0; i < n; i++) {
+        a->prop_indices[i] = indices[i];
+        a->essential[i] = 1;
+    }
+    a->n_props = n;
+    return 0;
+}
+
+static void mini_set_orientation_props(heic_container *c, uint8_t orientation,
+                                       uint16_t *main_props, int *n_main,
+                                       uint16_t *alpha_props, int *n_alpha)
+{
+    heic_property p;
+    int rotation = 0, mirror = -1, idx;
+    switch (orientation) {
+    case 2: mirror = 1; break; /* horizontal */
+    case 3: rotation = 180; break;
+    case 4: mirror = 0; break; /* vertical */
+    case 5: rotation = 90; mirror = 1; break;
+    case 6: rotation = 90; break;
+    case 7: rotation = 90; mirror = 0; break;
+    case 8: rotation = 270; break;
+    default: break;
+    }
+    if (rotation) {
+        memset(&p, 0, sizeof(p));
+        p.kind = HEIC_PROP_IROT;
+        p.irot.angle = (uint16_t)rotation;
+        idx = mini_add_property(c, &p);
+        main_props[(*n_main)++] = (uint16_t)idx;
+        if (alpha_props) alpha_props[(*n_alpha)++] = (uint16_t)idx;
+    }
+    if (mirror >= 0) {
+        memset(&p, 0, sizeof(p));
+        p.kind = HEIC_PROP_IMIR;
+        p.imir.axis = (uint8_t)mirror;
+        idx = mini_add_property(c, &p);
+        main_props[(*n_main)++] = (uint16_t)idx;
+        if (alpha_props) alpha_props[(*n_alpha)++] = (uint16_t)idx;
+    }
+}
+
+static int mini_make_location(heic_ctx *ctx, heic_item_loc *loc, uint32_t id,
+                              size_t offset, uint32_t length)
+{
+    memset(loc, 0, sizeof(*loc));
+    loc->item_id = id;
+    loc->extents = (heic_extent *)heic_zalloc(ctx, sizeof(heic_extent));
+    if (!loc->extents) return -1;
+    loc->extents[0].offset = offset;
+    loc->extents[0].length = length;
+    loc->n_extents = 1;
+    return 0;
+}
+
+static int parse_hvcc(heic_ctx *ctx, const heic_box *b, heic_hvcc *out);
+static int parse_av1c(heic_ctx *ctx, const heic_box *b, heic_av1c *out);
+
+static int parse_mini(heic_ctx *ctx, const heic_box *box, heic_container *c)
+{
+    heic_mini_bits bits;
+    uint8_t version, explicit_codecs, float_flag, full_range, alpha_flag;
+    uint8_t explicit_cicp, hdr_flag, icc_flag, exif_flag, xmp_flag;
+    uint8_t chroma, orientation, bit_depth = 8;
+    uint8_t primaries, transfer, matrix;
+    uint32_t width, height, main_config_size, main_data_size;
+    uint32_t alpha_config_size = 0, alpha_data_size = 0;
+    uint32_t icc_size = 0, exif_size = 0, xmp_size = 0;
+    int large_dims, large_metadata = 0, large_config, large_data, legacy_flags = 0;
+    int metadata_compressed = 0;
+    heic_fourcc item_type, config_type = 0;
+    size_t pos, dimension_bits_pos, main_config_off, alpha_config_off = 0, icc_off = 0;
+    size_t alpha_data_off = 0, main_data_off, exif_off = 0, xmp_off = 0;
+    uint64_t required;
+    int n_items, n_locs, n_assocs, n_refs, info_i = 0, loc_i = 0, ref_i = 0;
+    uint16_t main_props[10], alpha_props[10];
+    int n_main_props = 0, n_alpha_props = 0;
+    heic_property p;
+    heic_box cfg_box;
+    int idx, main_cfg_idx, ispe_idx, alpha_cfg_idx = 0;
+
+    memset(&bits, 0, sizeof(bits));
+    bits.data = box->content;
+    bits.len = box->content_len;
+    version = (uint8_t)mini_bits(&bits, 2);
+    explicit_codecs = (uint8_t)mini_bits(&bits, 1);
+    float_flag = (uint8_t)mini_bits(&bits, 1);
+    full_range = (uint8_t)mini_bits(&bits, 1);
+    alpha_flag = (uint8_t)mini_bits(&bits, 1);
+    explicit_cicp = (uint8_t)mini_bits(&bits, 1);
+    hdr_flag = (uint8_t)mini_bits(&bits, 1);
+    icc_flag = (uint8_t)mini_bits(&bits, 1);
+    exif_flag = (uint8_t)mini_bits(&bits, 1);
+    xmp_flag = (uint8_t)mini_bits(&bits, 1);
+    chroma = (uint8_t)mini_bits(&bits, 2);
+    orientation = (uint8_t)mini_bits(&bits, 3) + 1;
+    large_dims = (int)mini_bits(&bits, 1);
+    dimension_bits_pos = bits.bit_pos;
+    width = mini_bits(&bits, large_dims ? 15 : 7) + 1;
+    height = mini_bits(&bits, large_dims ? 15 : 7) + 1;
+    /* Early draft files inverted large_dimensions_flag. The old libheif
+       lightning fixture signals the 15-bit maximum, which is not a useful
+       real dimension; accept that unambiguous draft encoding. */
+    if (large_dims && (width == 32768 || height == 32768
+                       || width == 32767 || height == 32767)) {
+        bits.bit_pos = dimension_bits_pos;
+        bits.error = 0;
+        large_dims = 0;
+        legacy_flags = 1;
+        width = mini_bits(&bits, 7) + 1;
+        height = mini_bits(&bits, 7) + 1;
+    }
+
+    if (version != 0 || float_flag || hdr_flag) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "unsupported mini features (version, float, or HDR gain map)");
+        return -1;
+    }
+    if (!width || !height || width > ctx->limits.max_width
+        || height > ctx->limits.max_height
+        || (uint64_t)width * height > ctx->limits.max_pixels)
+        return -1;
+
+    if (chroma == 1 || chroma == 2) (void)mini_bits(&bits, 1);
+    if (chroma == 1) (void)mini_bits(&bits, 1);
+    if (mini_bits(&bits, 1)) bit_depth = (uint8_t)mini_bits(&bits, 3) + 9;
+    if (alpha_flag) (void)mini_bits(&bits, 1); /* premultiplied */
+
+    if (explicit_cicp) {
+        primaries = (uint8_t)mini_bits(&bits, 8);
+        transfer = (uint8_t)mini_bits(&bits, 8);
+        matrix = (uint8_t)mini_bits(&bits, 8);
+    } else {
+        primaries = icc_flag ? 2 : 1;
+        transfer = icc_flag ? 2 : 13;
+        matrix = chroma == 0 ? 2 : 6;
+    }
+
+    item_type = c->minor_brand;
+    if (explicit_codecs) {
+        item_type = mini_fcc(&bits);
+        config_type = mini_fcc(&bits);
+    } else if (item_type == HEIC_FCC('h', 'e', 'i', 'c')
+               || item_type == HEIC_FCC('h', 'e', 'i', 'x')) {
+        item_type = HEIC_TYPE_HVC1;
+        config_type = HEIC_BOX_HVCC;
+    } else if (item_type == HEIC_FCC('a', 'v', 'i', 'f')
+               || item_type == HEIC_FCC('a', 'v', 'i', 's')) {
+        item_type = HEIC_TYPE_AV01;
+        config_type = HEIC_BOX_AV1C;
+    }
+    if ((item_type != HEIC_TYPE_HVC1 && item_type != HEIC_TYPE_AV01)
+        || (config_type != HEIC_BOX_HVCC && config_type != HEIC_BOX_AV1C)) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "mini codec brand is unsupported");
+        return -1;
+    }
+
+    if (icc_flag || exif_flag || xmp_flag) large_metadata = (int)mini_bits(&bits, 1);
+    large_config = (int)mini_bits(&bits, 1);
+    large_data = (int)mini_bits(&bits, 1);
+    if (legacy_flags) {
+        large_metadata = !large_metadata;
+        large_config = !large_config;
+        large_data = !large_data;
+    }
+    if (icc_flag) icc_size = mini_bits(&bits, large_metadata ? 20 : 10) + 1;
+    main_config_size = mini_bits(&bits, large_config ? 12 : 3);
+    main_data_size = mini_bits(&bits, large_data ? 28 : 15) + 1;
+    if (alpha_flag) alpha_data_size = mini_bits(&bits, large_data ? 28 : 15);
+    if (alpha_flag && alpha_data_size)
+        alpha_config_size = mini_bits(&bits, large_config ? 12 : 3);
+    if (exif_flag || xmp_flag) metadata_compressed = (int)mini_bits(&bits, 1);
+    if (exif_flag) exif_size = mini_bits(&bits, large_metadata ? 20 : 10) + 1;
+    if (xmp_flag) xmp_size = mini_bits(&bits, large_metadata ? 20 : 10) + 1;
+    if (bits.error) return -1;
+    bits.bit_pos = (bits.bit_pos + 7) & ~(size_t)7;
+    pos = bits.bit_pos / 8;
+
+    required = (uint64_t)main_config_size + alpha_config_size + icc_size
+             + alpha_data_size + main_data_size + exif_size + xmp_size;
+    if (pos > box->content_len || required > box->content_len - pos)
+        return -1;
+    if (icc_size > HEIC_MAX_ICC_SIZE) return -1;
+    if (metadata_compressed) {
+        heic_error(ctx, HEIC_SEVERITY_WARNING,
+                   "compressed mini EXIF/XMP is not exposed");
+        exif_flag = xmp_flag = 0;
+        exif_size = xmp_size = 0;
+    }
+
+    main_config_off = pos; pos += main_config_size;
+    if (alpha_flag && alpha_data_size) {
+        alpha_config_off = pos;
+        pos += alpha_config_size;
+    }
+    if (icc_flag) {
+        icc_off = pos;
+        pos += icc_size;
+    }
+    if (alpha_flag && alpha_data_size) {
+        alpha_data_off = pos;
+        pos += alpha_data_size;
+    }
+    main_data_off = pos; pos += main_data_size;
+    if (exif_flag) { exif_off = pos; pos += exif_size; }
+    if (xmp_flag) { xmp_off = pos; pos += xmp_size; }
+
+    n_items = 1 + (alpha_flag && alpha_data_size ? 1 : 0)
+                + (exif_flag ? 1 : 0) + (xmp_flag ? 1 : 0);
+    n_locs = n_items;
+    n_assocs = 1 + (alpha_flag && alpha_data_size ? 1 : 0);
+    n_refs = (alpha_flag && alpha_data_size ? 1 : 0)
+             + (exif_flag ? 1 : 0) + (xmp_flag ? 1 : 0);
+    c->item_infos = (heic_item_info *)heic_zalloc(
+        ctx, (size_t)n_items * sizeof(heic_item_info));
+    c->item_locations = (heic_item_loc *)heic_zalloc(
+        ctx, (size_t)n_locs * sizeof(heic_item_loc));
+    c->properties = (heic_property *)heic_zalloc(ctx, 10 * sizeof(heic_property));
+    c->property_associations = (heic_ipma *)heic_zalloc(
+        ctx, (size_t)n_assocs * sizeof(heic_ipma));
+    c->item_references = (heic_iref *)heic_zalloc(
+        ctx, (size_t)n_refs * sizeof(heic_iref));
+    if (!c->item_infos || !c->item_locations || !c->properties
+        || !c->property_associations || (n_refs && !c->item_references))
+        return -1;
+    /* Publish zero-initialized capacities immediately so container_free also
+       releases nested allocations if expansion fails partway through. */
+    c->n_item_infos = n_items;
+    c->n_item_locations = n_locs;
+    c->n_property_associations = n_assocs;
+    c->n_item_references = n_refs;
+
+    c->primary_item_id = 1;
+    c->item_infos[info_i].item_id = 1;
+    c->item_infos[info_i++].item_type = item_type;
+    if (mini_make_location(ctx, &c->item_locations[loc_i++], 1,
+                           box->content_off + main_data_off, main_data_size) != 0)
+        return -1;
+
+    memset(&cfg_box, 0, sizeof(cfg_box));
+    cfg_box.content = box->content + main_config_off;
+    cfg_box.content_len = main_config_size;
+    memset(&p, 0, sizeof(p));
+    if (item_type == HEIC_TYPE_HVC1) {
+        if (parse_hvcc(ctx, &cfg_box, &p.hvcc) != 0) return -1;
+        p.kind = HEIC_PROP_HVCC;
+    } else {
+        if (parse_av1c(ctx, &cfg_box, &p.av1c) != 0) return -1;
+        p.kind = HEIC_PROP_AV1C;
+    }
+    main_cfg_idx = mini_add_property(c, &p);
+    main_props[n_main_props++] = (uint16_t)main_cfg_idx;
+
+    memset(&p, 0, sizeof(p));
+    p.kind = HEIC_PROP_ISPE;
+    p.ispe.width = width;
+    p.ispe.height = height;
+    ispe_idx = mini_add_property(c, &p);
+    main_props[n_main_props++] = (uint16_t)ispe_idx;
+
+    if (icc_flag) {
+        memset(&p, 0, sizeof(p));
+        p.kind = HEIC_PROP_COLR;
+        p.colr.kind = HEIC_COLR_ICC;
+        p.colr.icc_len = icc_size;
+        p.colr.icc = (uint8_t *)heic_zalloc(ctx, icc_size ? icc_size : 1);
+        if (!p.colr.icc) return -1;
+        memcpy(p.colr.icc, box->content + icc_off, icc_size);
+        idx = mini_add_property(c, &p);
+        main_props[n_main_props++] = (uint16_t)idx;
+    }
+    memset(&p, 0, sizeof(p));
+    p.kind = HEIC_PROP_COLR;
+    p.colr.kind = HEIC_COLR_NCLX;
+    p.colr.color_primaries = primaries;
+    p.colr.transfer_characteristics = transfer;
+    p.colr.matrix_coefficients = matrix;
+    p.colr.full_range = full_range;
+    idx = mini_add_property(c, &p);
+    main_props[n_main_props++] = (uint16_t)idx;
+
+    if (alpha_flag && alpha_data_size) {
+        c->item_infos[info_i].item_id = 2;
+        c->item_infos[info_i].item_type = item_type;
+        c->item_infos[info_i++].hidden = 1;
+        if (mini_make_location(ctx, &c->item_locations[loc_i++], 2,
+                               box->content_off + alpha_data_off,
+                               alpha_data_size) != 0)
+            return -1;
+        cfg_box.content = alpha_config_size
+                              ? box->content + alpha_config_off
+                              : box->content + main_config_off;
+        cfg_box.content_len = alpha_config_size ? alpha_config_size : main_config_size;
+        memset(&p, 0, sizeof(p));
+        if (item_type == HEIC_TYPE_HVC1) {
+            if (parse_hvcc(ctx, &cfg_box, &p.hvcc) != 0) return -1;
+            p.kind = HEIC_PROP_HVCC;
+        } else {
+            if (parse_av1c(ctx, &cfg_box, &p.av1c) != 0) return -1;
+            p.kind = HEIC_PROP_AV1C;
+        }
+        alpha_cfg_idx = mini_add_property(c, &p);
+        alpha_props[n_alpha_props++] = (uint16_t)alpha_cfg_idx;
+        alpha_props[n_alpha_props++] = (uint16_t)ispe_idx;
+        memset(&p, 0, sizeof(p));
+        p.kind = HEIC_PROP_AUXC;
+        p.auxc.aux_type = dup_cstr_z(
+            ctx, (const uint8_t *)"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
+            strlen("urn:mpeg:mpegB:cicp:systems:auxiliary:alpha") + 1);
+        if (!p.auxc.aux_type) return -1;
+        idx = mini_add_property(c, &p);
+        alpha_props[n_alpha_props++] = (uint16_t)idx;
+    }
+
+    mini_set_orientation_props(c, orientation, main_props, &n_main_props,
+                               alpha_flag && alpha_data_size ? alpha_props : NULL,
+                               &n_alpha_props);
+    if (mini_make_assoc(ctx, &c->property_associations[0], 1,
+                        main_props, n_main_props) != 0)
+        return -1;
+    if (alpha_flag && alpha_data_size) {
+        if (mini_make_assoc(ctx, &c->property_associations[1], 2,
+                            alpha_props, n_alpha_props) != 0)
+            return -1;
+        c->item_references[ref_i].ref_type = HEIC_REF_AUXL;
+        c->item_references[ref_i].from_item_id = 2;
+        c->item_references[ref_i].to_item_ids =
+            (uint32_t *)heic_zalloc(ctx, sizeof(uint32_t));
+        if (!c->item_references[ref_i].to_item_ids) return -1;
+        c->item_references[ref_i].to_item_ids[0] = 1;
+        c->item_references[ref_i++].n_to = 1;
+    }
+
+    if (exif_flag) {
+        c->item_infos[info_i].item_id = 6;
+        c->item_infos[info_i++].item_type = HEIC_TYPE_EXIF;
+        if (mini_make_location(ctx, &c->item_locations[loc_i++], 6,
+                               box->content_off + exif_off, exif_size) != 0)
+            return -1;
+    }
+    if (xmp_flag) {
+        static const uint8_t xmp_type[] = "application/rdf+xml";
+        c->item_infos[info_i].item_id = 7;
+        c->item_infos[info_i].item_type = HEIC_TYPE_MIME;
+        c->item_infos[info_i].content_type =
+            dup_cstr_z(ctx, xmp_type, sizeof(xmp_type));
+        if (!c->item_infos[info_i].content_type) return -1;
+        info_i++;
+        if (mini_make_location(ctx, &c->item_locations[loc_i++], 7,
+                               box->content_off + xmp_off, xmp_size) != 0)
+            return -1;
+    }
+    while (ref_i < n_refs) {
+        uint32_t from = exif_flag ? 6u : 7u;
+        if (exif_flag) exif_flag = 0; else xmp_flag = 0;
+        c->item_references[ref_i].ref_type = HEIC_REF_CDSC;
+        c->item_references[ref_i].from_item_id = from;
+        c->item_references[ref_i].to_item_ids =
+            (uint32_t *)heic_zalloc(ctx, sizeof(uint32_t));
+        if (!c->item_references[ref_i].to_item_ids) return -1;
+        c->item_references[ref_i].to_item_ids[0] = 1;
+        c->item_references[ref_i++].n_to = 1;
+    }
+
+    c->has_meta = 1;
+    (void)bit_depth; /* codec config remains authoritative for decode */
     return 0;
 }
 
@@ -1056,6 +1475,12 @@ int heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
         } else if (top.type == HEIC_BOX_MDAT) {
             out->mdat_offset = top.content_off;
             out->mdat_len = top.content_len;
+        } else if (top.type == HEIC_BOX_MINI) {
+            if (out->has_meta) continue;
+            if (parse_mini(ctx, &top, out) != 0) {
+                heic_container_free(out);
+                return -1;
+            }
         }
         /* moov image sequences: later */
     }
@@ -1065,7 +1490,8 @@ int heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
         return -1;
     }
     if (!out->has_meta) {
-        heic_error(ctx, HEIC_SEVERITY_ERROR, "missing meta (image sequences not yet supported)");
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "missing meta/mini (image sequences not yet supported)");
         heic_container_free(out);
         return -1;
     }
