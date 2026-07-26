@@ -33,6 +33,13 @@ int heic_bench_libheif_session(const uint8_t *data, size_t len, heic_bench_sessi
 int heic_libheif_decode_rgb(const uint8_t *data, size_t len,
                             uint8_t **out_rgb, int *out_w, int *out_h, int *out_stride);
 
+/* Decode one unedited media pass of the first visual sequence track to
+   concatenated tightly packed RGB8 frames. Caller free()s *out_rgb. */
+int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
+                                     uint8_t **out_rgb, uint32_t *out_frames,
+                                     int *out_w, int *out_h, int *out_stride,
+                                     char *error, size_t error_cap);
+
 #ifdef __cplusplus
 }
 #endif

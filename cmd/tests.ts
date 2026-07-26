@@ -360,19 +360,28 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
       frames.length === t.frames &&
       Number(frames[0]![1]) === t.first &&
       Number(frames[frames.length - 1]![1]) === t.last;
-    const decodeProc = await Bun.$`${exe} -sequence-frame ${t.frames - 1} ${input}`
+    const oracleProc = await Bun.$`${exe} -verify-sequence ${input}`
       .nothrow()
       .quiet();
-    if (metadataOk && decodeProc.exitCode === 0) {
+    const oracleOut =
+      oracleProc.stdout.toString() + oracleProc.stderr.toString();
+    const oracleMse = parseVerifyMse(oracleOut);
+    if (
+      metadataOk &&
+      oracleProc.exitCode === 0 &&
+      oracleMse !== null &&
+      oracleMse <= 8
+    ) {
       ok++;
       console.log(
         `[ok] HEIF sequence ${t.name} frames=${t.frames} ` +
-          `duration=${t.duration} repetitions=${t.repetitions}`,
+          `duration=${t.duration} repetitions=${t.repetitions} ` +
+          `mse=${oracleMse.toFixed(4)}`,
       );
     } else {
       fail++;
       const detail = (
-        out + decodeProc.stdout.toString() + decodeProc.stderr.toString()
+        out + oracleOut
       ).trim().slice(0, 500);
       console.log(`[fail] HEIF sequence ${t.name}\n${detail}`);
     }

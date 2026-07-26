@@ -198,6 +198,8 @@
 - [x] Public HEVC sequence API: `stts`/`ctts` timing, `elst` presentation
       edits, finite/infinite repetition counts, and arbitrary frame decode
       from the preceding sync sample; all 11 Nokia sequence fixtures covered
+- [x] Every public HEVC sequence frame is compared in RGB against libheif's
+      sequence API/libde265, including edit-list duplicates and hidden preroll
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)

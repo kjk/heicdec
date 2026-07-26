@@ -6,6 +6,7 @@
 #include "bench_libheif.h"
 
 #include <libheif/heif.h>
+#include <libheif/heif_sequences.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -184,4 +185,120 @@ int heic_libheif_decode_rgb(const uint8_t *data, size_t len,
     if (!out_rgb) return -1;
     *out_rgb = NULL;
     return decode_rgb_inner(data, len, out_rgb, out_w, out_h, out_stride, NULL);
+}
+
+int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
+                                     uint8_t **out_rgb, uint32_t *out_frames,
+                                     int *out_w, int *out_h, int *out_stride,
+                                     char *error, size_t error_cap)
+{
+    heif_context *ctx = NULL;
+    heif_track *track = NULL;
+    heif_decoding_options *opts = NULL;
+    uint8_t *rgb = NULL;
+    size_t frame_size = 0, capacity = 0;
+    uint32_t frames = 0;
+    int width = 0, height = 0, rc = -1;
+    heif_error err;
+
+    if (!data || !len || !out_rgb || !out_frames) return -1;
+    *out_rgb = NULL;
+    *out_frames = 0;
+    if (error && error_cap) error[0] = '\0';
+    ctx = heif_context_alloc();
+    if (!ctx) goto done;
+    heif_context_set_max_decoding_threads(ctx, 1);
+    err = heif_context_read_from_memory_without_copy(ctx, data, len, NULL);
+    if (err.code != heif_error_Ok) goto heif_fail;
+    track = heif_context_get_track(ctx, 0);
+    if (!track) {
+        if (error && error_cap) snprintf(error, error_cap, "no visual track");
+        goto done;
+    }
+    opts = heif_decoding_options_alloc();
+    if (opts) {
+        opts->num_codec_threads = 1;
+        opts->ignore_sequence_editlist = 1;
+    }
+    for (;;) {
+        heif_image *image = NULL;
+        const uint8_t *plane;
+        int stride, w, h, y;
+        err = heif_track_decode_next_image(
+            track, &image, heif_colorspace_RGB,
+            heif_chroma_interleaved_RGB, opts);
+        if (err.code == heif_error_End_of_sequence) break;
+        if (err.code != heif_error_Ok || !image) {
+            if (image) heif_image_release(image);
+            goto heif_fail;
+        }
+        plane = heif_image_get_plane_readonly(
+            image, heif_channel_interleaved, &stride);
+        w = heif_image_get_width(image, heif_channel_interleaved);
+        h = heif_image_get_height(image, heif_channel_interleaved);
+        if (!plane || w <= 0 || h <= 0 || stride < w * 3
+            || (frames && (w != width || h != height))) {
+            heif_image_release(image);
+            if (error && error_cap)
+                snprintf(error, error_cap, "invalid sequence RGB plane");
+            goto done;
+        }
+        if (!frames) {
+            width = w;
+            height = h;
+            if ((size_t)w > SIZE_MAX / 3
+                || (size_t)w * 3 > SIZE_MAX / (size_t)h) {
+                heif_image_release(image);
+                goto done;
+            }
+            frame_size = (size_t)w * (size_t)h * 3;
+        }
+        if (frames == UINT32_MAX
+            || (size_t)(frames + 1) > SIZE_MAX / frame_size) {
+            heif_image_release(image);
+            goto done;
+        }
+        if ((size_t)(frames + 1) * frame_size > capacity) {
+            size_t needed = (size_t)(frames + 1) * frame_size;
+            size_t next =
+                capacity && capacity <= SIZE_MAX / 2
+                    ? capacity * 2 : needed;
+            uint8_t *p;
+            if (next < needed) next = needed;
+            p = (uint8_t *)realloc(rgb, next);
+            if (!p) {
+                heif_image_release(image);
+                goto done;
+            }
+            rgb = p;
+            capacity = next;
+        }
+        for (y = 0; y < h; y++)
+            memcpy(rgb + (size_t)frames * frame_size
+                       + (size_t)y * (size_t)w * 3,
+                   plane + (size_t)y * (size_t)stride, (size_t)w * 3);
+        frames++;
+        heif_image_release(image);
+    }
+    if (!frames) goto done;
+    *out_rgb = rgb;
+    *out_frames = frames;
+    if (out_w) *out_w = width;
+    if (out_h) *out_h = height;
+    if (out_stride) *out_stride = width * 3;
+    rgb = NULL;
+    rc = 0;
+    goto done;
+
+heif_fail:
+    if (error && error_cap)
+        snprintf(error, error_cap, "%s (code %d, subcode %d)",
+                 err.message ? err.message : "libheif sequence error",
+                 (int)err.code, (int)err.subcode);
+done:
+    free(rgb);
+    if (opts) heif_decoding_options_free(opts);
+    if (track) heif_track_release(track);
+    if (ctx) heif_context_free(ctx);
+    return rc;
 }

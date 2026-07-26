@@ -716,6 +716,89 @@ done:
     free(ref);
     return rc;
 }
+
+static uint32_t sequence_presentation_rank(const heic_sequence *seq,
+                                           uint32_t sample)
+{
+    uint32_t i, rank = 0;
+    int64_t pts = seq->samples[sample].composition_time;
+    for (i = 0; i < seq->sample_count; i++)
+        if (seq->samples[i].composition_time < pts
+            || (seq->samples[i].composition_time == pts && i < sample))
+            rank++;
+    return rank;
+}
+
+static int do_verify_sequence(const uint8_t *data, size_t len)
+{
+    heic_ctx *ctx = NULL;
+    heic_doc *doc = NULL;
+    heic_sequence_info info;
+    uint8_t *ref = NULL;
+    uint32_t ref_frames = 0, frame;
+    int rw = 0, rh = 0, rstride = 0;
+    double sse = 0.0;
+    uint64_t compared = 0, ndiff = 0;
+    int maxd = 0, rc = 1;
+    char error[256];
+
+    if (heic_libheif_decode_sequence_rgb(
+            data, len, &ref, &ref_frames, &rw, &rh, &rstride,
+            error, sizeof error) != 0) {
+        printf("sequence oracle failed: %s\n", error);
+        goto done;
+    }
+    ctx = heic_ctx_new(NULL, NULL, on_error_quiet, NULL);
+    if (!ctx) goto done;
+    doc = heic_doc_open(ctx, data, len);
+    if (!doc || heic_doc_sequence_info(doc, &info) != 0
+        || !doc->container.sequence)
+        goto done;
+    for (frame = 0; frame < info.frame_count; frame++) {
+        const heic_sequence *seq = doc->container.sequence;
+        uint32_t sample = seq->frame_samples[frame];
+        uint32_t rank;
+        heic_image *img;
+        int y, x;
+        if (sample >= seq->sample_count) goto done;
+        rank = sequence_presentation_rank(seq, sample);
+        if (rank >= ref_frames) goto done;
+        img = heic_doc_decode_sequence_frame(doc, frame, HEIC_FORMAT_RGB);
+        if (!img) goto done;
+        if ((int)img->width != rw || (int)img->height != rh) {
+            heic_image_destroy(ctx, img);
+            goto done;
+        }
+        for (y = 0; y < rh; y++) {
+            const uint8_t *a =
+                img->data + (size_t)y * (size_t)img->stride;
+            const uint8_t *b =
+                ref + (size_t)rank * (size_t)rstride * (size_t)rh
+                    + (size_t)y * (size_t)rstride;
+            for (x = 0; x < rw * 3; x++) {
+                int d = (int)a[x] - (int)b[x];
+                if (d < 0) d = -d;
+                if (d) {
+                    ndiff++;
+                    sse += (double)d * (double)d;
+                    if (d > maxd) maxd = d;
+                }
+            }
+        }
+        compared += (uint64_t)rw * (uint64_t)rh * 3u;
+        heic_image_destroy(ctx, img);
+    }
+    if (!compared) goto done;
+    printf("sequence %u frames %dx%d mse=%.4f maxdiff=%d n_diff=%llu\n",
+           (unsigned)info.frame_count, rw, rh, sse / (double)compared,
+           maxd, (unsigned long long)ndiff);
+    rc = 0;
+done:
+    if (doc) heic_doc_close(doc);
+    if (ctx) heic_ctx_free(ctx);
+    free(ref);
+    return rc;
+}
 #endif
 
 /* Loop open/decode/close N times with winperf section marks around decode.
@@ -794,6 +877,7 @@ int main(int argc, char **argv)
     const char *out_path = NULL;
     int do_info = 0, do_exif = 0, do_decode = 0, do_thumbnail = 0;
     int do_bench_mode = 0, do_verify_mode = 0;
+    int do_verify_sequence_mode = 0;
     int do_hevc_sequence_mode = 0;
     int do_sequence_info = 0, sequence_frame = -1;
     int profile_heic_loops = 0, profile_libheif_loops = 0;
@@ -813,6 +897,8 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-rgba") == 0) want_rgba = 1;
         else if (strcmp(argv[i], "-bench") == 0) do_bench_mode = 1;
         else if (strcmp(argv[i], "-verify") == 0) do_verify_mode = 1;
+        else if (strcmp(argv[i], "-verify-sequence") == 0)
+            do_verify_sequence_mode = 1;
         else if (strcmp(argv[i], "-sequence-info") == 0)
             do_sequence_info = 1;
         else if (strcmp(argv[i], "-sequence-frame") == 0 && i + 1 < argc) {
@@ -842,10 +928,12 @@ int main(int argc, char **argv)
     if (!path ||
         (!do_info && !do_exif && !do_decode && !do_bench_mode
          && !do_verify_mode && !do_hevc_sequence_mode
+         && !do_verify_sequence_mode
          && !do_sequence_info && sequence_frame < 0
          && !profile_heic_loops && !profile_libheif_loops)) {
         fprintf(stderr,
                 "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bench] [-verify] "
+                "[-verify-sequence] "
                 "[-sequence-info] [-sequence-frame N] "
                 "[-hevc-sequence [-hevc-frames N]] "
                 "[-profile-heic N] [-profile-libheif N] "
@@ -893,12 +981,22 @@ int main(int argc, char **argv)
     }
 
 #ifdef HEIC_HAVE_LIBHEIF
+    if (do_verify_sequence_mode) {
+        rc = do_verify_sequence(data, len);
+        free(data);
+        return rc;
+    }
     if (do_verify_mode) {
         rc = do_verify(data, len);
         free(data);
         return rc;
     }
 #else
+    if (do_verify_sequence_mode) {
+        fprintf(stderr, "verify-sequence: needs HEIC_HAVE_LIBHEIF\n");
+        free(data);
+        return 2;
+    }
     if (do_verify_mode) {
         fprintf(stderr, "verify: needs HEIC_HAVE_LIBHEIF (build with -libheif)\n");
         free(data);
