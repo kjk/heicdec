@@ -484,6 +484,7 @@ typedef struct {
     uint32_t motion_stride;
     uint32_t motion_min_pu;
     int ref_poc[2][HEIC_MAX_REF_PICS];
+    uint8_t ref_long_term[2][HEIC_MAX_REF_PICS];
 } heic_frame;
 
 void heic_frame_free(heic_ctx *ctx, heic_frame *f);

@@ -206,8 +206,16 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                 }
                 out->delta_poc_msb_present_flag[i] =
                     (uint8_t)heic_bs_bit(&bs);
-                if (out->delta_poc_msb_present_flag[i])
-                    out->delta_poc_msb_cycle_lt[i] = heic_bs_ue(&bs);
+                if (out->delta_poc_msb_present_flag[i]) {
+                    uint32_t cycle = heic_bs_ue(&bs);
+                    if (i != 0 && i != (int)num_lt_sps) {
+                        if (cycle > UINT32_MAX -
+                                      out->delta_poc_msb_cycle_lt[i - 1])
+                            return -1;
+                        cycle += out->delta_poc_msb_cycle_lt[i - 1];
+                    }
+                    out->delta_poc_msb_cycle_lt[i] = cycle;
+                }
             }
         }
         if (sps->sps_temporal_mvp_enabled_flag)

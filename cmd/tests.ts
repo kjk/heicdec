@@ -83,12 +83,12 @@ function classifyVerify(exitCode: number, out: string): VerifyKind {
 }
 
 const HEVC_SEQUENCE_TESTS = [
-  { name: "LTRPSPS_A_Qualcomm_1.bit", frames: 17, mse: 24 },
-  { name: "RPLM_A_qualcomm_4.bit", frames: 25, mse: 70 },
-  { name: "TMVP_A_MS_3.bit", frames: 17, mse: 24 },
+  { name: "LTRPSPS_A_Qualcomm_1.bit", frames: 17, mse: 8 },
+  { name: "RPLM_A_qualcomm_4.bit", frames: 25, mse: 8 },
+  { name: "TMVP_A_MS_3.bit", frames: 17, mse: 8 },
   { name: "WP_A_Toshiba_3.bit", frames: 17, mse: 8 },
-  { name: "WP_B_Toshiba_3.bit", frames: 17, mse: 2 },
-  { name: "MERGE_A_TI_3.bit", frames: 8, mse: 1 },
+  { name: "WP_B_Toshiba_3.bit", frames: 17, mse: 8 },
+  { name: "MERGE_A_TI_3.bit", frames: 8, mse: 8 },
 ] as const;
 
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {

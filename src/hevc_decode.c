@@ -57,9 +57,23 @@ static int build_ref_lists(heic_ctx *ctx, const heic_sps *sps,
     }
     for (i = 0; i < sh->num_long_term_sps + sh->num_long_term_pics; i++) {
         int idx;
+        int poc = (int)sh->poc_lsb_lt[i];
+        int lsb_only = !sh->delta_poc_msb_present_flag[i];
         if (!sh->used_by_curr_pic_lt_flag[i]) continue;
-        idx = find_ref_by_poc(refs, n_refs, (int)sh->poc_lsb_lt[i],
-                              poc_mask, 1);
+        if (!lsb_only) {
+            uint64_t delta =
+                (uint64_t)sh->delta_poc_msb_cycle_lt[i] *
+                ((uint64_t)poc_mask + 1u);
+            int curr_msb =
+                curr_poc - (int)sh->slice_pic_order_cnt_lsb;
+            if (delta > INT_MAX)
+                continue;
+            int64_t full_poc = (int64_t)curr_msb + poc - (int64_t)delta;
+            if (full_poc < INT_MIN || full_poc > INT_MAX)
+                continue;
+            poc = (int)full_poc;
+        }
+        idx = find_ref_by_poc(refs, n_refs, poc, poc_mask, lsb_only);
         if (idx >= 0 && n_lt < HEIC_MAX_REF_PICS)
             lt[n_lt++] = refs[idx];
     }
