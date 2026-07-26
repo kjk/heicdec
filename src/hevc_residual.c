@@ -250,9 +250,10 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
     uint32_t sb_idx;
 
     if (!cabac || !ctx || !out || log2_size < 2 || log2_size > 5) return -1;
-    memset(out, 0, sizeof(*out));
-    out->log2_size = log2_size;
     size = 1u << log2_size;
+    memset(out->coeffs, 0, (size_t)size * size * sizeof(out->coeffs[0]));
+    out->log2_size = log2_size;
+    out->num_nonzero = 0;
 
     if (transform_skip_enabled && !cu_transquant_bypass && log2_size <= 2) {
         int ctx_idx = HEIC_CTX_TRANSFORM_SKIP_FLAG + (c_idx > 0 ? 1 : 0);

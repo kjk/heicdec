@@ -135,6 +135,13 @@
     attribution removed all 246 `memset` samples charged to primary decode.
   - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
     183 ok / 5 no-oracle skips / 0 failures.
+- **Active-size residual scratch clearing**:
+  - Clear only the active 4x4 through 32x32 coefficient square instead of the
+    full 1,024-coefficient scratch buffer for every transform.
+  - HDR winperf 33.52ms → **31.55ms** (-5.9%); normalized samples/decode
+    66.5 → **62.8** (-5.6%), with residual self-samples down 7.1%.
+  - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
+    183 ok / 5 no-oracle skips / 0 failures.
 
 ## Next
 
