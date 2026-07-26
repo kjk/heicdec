@@ -112,6 +112,13 @@
     `nokia_444`; clean paired bench 47.11ms vs libheif 47.74ms (-1.3%).
   - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
     183 ok / 5 no-oracle skips / 0 failures.
+- **Direct 8-bit unci planar rows**:
+  - Widen byte-aligned component rows directly into frame planes instead of
+    routing every sample through the generic bit reader, scaler, and bounds check.
+  - Zlib fixture 0.30ms → **0.09ms**; deflate 0.26ms → **0.09ms**; Brotli
+    0.30ms → **0.12ms**. All compressed unci fixtures are now at parity or faster.
+  - Winperf 20k-decode workload 4.60s → **0.87s** (-81.0%); full pass remains
+    166 comparable / 22 skips / 0 failures and 183 pixel-oracle successes.
 
 ## Next
 

@@ -356,6 +356,50 @@ static void store_sample(heic_frame *out, int plane, uint32_t x, uint32_t y, uin
     }
 }
 
+static int copy_component8_row(unci_br *br, heic_frame *out, int plane,
+                               uint32_t x, uint32_t y, uint32_t n)
+{
+    const uint8_t *src;
+    uint16_t *dst;
+    size_t pos;
+    uint32_t i;
+
+    if ((br->bit_pos & 7) != 0)
+        return 0;
+    pos = br->bit_pos >> 3;
+    if (pos > br->len || (size_t)n > br->len - pos)
+        return 0;
+    if (plane < 0) {
+        br->bit_pos += (size_t)n * 8;
+        return 1;
+    }
+    if (plane == 0) {
+        if (x > (uint32_t)out->width || n > (uint32_t)out->width - x ||
+            y >= (uint32_t)out->height)
+            return 0;
+        dst = out->y + (size_t)y * (size_t)out->y_stride + x;
+    } else if (plane == 1 || plane == 2) {
+        if (x > (uint32_t)out->c_width || n > (uint32_t)out->c_width - x ||
+            y >= (uint32_t)out->c_height)
+            return 0;
+        dst = (plane == 1 ? out->cb : out->cr) +
+              (size_t)y * (size_t)out->c_stride + x;
+    } else if (plane == 3 && out->a) {
+        if (x > (uint32_t)out->width || n > (uint32_t)out->width - x ||
+            y >= (uint32_t)out->height)
+            return 0;
+        dst = out->a + (size_t)y * (size_t)out->a_stride + x;
+    } else {
+        return 0;
+    }
+
+    src = br->data + pos;
+    for (i = 0; i < n; i++)
+        dst[i] = src[i];
+    br->bit_pos += (size_t)n * 8;
+    return 1;
+}
+
 /* Luma tile size → chroma tile size for sampling_type (0=444, 1=422, 2=420). */
 static void plane_tile_dims(int plane, int sampling, uint32_t tw, uint32_t th,
                             uint32_t *pw, uint32_t *ph)
@@ -727,11 +771,14 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
                     tile_start_bytes = br.bit_pos >> 3;
                     for (y = 0; y < pth; y++) {
                         size_t row_start = br.bit_pos >> 3;
-                        for (x = 0; x < ptw; x++) {
-                            int val = read_comp_sample(&br, bit_depth[i], align[i]);
-                            uint16_t v8 = expand8(val, bit_depth[i]);
-                            if (plane >= 0)
-                                store_sample(out, plane, ox + x, oy + y, v8);
+                        if (bit_depth[i] != 8 || align[i] != 0 ||
+                            !copy_component8_row(&br, out, plane, ox, oy + y, ptw)) {
+                            for (x = 0; x < ptw; x++) {
+                                int val = read_comp_sample(&br, bit_depth[i], align[i]);
+                                uint16_t v8 = expand8(val, bit_depth[i]);
+                                if (plane >= 0)
+                                    store_sample(out, plane, ox + x, oy + y, v8);
+                            }
                         }
                         br_byte_align(&br);
                         if (uncc->row_align_size) {
@@ -771,11 +818,14 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
                     oy = ty * pth;
                     for (y = 0; y < pth; y++) {
                         size_t row_start = br.bit_pos >> 3;
-                        for (x = 0; x < ptw; x++) {
-                            int val = read_comp_sample(&br, bit_depth[i], align[i]);
-                            uint16_t v8 = expand8(val, bit_depth[i]);
-                            if (plane >= 0)
-                                store_sample(out, plane, ox + x, oy + y, v8);
+                        if (bit_depth[i] != 8 || align[i] != 0 ||
+                            !copy_component8_row(&br, out, plane, ox, oy + y, ptw)) {
+                            for (x = 0; x < ptw; x++) {
+                                int val = read_comp_sample(&br, bit_depth[i], align[i]);
+                                uint16_t v8 = expand8(val, bit_depth[i]);
+                                if (plane >= 0)
+                                    store_sample(out, plane, ox + x, oy + y, v8);
+                            }
                         }
                         br_byte_align(&br);
                         if (uncc->row_align_size) {
