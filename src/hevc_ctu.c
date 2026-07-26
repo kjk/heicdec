@@ -50,7 +50,6 @@ typedef struct {
     int16_t *residual_buf; /* HEIC_MAX_COEFF, heap (keep CTU frame small for ASan) */
     heic_coeff_buf *coeff; /* residual decode scratch (2KB; not on recursive stack) */
     int32_t *mc_scratch; /* max 64x(64+8), shared by luma/chroma MC */
-    uint16_t *mc_pred; /* L0 copy for bidirectional blend: Y + Cb + Cr */
     int16_t *mc_internal; /* two lists of internal-precision Y + Cb + Cr */
 } heic_slice_ctx;
 
@@ -995,153 +994,6 @@ static heic_pb_motion resolve_motion(heic_slice_ctx *sc, heic_pb_coding coding,
     }
 }
 
-static void apply_uni_weight(heic_slice_ctx *sc, const heic_pu *pu,
-                             int list, int ref_idx)
-{
-    const heic_slice_header *sh = sc->sh;
-    uint32_t x, y;
-    int max_y = (1 << bit_depth_y(sc->sps)) - 1;
-    int round_y = sh->luma_log2_weight_denom
-        ? 1 << (sh->luma_log2_weight_denom - 1) : 0;
-    int offset_y = sh->luma_offset[list][ref_idx]
-                 * (1 << (bit_depth_y(sc->sps) - 8));
-    for (y = 0; y < pu->h && pu->y + y < (uint32_t)sc->frame->height; y++)
-        for (x = 0; x < pu->w && pu->x + x < (uint32_t)sc->frame->width; x++) {
-            size_t pos = (size_t)(pu->y + y) * sc->frame->y_stride
-                       + pu->x + x;
-            int v = (sh->luma_weight[list][ref_idx] * sc->frame->y[pos]
-                     + round_y) >> sh->luma_log2_weight_denom;
-            sc->frame->y[pos] =
-                (uint16_t)clip_int(v + offset_y, 0, max_y);
-        }
-
-    if (sc->frame->chroma_format != 0) {
-        int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
-        int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
-        uint32_t cx = pu->x / (uint32_t)sub_x;
-        uint32_t cy = pu->y / (uint32_t)sub_y;
-        uint32_t cw = pu->w / (uint32_t)sub_x;
-        uint32_t ch = pu->h / (uint32_t)sub_y;
-        int max_c = (1 << bit_depth_c(sc->sps)) - 1;
-        int round_c = sh->chroma_log2_weight_denom
-            ? 1 << (sh->chroma_log2_weight_denom - 1) : 0;
-        uint16_t *planes[2] = {sc->frame->cb, sc->frame->cr};
-        int c;
-        for (c = 0; c < 2; c++) {
-            int offset_c = sh->chroma_offset[list][ref_idx][c]
-                         * (1 << (bit_depth_c(sc->sps) - 8));
-            for (y = 0; y < ch
-                        && cy + y < (uint32_t)sc->frame->c_height; y++)
-                for (x = 0; x < cw
-                            && cx + x < (uint32_t)sc->frame->c_width; x++) {
-                    size_t pos = (size_t)(cy + y) * sc->frame->c_stride
-                               + cx + x;
-                    int v = (sh->chroma_weight[list][ref_idx][c]
-                             * planes[c][pos] + round_c)
-                          >> sh->chroma_log2_weight_denom;
-                    planes[c][pos] =
-                        (uint16_t)clip_int(v + offset_c, 0, max_c);
-                }
-        }
-    }
-}
-
-static void save_pred_block(heic_slice_ctx *sc, const heic_pu *pu)
-{
-    uint32_t x, y;
-    uint16_t *py = sc->mc_pred;
-    for (y = 0; y < pu->h
-                && pu->y + y < (uint32_t)sc->frame->height; y++)
-        for (x = 0; x < pu->w
-                    && pu->x + x < (uint32_t)sc->frame->width; x++)
-            py[y * 64u + x] =
-                sc->frame->y[(size_t)(pu->y + y) * sc->frame->y_stride
-                             + pu->x + x];
-    if (sc->frame->chroma_format != 0) {
-        int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
-        int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
-        uint32_t cx = pu->x / (uint32_t)sub_x;
-        uint32_t cy = pu->y / (uint32_t)sub_y;
-        uint32_t cw = pu->w / (uint32_t)sub_x;
-        uint32_t ch = pu->h / (uint32_t)sub_y;
-        uint16_t *pcb = sc->mc_pred + 64u * 64u;
-        uint16_t *pcr = pcb + 64u * 64u;
-        for (y = 0; y < ch
-                    && cy + y < (uint32_t)sc->frame->c_height; y++)
-            for (x = 0; x < cw
-                        && cx + x < (uint32_t)sc->frame->c_width; x++) {
-                size_t pos = (size_t)(cy + y) * sc->frame->c_stride + cx + x;
-                pcb[y * 64u + x] = sc->frame->cb[pos];
-                pcr[y * 64u + x] = sc->frame->cr[pos];
-            }
-    }
-}
-
-static int bipred_value(int a, int b, int weighted, int w0, int w1,
-                        int o0, int o1, int denom, int max_val)
-{
-    int v;
-    if (!weighted) return (a + b + 1) >> 1;
-    v = ((w0 * a + w1 * b + (1 << denom)) >> (denom + 1))
-        + ((o0 + o1 + 1) >> 1);
-    return clip_int(v, 0, max_val);
-}
-
-static void blend_pred_block(heic_slice_ctx *sc, const heic_pu *pu,
-                             int ref0, int ref1)
-{
-    const heic_slice_header *sh = sc->sh;
-    uint32_t x, y;
-    int weighted = sh->has_pred_weight_table;
-    int max_y = (1 << bit_depth_y(sc->sps)) - 1;
-    int os_y = 1 << (bit_depth_y(sc->sps) - 8);
-    uint16_t *py = sc->mc_pred;
-    for (y = 0; y < pu->h
-                && pu->y + y < (uint32_t)sc->frame->height; y++)
-        for (x = 0; x < pu->w
-                    && pu->x + x < (uint32_t)sc->frame->width; x++) {
-            size_t pos =
-                (size_t)(pu->y + y) * sc->frame->y_stride + pu->x + x;
-            sc->frame->y[pos] = (uint16_t)bipred_value(
-                py[y * 64u + x], sc->frame->y[pos], weighted,
-                sh->luma_weight[0][ref0], sh->luma_weight[1][ref1],
-                sh->luma_offset[0][ref0] * os_y,
-                sh->luma_offset[1][ref1] * os_y,
-                sh->luma_log2_weight_denom, max_y);
-        }
-    if (sc->frame->chroma_format != 0) {
-        int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
-        int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
-        uint32_t cx = pu->x / (uint32_t)sub_x;
-        uint32_t cy = pu->y / (uint32_t)sub_y;
-        uint32_t cw = pu->w / (uint32_t)sub_x;
-        uint32_t ch = pu->h / (uint32_t)sub_y;
-        int max_c = (1 << bit_depth_c(sc->sps)) - 1;
-        int os_c = 1 << (bit_depth_c(sc->sps) - 8);
-        uint16_t *saved[2] = {
-            sc->mc_pred + 64u * 64u,
-            sc->mc_pred + 2u * 64u * 64u
-        };
-        uint16_t *planes[2] = {sc->frame->cb, sc->frame->cr};
-        int c;
-        for (c = 0; c < 2; c++)
-            for (y = 0; y < ch
-                        && cy + y < (uint32_t)sc->frame->c_height; y++)
-                for (x = 0; x < cw
-                            && cx + x < (uint32_t)sc->frame->c_width; x++) {
-                    size_t pos =
-                        (size_t)(cy + y) * sc->frame->c_stride + cx + x;
-                    planes[c][pos] = (uint16_t)bipred_value(
-                        saved[c][y * 64u + x], planes[c][pos], weighted,
-                        sh->chroma_weight[0][ref0][c],
-                        sh->chroma_weight[1][ref1][c],
-                        sh->chroma_offset[0][ref0][c] * os_c,
-                        sh->chroma_offset[1][ref1][c] * os_c,
-                        sh->chroma_log2_weight_denom, max_c);
-                }
-    }
-}
-
 static int predict_from_list(heic_slice_ctx *sc, const heic_pu *pu,
                              heic_pb_motion motion, int list)
 {
@@ -1232,13 +1084,127 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
     }
 }
 
+static int weighted_uni_value(int sample, int weight, int offset,
+                              int denom, int bit_depth)
+{
+    int shift = 14 - bit_depth;
+    int max_val = (1 << bit_depth) - 1;
+    int64_t round;
+    int64_t v;
+    if (shift < 2) shift = 2;
+    shift += denom;
+    round = (int64_t)1 << (shift - 1);
+    v = ((int64_t)sample * weight + round) >> shift;
+    v += (int64_t)offset * ((int64_t)1 << (bit_depth - 8));
+    return clip_int((int)v, 0, max_val);
+}
+
+static int weighted_bi_value(int a, int b, int w0, int w1,
+                             int o0, int o1, int denom, int bit_depth)
+{
+    int shift = 14 - bit_depth;
+    int offset_scale = 1 << (bit_depth - 8);
+    int max_val = (1 << bit_depth) - 1;
+    int64_t round;
+    int64_t v;
+    if (shift < 2) shift = 2;
+    shift += denom;
+    o0 *= offset_scale;
+    o1 *= offset_scale;
+    round = (int64_t)(o0 + o1 + 1) * ((int64_t)1 << shift);
+    v = ((int64_t)a * w0 + (int64_t)b * w1 + round) >> (shift + 1);
+    return clip_int((int)v, 0, max_val);
+}
+
+static void apply_internal_weight(heic_slice_ctx *sc, const heic_pu *pu,
+                                  heic_pb_motion motion)
+{
+    const heic_slice_header *sh = sc->sh;
+    int bi = motion.pred_flag[0] && motion.pred_flag[1];
+    int list = motion.pred_flag[0] ? 0 : 1;
+    int ref0 = motion.ref_idx[0], ref1 = motion.ref_idx[1];
+    int16_t *p0 = sc->mc_internal;
+    int16_t *p1 = p0 + 3u * 64u * 64u;
+    int16_t *pred = list ? p1 : p0;
+    uint32_t x, y;
+    int bd_y = bit_depth_y(sc->sps);
+    for (y = 0; y < pu->h
+                && pu->y + y < (uint32_t)sc->frame->height; y++)
+        for (x = 0; x < pu->w
+                    && pu->x + x < (uint32_t)sc->frame->width; x++) {
+            size_t pos =
+                (size_t)(pu->y + y) * sc->frame->y_stride + pu->x + x;
+            int v;
+            if (bi)
+                v = weighted_bi_value(
+                    p0[y * 64u + x], p1[y * 64u + x],
+                    sh->luma_weight[0][ref0], sh->luma_weight[1][ref1],
+                    sh->luma_offset[0][ref0], sh->luma_offset[1][ref1],
+                    sh->luma_log2_weight_denom, bd_y);
+            else
+                v = weighted_uni_value(
+                    pred[y * 64u + x], sh->luma_weight[list][motion.ref_idx[list]],
+                    sh->luma_offset[list][motion.ref_idx[list]],
+                    sh->luma_log2_weight_denom, bd_y);
+            sc->frame->y[pos] = (uint16_t)v;
+        }
+    if (sc->frame->chroma_format != 0) {
+        int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
+        int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
+        uint32_t cx = pu->x / (uint32_t)sub_x;
+        uint32_t cy = pu->y / (uint32_t)sub_y;
+        uint32_t cw = pu->w / (uint32_t)sub_x;
+        uint32_t ch = pu->h / (uint32_t)sub_y;
+        int bd_c = bit_depth_c(sc->sps);
+        uint16_t *planes[2] = {sc->frame->cb, sc->frame->cr};
+        int c;
+        for (c = 0; c < 2; c++) {
+            int16_t *a = p0 + (size_t)(c + 1) * 64u * 64u;
+            int16_t *b = p1 + (size_t)(c + 1) * 64u * 64u;
+            int16_t *src = list ? b : a;
+            for (y = 0; y < ch
+                        && cy + y < (uint32_t)sc->frame->c_height; y++)
+                for (x = 0; x < cw
+                            && cx + x < (uint32_t)sc->frame->c_width; x++) {
+                    size_t pos =
+                        (size_t)(cy + y) * sc->frame->c_stride + cx + x;
+                    int v;
+                    if (bi)
+                        v = weighted_bi_value(
+                            a[y * 64u + x], b[y * 64u + x],
+                            sh->chroma_weight[0][ref0][c],
+                            sh->chroma_weight[1][ref1][c],
+                            sh->chroma_offset[0][ref0][c],
+                            sh->chroma_offset[1][ref1][c],
+                            sh->chroma_log2_weight_denom, bd_c);
+                    else
+                        v = weighted_uni_value(
+                            src[y * 64u + x],
+                            sh->chroma_weight[list][motion.ref_idx[list]][c],
+                            sh->chroma_offset[list][motion.ref_idx[list]][c],
+                            sh->chroma_log2_weight_denom, bd_c);
+                    planes[c][pos] = (uint16_t)v;
+                }
+        }
+    }
+}
+
 static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
                         heic_pb_motion motion)
 {
     int list = motion.pred_flag[0] ? 0 : 1;
     if (!motion.pred_flag[0] && !motion.pred_flag[1]) return -1;
-    if (motion.pred_flag[0] && motion.pred_flag[1] &&
-        !sc->sh->has_pred_weight_table) {
+    if (sc->sh->has_pred_weight_table) {
+        if (motion.pred_flag[0] &&
+            predict_internal_from_list(sc, pu, motion, 0) != 0)
+            return -1;
+        if (motion.pred_flag[1] &&
+            predict_internal_from_list(sc, pu, motion, 1) != 0)
+            return -1;
+        apply_internal_weight(sc, pu, motion);
+        return 0;
+    }
+    if (motion.pred_flag[0] && motion.pred_flag[1]) {
         if (predict_internal_from_list(sc, pu, motion, 0) != 0 ||
             predict_internal_from_list(sc, pu, motion, 1) != 0)
             return -1;
@@ -1246,13 +1212,6 @@ static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
         return 0;
     }
     if (predict_from_list(sc, pu, motion, list) != 0) return -1;
-    if (motion.pred_flag[0] && motion.pred_flag[1]) {
-        save_pred_block(sc, pu);
-        if (predict_from_list(sc, pu, motion, 1) != 0) return -1;
-        blend_pred_block(sc, pu, motion.ref_idx[0], motion.ref_idx[1]);
-    } else if (sc->sh->has_pred_weight_table) {
-        apply_uni_weight(sc, pu, list, motion.ref_idx[list]);
-    }
     return 0;
 }
 
@@ -2120,11 +2079,9 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     sc->coeff = (heic_coeff_buf *)heic_zalloc(ctx, sizeof(heic_coeff_buf));
     sc->mc_scratch =
         (int32_t *)heic_zalloc(ctx, 72u * 72u * sizeof(int32_t));
-    sc->mc_pred =
-        (uint16_t *)heic_zalloc(ctx, 3u * 64u * 64u * sizeof(uint16_t));
     sc->mc_internal =
         (int16_t *)heic_zalloc(ctx, 6u * 64u * 64u * sizeof(int16_t));
-    if (!sc->residual_buf || !sc->coeff || !sc->mc_scratch || !sc->mc_pred ||
+    if (!sc->residual_buf || !sc->coeff || !sc->mc_scratch ||
         !sc->mc_internal)
         return -1;
     return 0;
@@ -2146,7 +2103,6 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->residual_buf);
     heic_free_buf(sc->hctx, sc->coeff);
     heic_free_buf(sc->hctx, sc->mc_scratch);
-    heic_free_buf(sc->hctx, sc->mc_pred);
     heic_free_buf(sc->hctx, sc->mc_internal);
     memset(sc, 0, sizeof(*sc));
 }
