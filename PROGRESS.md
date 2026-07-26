@@ -28,7 +28,7 @@
 - [x] Static dav1d build under `out/dav1d_build` (meson; `enable_asm` when nasm present)
 - [x] Smoke: `example.avif` 800×533; `alpha.heic` 64×64 RGBA
 - [x] `cmd/{get-deps,build,tests,build-dist,build-wasm,verify-wasm,corpus,gen-cabac-init}.ts` + harness
-- [x] WebAssembly drop: `wasm/heic.js` + `wasm/index.html` (HEVC/unci; no dav1d)
+- [x] WebAssembly drop: `dist/wasm/heic.js` + `dist/wasm/index.html` (HEVC/unci; no dav1d)
 - [x] Nokia `heif_conformance` in get-deps + corpus (`tests.ts` / `bench.ts` -all)
 - [x] Fuzzing: `cmd/fuzz.ts` + `test/fuzz_target.c` (libFuzzer+ASan; `fuzz/corpus/` checkpoint, `fuzz/crashes/` tracked)
 

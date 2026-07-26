@@ -9,9 +9,6 @@
 extern "C" {
 #endif
 
-
-
-
 typedef void *(*heic_alloc_cb)(void *user, void *ctx, size_t size);
 typedef void  (*heic_free_cb)(void *user, void *ctx, void *ptr);
 
@@ -23,9 +20,7 @@ typedef enum {
     HEIC_SEVERITY_FATAL
 } heic_severity;
 
-
 typedef void (*heic_error_cb)(void *user, heic_severity sev, const char *msg);
-
 
 typedef struct {
     volatile int requested;
@@ -37,14 +32,11 @@ void heic_abort_request(heic_abort *ab);
 typedef struct heic_ctx heic_ctx;
 typedef struct heic_doc heic_doc;
 
-
 void heic_init(void);
-
 
 heic_ctx *heic_ctx_new(heic_alloc_cb alloc, heic_free_cb free_cb,
                        heic_error_cb error, void *user);
 void heic_ctx_free(heic_ctx *ctx);
-
 
 typedef struct {
     uint32_t max_width;
@@ -55,12 +47,8 @@ typedef struct {
 
 void heic_ctx_set_limits(heic_ctx *ctx, const heic_limits *limits);
 
-
-
-
 heic_doc *heic_doc_open(heic_ctx *ctx, const uint8_t *data, size_t len);
 void heic_doc_close(heic_doc *doc);
-
 
 typedef enum {
     HEIC_KIND_UNKNOWN = 0,
@@ -88,10 +76,7 @@ typedef struct {
     int      full_range;
 } heic_image_info;
 
-
 int heic_doc_info(const heic_doc *doc, heic_image_info *info);
-
-
 
 typedef enum {
     HEIC_FORMAT_RGB  = 3,
@@ -108,34 +93,24 @@ typedef struct {
     uint8_t    *data;
 } heic_image;
 
-
 heic_image *heic_doc_decode(heic_doc *doc, heic_format format);
 heic_image *heic_doc_decode_abortable(heic_doc *doc, heic_format format,
                                       heic_abort *ab);
 void heic_image_destroy(heic_ctx *ctx, heic_image *img);
 
-
 size_t heic_doc_output_size(const heic_doc *doc, heic_format format);
 int heic_doc_decode_into(heic_doc *doc, heic_format format,
                          uint8_t *buf, size_t buf_size, int stride);
 
-
 heic_image *heic_doc_decode_thumbnail(heic_doc *doc, heic_format format);
-
-
-
 
 int heic_doc_exif(heic_doc *doc, uint8_t **out, size_t *out_len);
 
-
 int heic_doc_xmp(heic_doc *doc, uint8_t **out, size_t *out_len);
-
 
 int heic_doc_icc(heic_doc *doc, uint8_t **out, size_t *out_len);
 
-
 void heic_free(heic_ctx *ctx, void *p);
-
 
 const char *heic_version(void);
 
@@ -145,10 +120,8 @@ const char *heic_version(void);
 
 #endif
 
-
 #ifndef HEIC_INTERNAL_H
 #define HEIC_INTERNAL_H
-
 
 #include <stddef.h>
 #include <stdint.h>
@@ -157,8 +130,6 @@ const char *heic_version(void);
 #include <stdio.h>
 #include <stdarg.h>
 #include <limits.h>
-
-
 
 #ifndef HEIC_MIN
 #define HEIC_MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -172,12 +143,10 @@ const char *heic_version(void);
 
 #define HEIC_COUNTOF(a) (sizeof(a) / sizeof((a)[0]))
 
-
 #define HEIC_DEFAULT_MAX_WIDTH  16384u
 #define HEIC_DEFAULT_MAX_HEIGHT 16384u
 #define HEIC_DEFAULT_MAX_PIXELS ((uint64_t)256 * 1000 * 1000)
 #define HEIC_DEFAULT_MAX_MEMORY ((size_t)1 * 1024 * 1024 * 1024)
-
 
 #define HEIC_MAX_ITEMS            65536u
 #define HEIC_MAX_PROPERTIES       65536u
@@ -189,17 +158,13 @@ const char *heic_version(void);
 #define HEIC_MAX_NAL_UNIT_SIZE    (16 * 1024 * 1024)
 #define HEIC_MAX_ICC_SIZE         (4 * 1024 * 1024)
 
-
 #define HEIC_UNINIT_SAMPLE 0xFFFFu
-
-
 
 typedef uint32_t heic_fourcc;
 
 #define HEIC_FCC(a, b, c, d) \
     ((heic_fourcc)(uint8_t)(a) | ((heic_fourcc)(uint8_t)(b) << 8) | \
      ((heic_fourcc)(uint8_t)(c) << 16) | ((heic_fourcc)(uint8_t)(d) << 24))
-
 
 #define HEIC_BOX_FTYP HEIC_FCC('f', 't', 'y', 'p')
 #define HEIC_BOX_META HEIC_FCC('m', 'e', 't', 'a')
@@ -247,7 +212,6 @@ typedef uint32_t heic_fourcc;
 #define HEIC_BOX_HEV1 HEIC_FCC('h', 'e', 'v', '1')
 #define HEIC_BOX_TREF HEIC_FCC('t', 'r', 'e', 'f')
 
-
 #define HEIC_TYPE_HVC1 HEIC_FCC('h', 'v', 'c', '1')
 #define HEIC_TYPE_AV01 HEIC_FCC('a', 'v', '0', '1')
 #define HEIC_TYPE_AVC1 HEIC_FCC('a', 'v', 'c', '1')
@@ -260,13 +224,10 @@ typedef uint32_t heic_fourcc;
 #define HEIC_TYPE_EXIF HEIC_FCC('E', 'x', 'i', 'f')
 #define HEIC_TYPE_MIME HEIC_FCC('m', 'i', 'm', 'e')
 
-
 #define HEIC_REF_DIMG HEIC_FCC('d', 'i', 'm', 'g')
 #define HEIC_REF_AUXL HEIC_FCC('a', 'u', 'x', 'l')
 #define HEIC_REF_THMB HEIC_FCC('t', 'h', 'm', 'b')
 #define HEIC_REF_CDSC HEIC_FCC('c', 'd', 's', 'c')
-
-
 
 static inline uint16_t heic_rb16(const uint8_t *p)
 {
@@ -287,9 +248,6 @@ static inline heic_fourcc heic_read_fcc(const uint8_t *p)
     return HEIC_FCC(p[0], p[1], p[2], p[3]);
 }
 
-
-
-
 struct heic_ctx {
     heic_alloc_cb alloc;
     heic_free_cb  free_cb;
@@ -305,8 +263,6 @@ void *heic_realloc_buf(heic_ctx *ctx, void *p, size_t old_size, size_t new_size)
 void  heic_free_buf(heic_ctx *ctx, void *p);
 void  heic_error(heic_ctx *ctx, heic_severity sev, const char *fmt, ...);
 int   heic_abort_check(const heic_abort *ab);
-
-
 
 typedef struct {
     uint64_t offset;
@@ -418,7 +374,6 @@ typedef struct {
     size_t   subtype_len;
 } heic_auxc;
 
-
 typedef struct {
     uint16_t component_index;
     uint8_t  component_bit_depth_minus_one;
@@ -445,18 +400,15 @@ typedef struct {
     uint32_t       num_tile_rows_minus_one;
 } heic_uncc;
 
-
 typedef struct {
     heic_fourcc compression_type;
     uint8_t     unit_type;
 } heic_cmpc;
 
-
 typedef struct {
     uint16_t *types;
     int       n_types;
 } heic_cmpd;
-
 
 typedef struct {
     uint64_t offset;
@@ -539,7 +491,6 @@ typedef struct {
     int                has_meta;
 } heic_container;
 
-
 typedef struct {
     uint32_t           id;
     heic_fourcc        item_type;
@@ -578,8 +529,6 @@ int  heic_container_find_aux(const heic_container *c, uint32_t target_id,
 int  heic_container_find_thumbs(const heic_container *c, uint32_t target_id,
                                 uint32_t *out_ids, int max_out);
 
-
-
 typedef struct {
     int width, height;
     int crop_left, crop_right, crop_top, crop_bottom;
@@ -604,28 +553,22 @@ void heic_frame_free(heic_ctx *ctx, heic_frame *f);
 int  heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
                       int bit_depth, int chroma_format);
 
-
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab);
-
 
 void heic_dav1d_ctx_close(heic_ctx *ctx);
 int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
                     const uint8_t *data, size_t len,
                     heic_frame *out, const heic_abort *ab);
 
-
 int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc,
                      const heic_cmpd *cmpd, const heic_icef *icef,
                      const uint8_t *data, size_t len, uint32_t width,
                      uint32_t height, heic_frame *out, const heic_abort *ab);
 
-
 int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                       uint8_t *dst, int stride);
-
-
 
 struct heic_doc {
     heic_ctx       *ctx;
@@ -634,8 +577,6 @@ struct heic_doc {
     heic_container  container;
     heic_kind       kind;
 };
-
-
 
 typedef enum {
     HEIC_NAL_TRAIL_N = 0,
@@ -686,7 +627,6 @@ int  heic_parse_single_nal(heic_ctx *ctx, const uint8_t *data, size_t len,
 void heic_nal_free(heic_ctx *ctx, heic_nal *n);
 void heic_nals_free(heic_ctx *ctx, heic_nal *nals, int n);
 
-
 typedef struct {
     const uint8_t *data;
     size_t         len;
@@ -703,8 +643,6 @@ int32_t  heic_bs_se(heic_bs *bs);
 int      heic_bs_byte_aligned(const heic_bs *bs);
 void     heic_bs_byte_align(heic_bs *bs);
 size_t   heic_bs_bits_left(const heic_bs *bs);
-
-
 
 typedef struct {
     uint8_t  sps_video_parameter_set_id;
@@ -808,10 +746,7 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
 int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out);
 void heic_pps_free(heic_ctx *ctx, heic_pps *pps);
 
-
-
 #define HEIC_NUM_CONTEXTS 170
-
 
 #define HEIC_CTX_SPLIT_CU_FLAG              0
 #define HEIC_CTX_CU_TRANSQUANT_BYPASS_FLAG  3
@@ -863,8 +798,6 @@ uint32_t heic_cabac_decode_bypass_bits(heic_cabac *c, int n);
 int  heic_cabac_decode_terminate(heic_cabac *c);
 uint32_t heic_cabac_decode_egk(heic_cabac *c, int k);
 
-
-
 #define HEIC_SLICE_B 0
 #define HEIC_SLICE_P 1
 #define HEIC_SLICE_I 2
@@ -902,8 +835,6 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                             const heic_sps *sps, const heic_pps *pps,
                             heic_slice_header *out);
 
-
-
 #define HEIC_MAX_COEFF 1024
 
 enum {
@@ -927,8 +858,6 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                          int transform_skip_enabled,
                          heic_coeff_buf *out, int *transform_skip);
 
-
-
 void heic_idst4(const int16_t *coeffs , int16_t *out , int bit_depth);
 void heic_idct4(const int16_t *coeffs, int16_t *out, int bit_depth);
 void heic_idct8(const int16_t *coeffs , int16_t *out, int bit_depth);
@@ -942,7 +871,6 @@ void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,
                             int bit_depth, int is_intra_4x4_luma);
 void heic_add_residual(uint16_t *plane, int stride, int x0, int y0,
                        const int16_t *residual, int size, int max_val);
-
 
 void heic_simd_init(void);
 int  heic_simd_enabled(void);
@@ -986,15 +914,11 @@ int  heic_simd_sao_edge_h_row(const uint16_t *srow, uint16_t *drow, int x0, int 
 int  heic_simd_sao_edge_v_row(const uint16_t *src, uint16_t *dst, int stride, int y,
                               int x0, int x1, const int offset_table[5], int max_val);
 
-
-
 void heic_fill_mpm(uint8_t cand_a, uint8_t cand_b, uint8_t mpm[3]);
 
 int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint8_t log2_size, uint8_t mode, uint8_t c_idx,
                        int strong_intra_smoothing);
-
-
 
 typedef struct {
     uint8_t sao_type_idx[3];
@@ -1005,8 +929,6 @@ typedef struct {
 
 void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                     uint32_t width_ctbs, uint32_t height_ctbs, uint32_t ctb_size);
-
-
 
 void heic_mark_tu_boundary(uint8_t *flags, uint32_t deblock_stride, uint32_t map_n,
                            uint32_t x, uint32_t y, uint32_t size);
@@ -1020,22 +942,17 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         uint32_t deblock_stride, int beta_offset, int tc_offset,
                         int cb_qp_offset, int cr_qp_offset);
 
-
-
 int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
                              const heic_pps *pps, const heic_slice_header *sh,
                              const uint8_t *data, size_t len,
                              const uint32_t *ep_positions, int n_ep,
                              heic_frame *out, const heic_abort *ab);
 
-
 int heic_decode_primary(heic_doc *doc, heic_format format,
                         heic_image **out_img, uint8_t *into, size_t into_size,
                         int into_stride, const heic_abort *ab);
 
 #endif
-
-
 
 static void *default_alloc(void *user, void *ctx, size_t size)
 {
@@ -1236,10 +1153,6 @@ int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
     }
     return 0;
 }
-
-
-
-
 
 typedef struct {
     const uint8_t *data;
@@ -1507,7 +1420,6 @@ static int parse_iloc(heic_ctx *ctx, const heic_box *b, heic_container *c,
         pos += 4;
     }
     if (item_count > HEIC_MAX_ITEMS) return -1;
-
 
     free_item_locations(ctx, c);
     c->item_locations = (heic_item_loc *)heic_zalloc(ctx, item_count * sizeof(heic_item_loc));
@@ -1845,7 +1757,6 @@ static int parse_auxc(heic_ctx *ctx, const heic_box *b, heic_auxc *out)
     return 0;
 }
 
-
 static int parse_uncc(heic_ctx *ctx, const heic_box *b, heic_uncc *out)
 {
     const uint8_t *c = b->content;
@@ -1918,7 +1829,6 @@ static int parse_cmpc(const heic_box *b, heic_cmpc *out)
     if (out->unit_type > 4) return -1;
     return 0;
 }
-
 
 static const uint8_t icef_offset_bits[] = {0, 16, 24, 32, 64};
 static const uint8_t icef_size_bits[] = {8, 16, 24, 32, 64};
@@ -2095,7 +2005,6 @@ static int parse_ipma(heic_ctx *ctx, const heic_box *b, heic_container *c,
     entry_count = heic_rb32(content + pos);
     pos += 4;
     if (entry_count > HEIC_MAX_ITEMS) return -1;
-
 
     free_property_associations(ctx, c);
     c->property_associations =
@@ -2444,7 +2353,6 @@ int heic_container_item_data(const heic_container *c, uint32_t item_id,
         return 0;
     }
 
-
     {
         uint64_t total = 0;
         size_t tlen;
@@ -2536,8 +2444,6 @@ int heic_container_find_thumbs(const heic_container *c, uint32_t target_id,
     return n;
 }
 
-
-
 static heic_kind brand_kind(const heic_container *c)
 {
     int i;
@@ -2603,7 +2509,6 @@ static int primary_item(const heic_doc *doc, heic_item *item)
     return heic_container_get_item(&doc->container, doc->container.primary_item_id, item);
 }
 
-
 static void apply_transform_dims(uint32_t *w, uint32_t *h, const heic_item *item)
 {
     int i;
@@ -2625,7 +2530,6 @@ static void apply_transform_dims(uint32_t *w, uint32_t *h, const heic_item *item
     }
 }
 
-
 #define HEIC_RESOLVE_MAX_DEPTH 8
 
 static int resolve_seen(const uint32_t *seen, int n_seen, uint32_t id)
@@ -2635,7 +2539,6 @@ static int resolve_seen(const uint32_t *seen, int n_seen, uint32_t id)
         if (seen[i] == id) return 1;
     return 0;
 }
-
 
 static int resolve_dims_r(const heic_doc *doc, const heic_item *item, uint32_t *w,
                           uint32_t *h, uint32_t *seen, int n_seen)
@@ -2667,7 +2570,6 @@ static int resolve_dims(const heic_doc *doc, const heic_item *item, uint32_t *w,
     uint32_t seen[HEIC_RESOLVE_MAX_DEPTH];
     return resolve_dims_r(doc, item, w, h, seen, 0);
 }
-
 
 static int resolve_codec_item_r(const heic_doc *doc, const heic_item *item,
                                 heic_item *out, uint32_t *seen, int n_seen)
@@ -2746,7 +2648,6 @@ int heic_doc_info(const heic_doc *doc, heic_image_info *info)
         info->full_range = codec.colr->full_range ? 1 : 0;
     }
 
-
     for (i = 0; i < doc->container.n_item_infos; i++) {
         heic_fourcc t = doc->container.item_infos[i].item_type;
         if (t == HEIC_TYPE_EXIF) info->has_exif = 1;
@@ -2759,7 +2660,6 @@ int heic_doc_info(const heic_doc *doc, heic_image_info *info)
 
     if (heic_container_find_thumbs(&doc->container, item.id, thumbs, 4) > 0)
         info->has_thumbnail = 1;
-
 
     if (heic_container_find_aux(&doc->container, item.id,
                                 "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
@@ -2871,8 +2771,6 @@ int heic_doc_icc(heic_doc *doc, uint8_t **out, size_t *out_len)
     }
 }
 
-
-
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab);
@@ -2883,8 +2781,6 @@ int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
 static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
                        const heic_abort *ab, int depth);
 
-
-
 static int frame_cropped_w(const heic_frame *f)
 {
     return f->width - f->crop_left - f->crop_right;
@@ -2894,13 +2790,11 @@ static int frame_cropped_h(const heic_frame *f)
     return f->height - f->crop_top - f->crop_bottom;
 }
 
-
 static int32_t heic_round_i32(double v)
 {
     if (v >= 0.0) return (int32_t)(v + 0.5);
     return (int32_t)(v - 0.5);
 }
-
 
 static void frame_apply_clap(heic_frame *f, const heic_clap *clap)
 {
@@ -3149,8 +3043,6 @@ static int apply_transforms(heic_ctx *ctx, heic_frame *f, const heic_item *item)
     return 0;
 }
 
-
-
 static void blit_tile(heic_frame *out, const heic_frame *tile, int tile_idx,
                       uint32_t cols, uint32_t tile_w, uint32_t tile_h,
                       uint32_t out_w, uint32_t out_h)
@@ -3210,8 +3102,6 @@ static void blit_tile(heic_frame *out, const heic_frame *tile, int tile_idx,
         }
     }
 }
-
-
 
 static int decode_grid(heic_doc *doc, const heic_item *grid_item, heic_frame *out,
                        const heic_abort *ab, int depth)
@@ -3341,8 +3231,6 @@ static int decode_grid(heic_doc *doc, const heic_item *grid_item, heic_frame *ou
     out->crop_left = out->crop_right = out->crop_top = out->crop_bottom = 0;
     return 0;
 }
-
-
 
 static void blit_overlay(heic_frame *out, const heic_frame *tile, int32_t off_x,
                          int32_t off_y)
@@ -3505,7 +3393,6 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
     if (heic_frame_alloc(doc->ctx, out, (int)canvas_w, (int)canvas_h, bit_depth, chroma) != 0)
         return -1;
 
-
     fill_y = (uint16_t)((fill[0] >> 8) << (bit_depth > 8 ? bit_depth - 8 : 0));
     fill_cb = (uint16_t)(128 << (bit_depth > 8 ? bit_depth - 8 : 0));
     fill_cr = fill_cb;
@@ -3548,8 +3435,6 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
     return 0;
 }
 
-
-
 static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
                        const heic_abort *ab, int depth)
 {
@@ -3557,7 +3442,6 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
     size_t len = 0;
     int owned = 0;
     int rc = -1;
-
 
     if (depth > 4) {
         heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "derived item recursion too deep");
@@ -3648,7 +3532,6 @@ done:
     return rc;
 }
 
-
 static uint16_t scale_alpha_sample(uint16_t v, int src_bd, int dst_bd)
 {
     if (v == HEIC_UNINIT_SAMPLE) return 0;
@@ -3656,7 +3539,6 @@ static uint16_t scale_alpha_sample(uint16_t v, int src_bd, int dst_bd)
     if (src_bd < dst_bd) return (uint16_t)(v << (dst_bd - src_bd));
     return (uint16_t)(v >> (src_bd - dst_bd));
 }
-
 
 static void attach_alpha(heic_doc *doc, uint32_t primary_id, heic_frame *frame,
                          const heic_abort *ab)
@@ -3667,7 +3549,6 @@ static void attach_alpha(heic_doc *doc, uint32_t primary_id, heic_frame *frame,
     heic_frame alpha;
     int pw, ph, aw, ah, y, x;
     int abd, pbd;
-
 
     n = heic_container_find_aux(&doc->container, primary_id,
                                 "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
@@ -3737,8 +3618,6 @@ static void attach_alpha(heic_doc *doc, uint32_t primary_id, heic_frame *frame,
     }
     heic_frame_free(doc->ctx, &alpha);
 }
-
-
 
 int heic_decode_primary(heic_doc *doc, heic_format format,
                         heic_image **out_img, uint8_t *into, size_t into_size,
@@ -3887,8 +3766,6 @@ heic_image *heic_doc_decode_thumbnail(heic_doc *doc, heic_format format)
     return img;
 }
 
-
-
 typedef struct {
     int full;
     int matrix;
@@ -3933,14 +3810,12 @@ static void ycc_select(int matrix, int full, ycc_coeffs *c)
     }
 }
 
-
 static inline uint8_t ycc_clamp8(int v)
 {
     if (v < 0) return 0;
     if (v > 255) return 255;
     return (uint8_t)v;
 }
-
 
 typedef struct {
     int32_t yv[256];
@@ -4049,7 +3924,6 @@ static inline void ycc_store(uint8_t *row, int is_bgr, int has_a, uint8_t r,
     if (has_a) row[3] = a;
 }
 
-
 static void convert_444_8_rgb(const heic_frame *f, const ycc_lut *lut, int x0, int y0,
                               int w, int h, uint8_t *dst, int stride)
 {
@@ -4101,7 +3975,6 @@ static void convert_444_8_rgb(const heic_frame *f, const ycc_lut *lut, int x0, i
     }
 }
 
-
 static void convert_444(const heic_frame *f, const ycc_coeffs *cc, int x0, int y0,
                         int w, int h, int shift, uint8_t *dst, int stride, int bpp,
                         int is_bgr, int has_a)
@@ -4129,7 +4002,6 @@ static void convert_444(const heic_frame *f, const ycc_coeffs *cc, int x0, int y
         }
     }
 }
-
 
 static void convert_420_8_rgb(const heic_frame *f, const ycc_lut *lut, int x0, int y0,
                               int w, int h, uint8_t *dst, int stride)
@@ -4264,7 +4136,6 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
 
     ycc_select(matrix, full, &cc);
 
-
     if (shift == 0 && !has_a && !is_bgr && matrix != 0
         && f->cb && f->cr
         && (f->chroma_format == 1 || f->chroma_format == 3)) {
@@ -4279,7 +4150,6 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
         free(lut);
         return 0;
     }
-
 
     if (f->chroma_format == 0 || !f->cb || !f->cr) {
         int y, x;
@@ -4318,7 +4188,6 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
         convert_420(f, &cc, x0, y0, w, h, shift, dst, stride, bpp, is_bgr, has_a);
         return 0;
     }
-
 
     {
         int y, x;
@@ -4359,8 +4228,6 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
     return 0;
 }
 
-
-
 int heic_nal_is_slice(heic_nal_type t)
 {
     return t <= HEIC_NAL_RASL_R ||
@@ -4372,7 +4239,6 @@ static heic_nal_type nal_type_from_u8(uint8_t v)
     if (v <= 21 || (v >= 32 && v <= 40)) return (heic_nal_type)v;
     return HEIC_NAL_UNKNOWN;
 }
-
 
 static int rbsp_unescape(heic_ctx *ctx, const uint8_t *src, size_t len,
                          uint8_t **out, size_t *out_len,
@@ -4587,9 +4453,6 @@ size_t heic_bs_bits_left(const heic_bs *bs)
     if (!bs || bs->byte_pos >= bs->len) return 0;
     return (bs->len - bs->byte_pos) * 8u - (size_t)bs->bit_pos;
 }
-
-
-
 
 static void skip_profile_tier_level(heic_bs *bs, int max_sub_layers_minus1)
 {
@@ -4807,7 +4670,6 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
 
     if (bs.error) return -1;
 
-
     out->log2_min_cb_size = (uint8_t)(out->log2_min_luma_coding_block_size_minus3 + 3);
     out->log2_ctb_size =
         (uint8_t)(out->log2_min_cb_size + out->log2_diff_max_min_luma_coding_block_size);
@@ -4934,10 +4796,6 @@ void heic_pps_free(heic_ctx *ctx, heic_pps *pps)
     memset(pps, 0, sizeof(*pps));
 }
 
-
-
-
-
 static const uint8_t HEIC_LPS_TABLE[64][4] = {
     {128, 176, 208, 240}, {128, 167, 197, 227}, {128, 158, 187, 216},
     {123, 150, 178, 205}, {116, 142, 169, 195}, {111, 135, 160, 185},
@@ -4976,7 +4834,6 @@ static const uint8_t HEIC_STATE_TRANS_LPS[64] = {
     24, 25, 26, 26, 27, 27, 28, 29, 29, 30, 30, 30, 31, 32, 32, 33,
     33, 33, 34, 34, 35, 35, 35, 36, 36, 36, 37, 37, 37, 38, 38, 63,
 };
-
 
 static const uint8_t HEIC_CABAC_INIT_I[HEIC_NUM_CONTEXTS] = {
     139, 141, 157, 154, 197, 185, 201, 154, 149, 184, 154, 139, 154, 184,  63,  95,
@@ -5257,8 +5114,6 @@ uint32_t heic_cabac_decode_egk(heic_cabac *c, int k)
     return base + heic_cabac_decode_bypass_bits(c, n);
 }
 
-
-
 static int ceil_log2(uint32_t x)
 {
     int n = 0;
@@ -5418,7 +5273,6 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             (void)heic_bs_bits(&bs, 8);
     }
 
-
     (void)heic_bs_bit(&bs);
     heic_bs_byte_align(&bs);
 
@@ -5435,9 +5289,6 @@ void heic_slice_header_free(heic_ctx *ctx, heic_slice_header *sh)
     sh->entry_point_offsets = NULL;
     sh->num_entry_point_offsets = 0;
 }
-
-
-
 
 static const uint8_t HEIC_SCAN_4X4_DIAG[16][2] = {
     {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0}, {0, 3}, {1, 2},
@@ -5906,7 +5757,6 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
             }
         }
 
-
         n_sig = 0;
         for (n = (int)start_pos; n >= 0; n--) {
             if (coeff_flags[n]) sig_positions[n_sig++] = (uint8_t)n;
@@ -5956,9 +5806,6 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
     return cabac->error ? -1 : 0;
 }
 
-
-
-
 #if defined(_MSC_VER)
 #define HEIC_TLS __declspec(thread)
 #elif defined(__GNUC__) || defined(__clang__)
@@ -5994,7 +5841,6 @@ static inline int32_t htx_clip16(int32_t v)
     return v;
 }
 
-
 static int htx_only_dc(const int16_t *coeffs, int n)
 {
     int i, nn = n * n;
@@ -6003,7 +5849,6 @@ static int htx_only_dc(const int16_t *coeffs, int n)
     }
     return 1;
 }
-
 
 static void htx_idct_dc_fill(int16_t *output, int n, int16_t dc, int bit_depth)
 {
@@ -6014,7 +5859,6 @@ static void htx_idct_dc_fill(int16_t *output, int n, int16_t dc, int bit_depth)
     int i, nn = n * n;
     for (i = 0; i < nn; i++) output[i] = v;
 }
-
 
 static int htx_col_zero(const int16_t *coeffs, int n, int col)
 {
@@ -6421,8 +6265,6 @@ void heic_add_residual(uint16_t *plane, int stride, int x0, int y0,
     }
 }
 
-
-
 #if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
 #define HEIC_X86 1
 #include <emmintrin.h>
@@ -6473,8 +6315,6 @@ static inline __m128i hs_clip16_shift(__m128i v, __m128i add, int shift)
     r = _mm_max_epi32(r, _mm_set1_epi32(-32768));
     return r;
 }
-
-
 
 static void idct8_1d_x4(const __m128i s[8], __m128i d[8], int shift)
 {
@@ -6541,8 +6381,6 @@ static void store4_rows_i16(int16_t *out, int n, int row, const __m128i *d, int 
     }
 }
 
-
-
 static void idct16_1d_x4(const __m128i s[16], __m128i d[16], int shift)
 {
     __m128i add = _mm_set1_epi32(1 << (shift - 1));
@@ -6603,8 +6441,6 @@ static void idct16_1d_x4(const __m128i s[16], __m128i d[16], int shift)
     d[15] = hs_clip16_shift(hs_sub(e0, o0), add, shift);
 #undef M4
 }
-
-
 
 static void idct32_1d_x4(const __m128i s[32], __m128i d[32], int shift)
 {
@@ -6854,7 +6690,6 @@ int heic_simd_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
     return 1;
 }
 
-
 int heic_simd_add_residual(uint16_t *plane, int stride, int x0, int y0,
                            const int16_t *residual, int size, int max_val)
 {
@@ -6893,7 +6728,6 @@ int heic_simd_add_residual(uint16_t *plane, int stride, int x0, int y0,
     return 1;
 }
 
-
 static inline __m128i lut4_i32(const int32_t *tab, const uint16_t *p)
 {
     return _mm_setr_epi32(tab[p[0] & 255], tab[p[1] & 255], tab[p[2] & 255],
@@ -6906,7 +6740,6 @@ static inline __m128i clamp_u8_epi32(__m128i v)
     v = _mm_min_epi32(v, _mm_set1_epi32(255));
     return v;
 }
-
 
 static inline void store_rgb4(__m128i r, __m128i g, __m128i b, uint8_t *dst)
 {
@@ -6993,7 +6826,6 @@ int heic_simd_ycc_444_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
     }
     return 1;
 }
-
 
 int heic_simd_chroma_edge4(uint16_t *plane, int stride, size_t base_q0, int across,
                            int tc, int max_val, int along_is_stride)
@@ -7380,7 +7212,6 @@ int heic_simd_intra_ang_row_var(uint16_t *dst, const int32_t *ref, int n, int ro
     return 1;
 }
 
-
 static inline __m128i isign4(__m128i a)
 {
     __m128i gt = _mm_cmpgt_epi32(a, _mm_setzero_si128());
@@ -7676,8 +7507,6 @@ int heic_simd_sao_edge_v_row(const uint16_t *s, uint16_t *d, int st, int y, int 
 
 #endif
 
-
-
 #define HEIC_MAX_INTRA 32
 #define HEIC_BORDER_N  (4 * HEIC_MAX_INTRA + 1)
 
@@ -7729,7 +7558,6 @@ static int32_t inv_angle(uint8_t mode)
     if (mode >= 11 && mode <= 25) return HEIC_INV_ANGLE[mode - 11];
     return 0;
 }
-
 
 static inline void plane_put(uint16_t *p, int stride, int x, int y, uint16_t v)
 {
@@ -7810,13 +7638,11 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
     avail_top = y > 0;
     avail_tl = avail_left && avail_top;
 
-
     {
         int span = (int)(4 * size + 1);
         int base = center - 2 * (int)size;
         memset(avail + base, 0, (size_t)span * sizeof(int));
     }
-
 
     if (avail_tl) {
         uint16_t raw =
@@ -8037,7 +7863,6 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
     int rc = 2 * HEIC_MAX_INTRA;
     int px, py;
 
-
     if (mode >= 18) {
         int i;
         for (i = 0; i <= n; i++)
@@ -8187,8 +8012,6 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
     return 0;
 }
 
-
-
 typedef struct {
     heic_ctx *hctx;
     const heic_sps *sps;
@@ -8223,7 +8046,6 @@ typedef struct {
     heic_sao_info *sao_map;
     uint32_t sao_stride;
 
-
     uint8_t *deblock_flags;
     int8_t  *deblock_qp;
     uint32_t deblock_stride;
@@ -8246,7 +8068,6 @@ static int chroma_array_type(const heic_sps *s)
 {
     return s->separate_colour_plane_flag ? 0 : (int)s->chroma_format_idc;
 }
-
 
 static int chroma_qp_from_luma(int qpi, int chroma_array_type)
 {
@@ -8634,7 +8455,6 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         heic_inverse_transform(coeff->coeffs, sc->residual_buf, size, bd, is_intra_4x4);
     }
 
-
     if ((int)x0 + size <= plane_w && (int)y0 + size <= plane_h) {
         heic_add_residual(plane, stride, (int)x0, (int)y0, sc->residual_buf, size,
                           max_val);
@@ -8671,7 +8491,6 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     uint8_t luma_mode, chroma_mode;
     int ctx_off, ctx_idx;
 
-
     ctx_off = trafo_depth == 0 ? 1 : 0;
     ctx_idx = HEIC_CTX_CBF_LUMA + ctx_off;
     cbf_luma = heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx_idx]) != 0;
@@ -8700,7 +8519,6 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         if (decode_and_apply_residual(sc, x0, y0, log2_size, 0, scan) != 0)
             return -1;
     }
-
 
     {
         uint32_t tu_size = 1u << log2_size;
@@ -8752,7 +8570,6 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     uint8_t log2_min = sc->sps->log2_min_tb_size;
     uint8_t log2_max = sc->sps->log2_max_tb_size;
     int split, cbf_cb, cbf_cr, cat;
-
 
     if (log2_size < 2 || log2_size > 6 || trafo_depth > 8) return -1;
     if (log2_min < 2) log2_min = 2;
@@ -8807,7 +8624,6 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
             != 0)
             return -1;
 
-
         if (log2_size == 3 && sc->frame->chroma_format != 3 && cat != 0) {
             int sis = sc->sps->strong_intra_smoothing_enabled_flag;
             uint8_t cm = get_intra_mode(sc, x0, y0, 1);
@@ -8851,7 +8667,6 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
             heic_cabac_decode_bin(&sc->cabac,
                                   &sc->models[HEIC_CTX_CU_TRANSQUANT_BYPASS_FLAG])
             != 0;
-
 
     if (sc->sps->pcm_enabled_flag) {
         uint8_t log2_min = (uint8_t)(sc->sps->log2_min_pcm_luma_coding_block_size_minus3
@@ -8933,7 +8748,6 @@ static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     uint8_t log2_min = sc->sps->log2_min_cb_size;
     uint8_t log2_qg;
     int split;
-
 
     if (log2_cb < 3 || log2_cb > 6 || log2_cb < log2_min || ct_depth > 6)
         return -1;
@@ -9185,7 +8999,6 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     memset(sc, 0, sizeof(*sc));
 }
 
-
 static uint32_t ebsp_to_rbsp(const uint32_t *eps, int n_ep, uint32_t ebsp_off)
 {
     int i, count = 0;
@@ -9194,7 +9007,6 @@ static uint32_t ebsp_to_rbsp(const uint32_t *eps, int n_ep, uint32_t ebsp_off)
         else break;
     return ebsp_off - (uint32_t)count;
 }
-
 
 static int compute_tile_bd(const heic_pps *pps, uint32_t pic_w, uint32_t pic_h,
                            uint32_t *col_bd, uint32_t *row_bd,
@@ -9284,7 +9096,6 @@ static int build_tile_scan(heic_ctx *ctx, const uint32_t *col_bd, int n_cols,
     return 0;
 }
 
-
 typedef struct {
     heic_slice_ctx   sc;
     uint32_t         col_bd[65];
@@ -9367,7 +9178,6 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
         sc->ctb_x = start % pic_w;
     }
 
-
     if (sh->num_entry_point_offsets > 0 && sh->entry_point_offsets) {
         uint32_t cum = 0;
         n_entry = (int)sh->num_entry_point_offsets;
@@ -9407,7 +9217,6 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
         }
         ctb++;
 
-
         if (wpp && sc->ctb_x == 1 && sc->ctb_y + 1 < pic_h) {
             memcpy(work->wpp_saved, sc->models, sizeof(work->wpp_saved));
             wpp_have_saved = 1;
@@ -9415,7 +9224,6 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
 
         end_flag = heic_cabac_decode_terminate(&sc->cabac);
         if (end_flag) break;
-
 
         if (tiles) {
             tile_scan_pos++;
@@ -9475,7 +9283,6 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
 
     heic_error(ctx, HEIC_SEVERITY_INFO, "I-slice decoded %u CTUs", (unsigned)ctb);
 
-
     if (!sh->slice_deblocking_filter_disabled_flag && sc->deblock_flags &&
         sc->deblock_qp) {
         int beta = (int)sh->slice_beta_offset_div2 * 2;
@@ -9497,9 +9304,7 @@ int heic_hevc_decode_slice_i(heic_ctx *ctx, const heic_sps *sps,
     return 0;
 }
 
-
 #include <string.h>
-
 
 static const int EO_OFFSETS[4][4] = {
     { -1, 0, 1, 0 },
@@ -9594,7 +9399,6 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
     dx1 = EO_OFFSETS[cls][2];
     dy1 = EO_OFFSETS[cls][3];
 
-
     offset_table[0] = (int)offs[0];
     offset_table[1] = (int)offs[1];
     offset_table[2] = 0;
@@ -9628,7 +9432,6 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
         if (plane_h - my < safe_y1) safe_y1 = plane_h - my;
     }
 
-
     for (y = safe_y0; y < safe_y1; y++) {
         const uint16_t *srow = src + (size_t)y * (size_t)stride;
         uint16_t *drow = dst + (size_t)y * (size_t)stride;
@@ -9649,7 +9452,6 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
                 drow[x] = (uint16_t)heic_sao_clampi(sample + offset, 0, max_val);
         }
     }
-
 
     for (y = y0; y < y1; y++) {
         if (y >= safe_y0 && y < safe_y1) {
@@ -9777,8 +9579,6 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
     heic_free_buf(ctx, orig_cr);
 }
 
-
-
 #define HEIC_DEBLOCK_FLAG_VERT      1
 #define HEIC_DEBLOCK_FLAG_HORIZ     2
 #define HEIC_DEBLOCK_PB_EDGE_VERT   4
@@ -9817,7 +9617,6 @@ static int chroma_qp_mapping(int qp_i)
     if (qp_i >= 43) return qp_i - 6;
     return CHROMA_QP_TABLE[qp_i - 30];
 }
-
 
 static int compute_bs_i(void) { return 2; }
 
@@ -10125,7 +9924,6 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
     h = (uint32_t)frame->height;
     if (w == 0 || h == 0) return;
 
-
     for (x = 8; x < w; x += 8) {
         for (y = 0; y < h; y += 4) {
             uint32_t bx = x / 4, by = y / 4;
@@ -10140,7 +9938,6 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                 filter_edge_luma(frame, x, y, 1, qp_p, qp_q, beta_offset, tc_offset, bs);
         }
     }
-
 
     for (y = 8; y < h; y += 8) {
         for (x = 0; x < w; x += 4) {
@@ -10220,8 +10017,6 @@ void heic_mark_pb_boundary(uint8_t *flags, uint32_t deblock_stride, uint32_t map
     }
 }
 
-
-
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab)
@@ -10241,7 +10036,6 @@ int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
     memset(&pps, 0, sizeof(pps));
     if (!ctx || !cfg || !data) return -1;
     if (heic_abort_check(ab)) return -1;
-
 
     for (i = 0; i < cfg->n_nal_units; i++) {
         if (heic_parse_single_nal(ctx, cfg->nal_units[i], cfg->nal_unit_lens[i], &param) != 0)
@@ -10266,7 +10060,6 @@ int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
         heic_pps_free(ctx, &pps);
         return -1;
     }
-
 
     for (i = 0; i < n_nals; i++) {
         if (nals[i].type == HEIC_NAL_PPS) {
@@ -10352,7 +10145,6 @@ int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                     uint32_t rbsp_pos = p - (uint32_t)e;
                     if (rbsp_pos < off) continue;
 
-
                     {
                         uint32_t slice_ebsp_start = (uint32_t)off + (uint32_t)ep_in_hdr;
                         uint32_t rel;
@@ -10389,8 +10181,6 @@ int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
     return 0;
 }
 
-
-
 #ifdef HEIC_HAVE_DAV1D
 #include <dav1d/dav1d.h>
 #include <string.h>
@@ -10415,7 +10205,6 @@ static void dav1d_data_free_nop(const uint8_t *buf, void *cookie)
     (void)buf;
     (void)cookie;
 }
-
 
 static void plane8_to_u16(uint16_t *dst, const uint8_t *src, int w, int h,
                           int dst_stride, int src_stride)
@@ -10530,7 +10319,6 @@ static Dav1dContext *ensure_dav1d(heic_ctx *ctx)
     return c;
 }
 
-
 static int send_all(Dav1dContext *c, Dav1dData *pd)
 {
     while (pd->sz > 0) {
@@ -10567,7 +10355,6 @@ int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
         heic_error(ctx, HEIC_SEVERITY_ERROR, "dav1d_open failed");
         return -1;
     }
-
 
     if (cfg && cfg->config_obus && cfg->config_obus_len > 0) {
         if (dav1d_data_wrap(&d_cfg, cfg->config_obus, cfg->config_obus_len,
@@ -10647,7 +10434,6 @@ int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
         rc = -1;
     }
 
-
     if (c) dav1d_flush(c);
     return rc;
 }
@@ -10675,8 +10461,6 @@ int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
 }
 
 #endif
-
-
 
 #ifdef HEIC_HAVE_ZLIB
 #include <zlib.h>
@@ -10720,7 +10504,6 @@ static void br_byte_align(unci_br *br)
     if (br->bit_pos & 7)
         br->bit_pos = (br->bit_pos + 7) & ~(size_t)7;
 }
-
 
 static int br_get_bits(unci_br *br, int n)
 {
@@ -10770,7 +10553,6 @@ static uint16_t resolve_type(const heic_uncc_comp *c, const heic_cmpd *cmpd)
         return cmpd->types[idx];
     return idx;
 }
-
 
 static uint16_t expand8(int val, int bit_depth)
 {
@@ -10949,7 +10731,6 @@ static int unci_decompress_unit(heic_ctx *ctx, heic_fourcc ct, const uint8_t *sr
     return -1;
 }
 
-
 static int unci_decompress_payload(heic_ctx *ctx, const heic_cmpc *cmpc,
                                    const heic_icef *icef, const uint8_t *data,
                                    size_t len, uint8_t **out_buf, size_t *out_len)
@@ -10991,7 +10772,6 @@ static int unci_decompress_payload(heic_ctx *ctx, const heic_cmpc *cmpc,
     return 0;
 }
 
-
 static int read_comp_sample(unci_br *br, int bit_depth, uint8_t align)
 {
     if (align) {
@@ -11020,7 +10800,6 @@ static void store_sample(heic_frame *out, int plane, uint32_t x, uint32_t y, uin
     }
 }
 
-
 static void plane_tile_dims(int plane, int sampling, uint32_t tw, uint32_t th,
                             uint32_t *pw, uint32_t *ph)
 {
@@ -11047,7 +10826,6 @@ static int sampling_to_chroma(int sampling)
     return 3;
 }
 
-
 static int br_read_block_u64(unci_br *br, uint8_t block_size, int little_endian,
                              uint64_t *out)
 {
@@ -11069,7 +10847,6 @@ static int br_read_block_u64(unci_br *br, uint8_t block_size, int little_endian,
     *out = v;
     return 0;
 }
-
 
 static int decode_block_component(heic_ctx *ctx, const heic_uncc *uncc,
                                   const int *plane_map, const int *bit_depth,
@@ -11140,7 +10917,6 @@ static int decode_block_component(heic_ctx *ctx, const heic_uncc *uncc,
     }
     return 0;
 }
-
 
 static int decode_block_pixel(heic_ctx *ctx, const heic_uncc *uncc,
                               const int *plane_map, const int *bit_depth, int ncomp,
@@ -11330,7 +11106,6 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
         return -1;
     }
 
-
     pix = data;
     pix_len = len;
     if (cmpc) {
@@ -11361,7 +11136,6 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
 
     br_init(&br, pix, pix_len);
 
-
     if (uncc->block_size != 0) {
         int brc;
         if (interleave == 0)
@@ -11375,7 +11149,6 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
         if (brc != 0) goto fail;
         goto done;
     }
-
 
     if (interleave == 4) {
         for (i = 0; i < ncomp; i++) {
@@ -11416,7 +11189,6 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
         }
         goto done;
     }
-
 
     for (ty = 0; ty < tile_rows; ty++) {
         for (tx = 0; tx < tile_cols; tx++) {

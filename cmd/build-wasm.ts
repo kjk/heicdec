@@ -1,11 +1,11 @@
-// build-wasm.ts — build a WebAssembly drop of the HEIC decoder into wasm/.
+// build-wasm.ts — build a WebAssembly drop into dist/wasm/.
 //
 //   bun cmd/build-wasm.ts            # incremental build (bootstraps emsdk once)
 //   bun cmd/build-wasm.ts -clean     # also wipe/re-activate the local emsdk
 //   bun cmd/build-wasm.ts -dist      # compile dist/heic.c (after build-dist)
 //
-// Output: wasm/heic.js  — a self-contained (SINGLE_FILE) Emscripten module that
-// embeds the .wasm as base64, so wasm/index.html works even from file://.
+// Output: dist/wasm/heic.js — a self-contained (SINGLE_FILE) Emscripten module
+// that embeds the .wasm as base64, so dist/wasm/index.html works from file://.
 //
 // Pure-C HEVC + unci (no dav1d / zlib / brotli). AVIF returns a clear error
 // until a consumer links dav1d. Emscripten is bootstrapped into deps/emsdk
@@ -20,7 +20,7 @@ import path from "node:path";
 const ROOT = path.resolve(import.meta.dir, "..");
 const SRC = path.join(ROOT, "src");
 const DIST_C = path.join(ROOT, "dist", "heic.c");
-const WASM = path.join(ROOT, "wasm");
+const WASM = path.join(ROOT, "dist", "wasm");
 export const WASM_JS = path.join(WASM, "heic.js");
 const EMSDK = path.join(ROOT, "deps", "emsdk");
 const isWin = process.platform === "win32";
@@ -177,7 +177,7 @@ function compile(prefix: string, useDist: boolean) {
   let inputs: string;
   if (useDist) {
     inputs = q(DIST_C);
-    console.log("• compiling dist/heic.c → wasm/heic.js");
+    console.log("• compiling dist/heic.c → dist/wasm/heic.js");
   } else {
     const cfiles = readdirSync(SRC)
       .filter((f) => f.endsWith(".c"))
@@ -185,18 +185,18 @@ function compile(prefix: string, useDist: boolean) {
       .join(" ");
     inputs = `${cfiles} -I ${q(SRC)}`;
     const n = readdirSync(SRC).filter((f) => f.endsWith(".c")).length;
-    console.log(`• compiling ${n} C files → wasm/heic.js`);
+    console.log(`• compiling ${n} C files → dist/wasm/heic.js`);
   }
 
   sh(`${prefix}emcc ${inputs} ${flags} -o ${out}`);
   const kb = (Bun.file(WASM_JS).size / 1024).toFixed(0);
-  console.log(`✓ wrote wasm/heic.js (${kb} KB, wasm embedded)`);
+  console.log(`✓ wrote dist/wasm/heic.js (${kb} KB, wasm embedded)`);
   const py = isWin ? "python" : "python3";
   console.log(
-    `  open the demo:  cd wasm && ${py} -m http.server 8000   → http://localhost:8000/`,
+    `  open the demo:  cd dist/wasm && ${py} -m http.server 8000   → http://localhost:8000/`,
   );
   console.log(
-    "  (or just open wasm/index.html directly — SINGLE_FILE works from file://)",
+    "  (or open dist/wasm/index.html directly — SINGLE_FILE works from file://)",
   );
   console.log(
     "  note: pure-C HEVC/unci only; AV1 (avif) needs dav1d (not in this wasm drop)",
@@ -214,7 +214,7 @@ export function buildWasm(
 
 export function ensureWasm(useDist = false): void {
   if (!wasmOutdated(useDist)) {
-    console.log("wasm/ up to date");
+    console.log("dist/wasm/ up to date");
     return;
   }
   buildWasm({ useDist });

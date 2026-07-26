@@ -4,8 +4,8 @@
 //
 // Emits:
 //   dist/heic.h + dist/heic.c  — amalgamation (does NOT include dav1d)
-//   wasm/heic.js               — Emscripten SINGLE_FILE module from dist/heic.c
-//                                for the demo at wasm/index.html
+//   dist/wasm/heic.js          — Emscripten SINGLE_FILE module from dist/heic.c
+//                                for the demo at dist/wasm/index.html
 import { $ } from "bun";
 import {
   readFileSync,
@@ -115,7 +115,7 @@ function stripCComments(code: string): string {
     out += c;
     i++;
   }
-  return stripTrailingWhitespace(out.replace(/\n{3,}/g, "\n\n"));
+  return stripTrailingWhitespace(out).replace(/\n{3,}/g, "\n\n");
 }
 
 async function runCmd(cmd: string, cwd?: string): Promise<number> {

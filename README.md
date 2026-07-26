@@ -42,7 +42,7 @@ bun cmd/tests.ts -info -all      # open/probe only
 bun cmd/build.ts -libheif        # also link strukturag libheif oracle
 bun cmd/bench.ts -rand 5         # open/decode/close timing vs libheif
 bun cmd/fuzz.ts                  # libFuzzer + ASan (seeded from deps corpus)
-bun cmd/build-dist.ts            # amalgamation → dist/ (+ wasm/heic.js demo)
+bun cmd/build-dist.ts            # amalgamation → dist/ (+ dist/wasm/heic.js demo)
 bun cmd/build-wasm.ts            # WebAssembly drop only (bootstraps emsdk if needed)
 bun cmd/verify-wasm.ts single.heic
 ```
@@ -56,10 +56,10 @@ Crashes land in `fuzz/crashes/` (commit them). Useful flags: `-jobs N`,
 
 ```
 bun cmd/build-wasm.ts
-# open wasm/index.html (or: cd wasm && python -m http.server 8000)
+# open dist/wasm/index.html (or: cd dist/wasm && python -m http.server 8000)
 ```
 
-`wasm/heic.js` is a self-contained Emscripten module (`.wasm` embedded). The
+`dist/wasm/heic.js` is a self-contained Emscripten module (`.wasm` embedded). The
 browser drop is pure-C **HEVC + unci** (no dav1d); AVIF needs dav1d linked by
 the host, same as the amalgamation.
 

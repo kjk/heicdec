@@ -103,7 +103,7 @@ bun cmd/tests.ts -all    # decode + RGB mse vs libheif (fail if we can't / diffe
 bun cmd/tests.ts -info -all  # open/probe only
 bun cmd/bench.ts -rand 5
 bun cmd/fuzz.ts          # libFuzzer + ASan (seeds fuzz/corpus from deps/)
-bun cmd/build-dist.ts    # amalgamation → dist/heic.h + dist/heic.c (+ wasm/heic.js)
+bun cmd/build-dist.ts    # amalgamation → dist/heic.h + dist/heic.c (+ dist/wasm/heic.js)
 bun cmd/build-wasm.ts    # WebAssembly drop only (deps/emsdk if emcc missing)
 bun cmd/verify-wasm.ts <file.heic>
 ```
@@ -125,7 +125,7 @@ bun cmd/verify-wasm.ts <file.heic>
   `bun cmd/fuzz.ts -repro fuzz/crashes/<artifact>`.
 
 WASM: pure-C HEVC + unci only (no `HEIC_HAVE_DAV1D` / zlib / brotli).
-`bun cmd/build-dist.ts` also rebuilds `wasm/heic.js` from the amalgamation.
+`bun cmd/build-dist.ts` also rebuilds `dist/wasm/heic.js` from the amalgamation.
 
 - MSVC default on Windows (`out/msvc/heic_test_msvc.exe`); `-clang` →
   `out/clang/heic_test_clang.exe`.

@@ -1,4 +1,4 @@
-// verify-wasm.ts — smoke-test wasm/heic.js by decoding a file through the same
+// verify-wasm.ts — smoke-test dist/wasm/heic.js through the same
 // exports the web app uses.
 //
 //   bun cmd/verify-wasm.ts <file.heic | -rand N>
@@ -18,7 +18,8 @@ ${corpusSummary()}`,
 );
 
 ensureWasm(false);
-if (!existsSync(WASM_JS)) throw new Error("wasm/heic.js missing after build");
+if (!existsSync(WASM_JS))
+  throw new Error("dist/wasm/heic.js missing after build");
 
 /* The glue is built for ENVIRONMENT=web; provide the browser globals it probes. */
 (globalThis as any).self = globalThis;
