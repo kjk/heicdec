@@ -250,31 +250,27 @@ int heic_cabac_decode_bypass(heic_cabac *c)
 uint32_t heic_cabac_decode_bypass_bits(heic_cabac *c, int n)
 {
     uint32_t result = 0;
-    int i;
     if (c->error || n <= 0) return 0;
-    /* Batch small runs when the range register already holds enough bits. */
-    for (i = 0; i < n; i++) {
-        uint32_t scaled_range;
-        int bin_val;
-        c->value <<= 1;
-        c->bits_needed += 1;
+    while (n > 0) {
+        uint32_t scaled_range, bits, max_bits;
+        int chunk = n > 8 ? 8 : n;
+        c->value <<= chunk;
+        c->bits_needed += chunk;
         if (c->bits_needed >= 0) {
             if (c->byte_pos < c->len) {
-                c->bits_needed = -8;
-                c->value |= c->data[c->byte_pos];
-                c->byte_pos++;
+                c->value |= (uint32_t)c->data[c->byte_pos++] << c->bits_needed;
             } else {
-                c->bits_needed = -8;
                 c->overread_bytes++;
             }
+            c->bits_needed -= 8;
         }
         scaled_range = c->range << 7;
-        if (c->value >= scaled_range) {
-            c->value -= scaled_range;
-            bin_val = 1;
-        } else
-            bin_val = 0;
-        result = (result << 1) | (uint32_t)bin_val;
+        bits = c->value / scaled_range;
+        max_bits = (1u << chunk) - 1u;
+        if (bits > max_bits) bits = max_bits;
+        c->value -= bits * scaled_range;
+        result = (result << chunk) | bits;
+        n -= chunk;
     }
     return result;
 }

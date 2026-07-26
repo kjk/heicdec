@@ -45,6 +45,13 @@ static const uint8_t HEIC_CTX_IDX_MAP_4X4[16] = {
     0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8
 };
 
+static const uint8_t HEIC_SIG_LOCAL_CTX[4][16] = {
+    {2, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
+    {2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0},
+    {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
+};
+
 int heic_get_scan_order(uint8_t log2_size, uint8_t intra_mode, uint8_t c_idx,
                         int chroma_444)
 {
@@ -182,64 +189,23 @@ static int decode_coded_sb_flag(heic_cabac *cabac, heic_ctx_model *ctx,
 }
 
 static HEIC_RESIDUAL_INLINE int
-calc_sig_ctx(uint8_t x_c, uint8_t y_c, uint8_t log2_size, uint8_t c_idx,
-             uint8_t scan_idx, uint8_t prev_csbf)
-{
-    uint8_t sb_width = (uint8_t)(1u << (log2_size - 2));
-    int sig_ctx;
-    if (sb_width == 1) {
-        sig_ctx = HEIC_CTX_IDX_MAP_4X4[(y_c * 4 + x_c) & 15];
-    } else if (x_c == 0 && y_c == 0) {
-        sig_ctx = 0;
-    } else {
-        uint8_t x_s = x_c >> 2, y_s = y_c >> 2;
-        uint8_t x_p = x_c & 3, y_p = y_c & 3;
-        int ctx;
-        switch (prev_csbf) {
-        case 0:
-            if (x_p + y_p >= 3) ctx = 0;
-            else if (x_p + y_p > 0) ctx = 1;
-            else ctx = 2;
-            break;
-        case 1:
-            if (y_p == 0) ctx = 2;
-            else if (y_p == 1) ctx = 1;
-            else ctx = 0;
-            break;
-        case 2:
-            if (x_p == 0) ctx = 2;
-            else if (x_p == 1) ctx = 1;
-            else ctx = 0;
-            break;
-        default:
-            ctx = 2;
-            break;
-        }
-        if (c_idx == 0) {
-            if (x_s + y_s > 0) ctx += 3;
-            if (sb_width == 2)
-                ctx += (scan_idx == 0) ? 9 : 15;
-            else
-                ctx += 21;
-        } else {
-            if (sb_width == 2) ctx += 9;
-            else ctx += 12;
-        }
-        sig_ctx = ctx;
-    }
-    return HEIC_CTX_SIG_COEFF_FLAG + (c_idx > 0 ? 27 : 0) + sig_ctx;
-}
-
-static HEIC_RESIDUAL_INLINE int
-decode_sig_flag(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t c_idx,
-                uint8_t pos, uint8_t log2_size, uint8_t scan_idx,
-                uint8_t sb_x, uint8_t sb_y, uint8_t prev_csbf,
+decode_sig_flag(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t pos,
+                uint8_t sb_width, uint8_t sb_x, uint8_t sb_y,
+                uint8_t prev_csbf, int ctx_base, int ctx_offset,
                 const uint8_t (*scan_pos)[2])
 {
-    uint8_t x_c = (uint8_t)(sb_x * 4 + scan_pos[pos][0]);
-    uint8_t y_c = (uint8_t)(sb_y * 4 + scan_pos[pos][1]);
-    int ctx_idx = calc_sig_ctx(x_c, y_c, log2_size, c_idx, scan_idx, prev_csbf);
-    return heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
+    uint8_t local = (uint8_t)(scan_pos[pos][1] * 4 + scan_pos[pos][0]);
+    int sig_ctx;
+    if (sb_width == 1)
+        sig_ctx = HEIC_CTX_IDX_MAP_4X4[local];
+    else if (sb_x == 0 && sb_y == 0 && local == 0)
+        sig_ctx = 0;
+    else
+        sig_ctx = HEIC_SIG_LOCAL_CTX[prev_csbf][local] + ctx_offset;
+    {
+        int ctx_idx = ctx_base + sig_ctx;
+        return heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
+    }
 }
 
 static int decode_greater1(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t c_idx,
@@ -347,6 +313,7 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         sb_y = scan_sub[sb_idx][1];
         int right_coded, below_coded, csbf_neighbors, sb_coded, infer_sb_dc_sig;
         int prev_csbf;
+        int sig_ctx_base, sig_ctx_offset;
         uint8_t start_pos, last_coeff;
         int16_t coeff_values[16];
         uint8_t sig_positions[16];
@@ -385,6 +352,16 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         prev_csbf = csbf_neighbors;
         if (!sb_coded) continue;
 
+        sig_ctx_base = HEIC_CTX_SIG_COEFF_FLAG + (c_idx > 0 ? 27 : 0);
+        if (sb_width == 1) {
+            sig_ctx_offset = 0;
+        } else if (c_idx == 0) {
+            sig_ctx_offset = (sb_x + sb_y > 0 ? 3 : 0)
+                           + (sb_width == 2 ? (scan_idx == 0 ? 9 : 15) : 21);
+        } else {
+            sig_ctx_offset = sb_width == 2 ? 9 : 12;
+        }
+
         start_pos = (sb_idx == last_sb_idx) ? last_pos_in_sb : 15;
         can_infer_dc = infer_sb_dc_sig;
 
@@ -398,9 +375,9 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
 
         if (!(sb_idx == last_sb_idx && start_pos == 0)) {
             for (n = (int)last_coeff; n >= 1; n--) {
-                int sig = decode_sig_flag(cabac, ctx, c_idx, (uint8_t)n, log2_size,
-                                          (uint8_t)scan_idx, sb_x, sb_y,
-                                          (uint8_t)prev_csbf, scan_pos);
+                int sig = decode_sig_flag(cabac, ctx, (uint8_t)n, (uint8_t)sb_width,
+                                          sb_x, sb_y, (uint8_t)prev_csbf,
+                                          sig_ctx_base, sig_ctx_offset, scan_pos);
                 if (sig) {
                     sig_positions[n_sig++] = (uint8_t)n;
                     can_infer_dc = 0;
@@ -412,9 +389,9 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
             if (can_infer_dc) {
                 sig_positions[n_sig++] = 0;
             } else {
-                int sig = decode_sig_flag(cabac, ctx, c_idx, 0, log2_size,
-                                          (uint8_t)scan_idx, sb_x, sb_y,
-                                          (uint8_t)prev_csbf, scan_pos);
+                int sig = decode_sig_flag(cabac, ctx, 0, (uint8_t)sb_width,
+                                          sb_x, sb_y, (uint8_t)prev_csbf,
+                                          sig_ctx_base, sig_ctx_offset, scan_pos);
                 if (sig) sig_positions[n_sig++] = 0;
             }
         }

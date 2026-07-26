@@ -82,6 +82,14 @@
     `C050` -10.6%, `example.heic` -5.7%.
   - After: 166 comparable files / 22 skips / 0 bench failures; pixel oracle
     183 ok / 5 no-oracle skips / 0 failures.
+- **CABAC/residual follow-up**:
+  - Decode fixed-length bypass bins in chunks of 8 (one refill/divide per chunk).
+  - Hoist significant-coefficient context invariants per subblock; replace repeated
+    coordinate/branch arithmetic with a local-context table.
+  - HDR 37.5ms → **35.4ms** (libheif 34.7ms, +2.1%); normalized winperf CPU
+    samples/decode 82.0 → **72.1** (-12.1%).
+  - `example.heic` 56.1ms → **50.6ms** (9.3% faster than libheif);
+    C022 111.1ms → **109.3ms** (6.1% faster in this corpus pass).
 
 ## Next
 
