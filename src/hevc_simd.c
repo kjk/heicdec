@@ -2,7 +2,7 @@
  *
  * - IDCT: 4-wide parallel 1D butterflies (lanes = columns/rows)
  * - Residual add: 8× epi16→epi32
- * - Color: 4-pixel LUT gather + SIMD shift/clamp + SSSE3 RGB pack
+ * - Color: direct vector math / LUT gather + SIMD clamp + SSSE3 RGB pack
  * - Chroma deblock: 4 samples along an edge in parallel
  */
 #include "heic_internal.h"
@@ -530,12 +530,27 @@ int heic_simd_ycc_444_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
     if (!g_simd || w < 4) return 0;
     if (full) {
         __m128i round = _mm_set1_epi32(128);
+        __m128i mask = _mm_set1_epi16(255);
+        __m128i center = _mm_set1_epi32(128);
+        __m128i k_cr_r = _mm_set1_epi32(cr_r[129]);
+        __m128i k_cb_g = _mm_set1_epi32(cb_g[129]);
+        __m128i k_cr_g = _mm_set1_epi32(cr_g[129]);
+        __m128i k_cb_b = _mm_set1_epi32(cb_b[129]);
         for (x = 0; x + 4 <= w; x += 4) {
-            __m128i Y = lut4_i32(yv, yp + x);
-            __m128i CrR = lut4_i32(cr_r, crp + x);
-            __m128i CbG = lut4_i32(cb_g, cbp + x);
-            __m128i CrG = lut4_i32(cr_g, crp + x);
-            __m128i CbB = lut4_i32(cb_b, cbp + x);
+            __m128i Y = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp + x)), mask));
+            __m128i Cb = _mm_sub_epi32(
+                _mm_cvtepu16_epi32(
+                    _mm_and_si128(_mm_loadl_epi64((const __m128i *)(cbp + x)), mask)),
+                center);
+            __m128i Cr = _mm_sub_epi32(
+                _mm_cvtepu16_epi32(
+                    _mm_and_si128(_mm_loadl_epi64((const __m128i *)(crp + x)), mask)),
+                center);
+            __m128i CrR = _mm_mullo_epi32(Cr, k_cr_r);
+            __m128i CbG = _mm_mullo_epi32(Cb, k_cb_g);
+            __m128i CrG = _mm_mullo_epi32(Cr, k_cr_g);
+            __m128i CbB = _mm_mullo_epi32(Cb, k_cb_b);
             __m128i rr = clamp_u8_epi32(
                 _mm_add_epi32(Y, _mm_srai_epi32(_mm_add_epi32(CrR, round), 8)));
             __m128i gg = clamp_u8_epi32(_mm_add_epi32(

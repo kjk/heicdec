@@ -105,6 +105,13 @@
     (previously 3.4% self / 5.4% inclusive on C014).
   - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
     183 ok / 5 no-oracle skips / 0 failures.
+- **Direct full-range 4:4:4 SIMD color**:
+  - Replace twenty scalar LUT reads per four pixels with three packed sample
+    loads and direct SSE4.1 fixed-point multiplies.
+  - Alternating 100-decode A/B: 49.64ms → **48.25ms** median (-2.8%) on
+    `nokia_444`; clean paired bench 47.11ms vs libheif 47.74ms (-1.3%).
+  - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
+    183 ok / 5 no-oracle skips / 0 failures.
 
 ## Next
 
