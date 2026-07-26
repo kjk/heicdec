@@ -14,7 +14,15 @@
 // build-dist.ts calls buildWasm({ useDist: true }) after amalgamation.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dir, "..");
@@ -194,6 +202,17 @@ function compile(prefix: string, useDist: boolean) {
   }
 
   sh(`${prefix}emcc ${inputs} ${flags} -o ${out}`);
+  // emcc on Windows may emit CRLF in the JS glue; keep the committed drop LF-only
+  // (matches .gitattributes eol=lf and avoids noisy line-ending diffs).
+  {
+    const raw = readFileSync(WASM_JS);
+    if (raw.includes(0x0d)) {
+      writeFileSync(
+        WASM_JS,
+        Buffer.from(raw.toString("utf8").replace(/\r\n/g, "\n")),
+      );
+    }
+  }
   const kb = (Bun.file(WASM_JS).size / 1024).toFixed(0);
   const wasmKb = (Bun.file(WASM_BINARY).size / 1024).toFixed(0);
   console.log(
