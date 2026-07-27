@@ -994,6 +994,9 @@ void heic_dequantize_extended(int32_t *coeffs, int n, int qp, int bit_depth,
 void heic_dequantize_scaled_extended(
     int32_t *coeffs, int n, int qp, int bit_depth, uint8_t log2_tr_size,
     int max_transform_range, const heic_scaling_list *list, uint8_t matrix_id);
+void heic_inverse_transform_nnz(const int16_t *coeffs, int16_t *output, int size,
+                                int bit_depth, int is_intra_4x4_luma,
+                                int num_nonzero);
 void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,
                             int bit_depth, int is_intra_4x4_luma);
 void heic_inverse_transform_extended(

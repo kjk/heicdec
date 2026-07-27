@@ -354,6 +354,17 @@ static void dc_fill_n(int16_t *out, int n, int16_t dc, int bit_depth)
     for (i = 0; i < nn; i++) out[i] = v;
 }
 
+/* True if columns [col, col+3] are all zero across nfreq rows. */
+static int col4_group_zero(const int16_t *c, int n, int col, int nfreq)
+{
+    int k;
+    for (k = 0; k < nfreq; k++) {
+        const int16_t *p = c + k * n + col;
+        if (p[0] | p[1] | p[2] | p[3]) return 0;
+    }
+    return 1;
+}
+
 int heic_simd_idct8(const int16_t *coeffs, int16_t *output, int bit_depth)
 {
     int shift1 = 7, shift2 = 20 - bit_depth;
@@ -367,6 +378,7 @@ int heic_simd_idct8(const int16_t *coeffs, int16_t *output, int bit_depth)
     }
     memset(tmp, 0, sizeof(tmp));
     for (col = 0; col < 8; col += 4) {
+        if (col4_group_zero(coeffs, 8, col, 8)) continue;
         load4_cols_i16(coeffs, 8, col, s, 8);
         idct8_1d_x4(s, d, shift1);
         store4_cols_i32(tmp, 8, col, d, 8);
@@ -392,6 +404,7 @@ int heic_simd_idct16(const int16_t *coeffs, int16_t *output, int bit_depth)
     }
     memset(tmp, 0, 256 * sizeof(int32_t));
     for (col = 0; col < 16; col += 4) {
+        if (col4_group_zero(coeffs, 16, col, 16)) continue;
         load4_cols_i16(coeffs, 16, col, s, 16);
         idct16_1d_x4(s, d, shift1);
         store4_cols_i32(tmp, 16, col, d, 16);
@@ -417,15 +430,7 @@ int heic_simd_idct32(const int16_t *coeffs, int16_t *output, int bit_depth)
     }
     memset(tmp, 0, 1024 * sizeof(int32_t));
     for (col = 0; col < 32; col += 4) {
-        /* Skip all-zero column groups. */
-        {
-            int k, any = 0;
-            for (k = 0; k < 32 && !any; k++) {
-                const int16_t *p = coeffs + k * 32 + col;
-                if (p[0] | p[1] | p[2] | p[3]) any = 1;
-            }
-            if (!any) continue;
-        }
+        if (col4_group_zero(coeffs, 32, col, 32)) continue;
         load4_cols_i16(coeffs, 32, col, s, 32);
         idct32_1d_x4(s, d, shift1);
         store4_cols_i32(tmp, 32, col, d, 32);
@@ -478,21 +483,6 @@ int heic_simd_add_residual(uint16_t *plane, int stride, int x0, int y0,
 }
 
 /* Gather 4 LUT entries for indices taken from u16 plane samples (low 8 bits). */
-static inline __m128i lut4_i32(const int32_t *tab, const uint16_t *p)
-{
-    return _mm_setr_epi32(tab[p[0] & 255], tab[p[1] & 255], tab[p[2] & 255],
-                          tab[p[3] & 255]);
-}
-
-static inline __m128i lut420_i32(const int32_t *tab, const uint16_t *p, int phase)
-{
-    if (phase)
-        return _mm_setr_epi32(tab[p[0] & 255], tab[p[1] & 255], tab[p[1] & 255],
-                              tab[p[2] & 255]);
-    return _mm_setr_epi32(tab[p[0] & 255], tab[p[0] & 255], tab[p[1] & 255],
-                          tab[p[1] & 255]);
-}
-
 static inline __m128i clamp_u8_epi32(__m128i v)
 {
     v = _mm_max_epi32(v, _mm_setzero_si128());
@@ -560,19 +550,42 @@ int heic_simd_ycc_444_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
             store_rgb4(rr, gg, bb, row + x * 3);
         }
     } else {
+        /* Limited: clamp Y/C then fixed-point multiplies (no LUT gathers).
+         * yv[17]==9576; cr_r[129]==coeff*(129-128) matches limited scales. */
         __m128i round = _mm_set1_epi32(4096);
+        __m128i mask = _mm_set1_epi16(255);
+        __m128i y_lo = _mm_set1_epi32(16), y_hi = _mm_set1_epi32(235);
+        __m128i c_lo = _mm_set1_epi32(16), c_hi = _mm_set1_epi32(240);
+        __m128i center = _mm_set1_epi32(128);
+        __m128i k_y = _mm_set1_epi32(yv[17] ? yv[17] : 9576);
+        __m128i k_cr_r = _mm_set1_epi32(cr_r[129]);
+        __m128i k_cb_g = _mm_set1_epi32(cb_g[129]);
+        __m128i k_cr_g = _mm_set1_epi32(cr_g[129]);
+        __m128i k_cb_b = _mm_set1_epi32(cb_b[129]);
         for (x = 0; x + 4 <= w; x += 4) {
-            __m128i Y = lut4_i32(yv, yp + x);
-            __m128i CrR = lut4_i32(cr_r, crp + x);
-            __m128i CbG = lut4_i32(cb_g, cbp + x);
-            __m128i CrG = lut4_i32(cr_g, crp + x);
-            __m128i CbB = lut4_i32(cb_b, cbp + x);
-            __m128i rr = clamp_u8_epi32(
-                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Y, CrR), round), 13));
-            __m128i gg = clamp_u8_epi32(_mm_srai_epi32(
-                _mm_add_epi32(_mm_add_epi32(_mm_add_epi32(Y, CbG), CrG), round), 13));
-            __m128i bb = clamp_u8_epi32(
-                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Y, CbB), round), 13));
+            __m128i Y = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp + x)), mask));
+            __m128i Cb = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(cbp + x)), mask));
+            __m128i Cr = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(crp + x)), mask));
+            __m128i Yv, Cbz, Crz, CrR, CbG, CrG, CbB, rr, gg, bb;
+            Y = _mm_min_epi32(_mm_max_epi32(Y, y_lo), y_hi);
+            Cb = _mm_min_epi32(_mm_max_epi32(Cb, c_lo), c_hi);
+            Cr = _mm_min_epi32(_mm_max_epi32(Cr, c_lo), c_hi);
+            Yv = _mm_mullo_epi32(_mm_sub_epi32(Y, y_lo), k_y);
+            Cbz = _mm_sub_epi32(Cb, center);
+            Crz = _mm_sub_epi32(Cr, center);
+            CrR = _mm_mullo_epi32(Crz, k_cr_r);
+            CbG = _mm_mullo_epi32(Cbz, k_cb_g);
+            CrG = _mm_mullo_epi32(Crz, k_cr_g);
+            CbB = _mm_mullo_epi32(Cbz, k_cb_b);
+            rr = clamp_u8_epi32(
+                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Yv, CrR), round), 13));
+            gg = clamp_u8_epi32(_mm_srai_epi32(
+                _mm_add_epi32(_mm_add_epi32(_mm_add_epi32(Yv, CbG), CrG), round), 13));
+            bb = clamp_u8_epi32(
+                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Yv, CbB), round), 13));
             store_rgb4(rr, gg, bb, row + x * 3);
         }
     }
@@ -605,16 +618,23 @@ int heic_simd_ycc_444_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
 /* Expand 2 or 3 subsampled chroma samples into 4 epi32 lanes with 4:2:0 phase. */
 static inline __m128i chroma420_epi32(const uint16_t *p, int phase)
 {
-    __m128i mask = _mm_set1_epi16(255);
-    __m128i center = _mm_set1_epi32(128);
     int a = (int)(p[0] & 255), b = (int)(p[1] & 255), c = (int)(p[2] & 255);
-    __m128i v;
-    (void)mask;
     if (phase)
-        v = _mm_setr_epi32(a, b, b, c);
-    else
-        v = _mm_setr_epi32(a, a, b, b);
-    return _mm_sub_epi32(v, center);
+        return _mm_setr_epi32(a, b, b, c);
+    return _mm_setr_epi32(a, a, b, b);
+}
+
+static inline __m128i chroma420_centered(const uint16_t *p, int phase)
+{
+    return _mm_sub_epi32(chroma420_epi32(p, phase), _mm_set1_epi32(128));
+}
+
+/* Limited-range clamp of 4:2:0 chroma then (C-128). */
+static inline __m128i chroma420_limited_z(const uint16_t *p, int phase)
+{
+    __m128i v = chroma420_epi32(p, phase);
+    v = _mm_min_epi32(_mm_max_epi32(v, _mm_set1_epi32(16)), _mm_set1_epi32(240));
+    return _mm_sub_epi32(v, _mm_set1_epi32(128));
 }
 
 int heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_t *crp,
@@ -638,8 +658,8 @@ int heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
             const uint16_t *cr = crp + ((phase + x) >> 1);
             __m128i Y = _mm_cvtepu16_epi32(
                 _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp + x)), mask));
-            __m128i Cb = chroma420_epi32(cb, phase);
-            __m128i Cr = chroma420_epi32(cr, phase);
+            __m128i Cb = chroma420_centered(cb, phase);
+            __m128i Cr = chroma420_centered(cr, phase);
             __m128i CrR = _mm_mullo_epi32(Cr, k_cr_r);
             __m128i CbG = _mm_mullo_epi32(Cb, k_cb_g);
             __m128i CrG = _mm_mullo_epi32(Cr, k_cr_g);
@@ -653,21 +673,35 @@ int heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
             store_rgb4(rr, gg, bb, row + x * 3);
         }
     } else {
+        /* Limited-range: clamp + multiplies (same scales as LUT at index 129/17). */
         __m128i round = _mm_set1_epi32(4096);
+        __m128i mask = _mm_set1_epi16(255);
+        __m128i y_lo = _mm_set1_epi32(16), y_hi = _mm_set1_epi32(235);
+        __m128i k_y = _mm_set1_epi32(yv[17] ? yv[17] : 9576);
+        __m128i k_cr_r = _mm_set1_epi32(cr_r[129]);
+        __m128i k_cb_g = _mm_set1_epi32(cb_g[129]);
+        __m128i k_cr_g = _mm_set1_epi32(cr_g[129]);
+        __m128i k_cb_b = _mm_set1_epi32(cb_b[129]);
         for (x = 0; x + 4 <= w; x += 4) {
             const uint16_t *cb = cbp + ((phase + x) >> 1);
             const uint16_t *cr = crp + ((phase + x) >> 1);
-            __m128i Y = lut4_i32(yv, yp + x);
-            __m128i CrR = lut420_i32(cr_r, cr, phase);
-            __m128i CbG = lut420_i32(cb_g, cb, phase);
-            __m128i CrG = lut420_i32(cr_g, cr, phase);
-            __m128i CbB = lut420_i32(cb_b, cb, phase);
-            __m128i rr = clamp_u8_epi32(
-                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Y, CrR), round), 13));
-            __m128i gg = clamp_u8_epi32(_mm_srai_epi32(
-                _mm_add_epi32(_mm_add_epi32(_mm_add_epi32(Y, CbG), CrG), round), 13));
-            __m128i bb = clamp_u8_epi32(
-                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Y, CbB), round), 13));
+            __m128i Y = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp + x)), mask));
+            __m128i Cbz = chroma420_limited_z(cb, phase);
+            __m128i Crz = chroma420_limited_z(cr, phase);
+            __m128i Yv, CrR, CbG, CrG, CbB, rr, gg, bb;
+            Y = _mm_min_epi32(_mm_max_epi32(Y, y_lo), y_hi);
+            Yv = _mm_mullo_epi32(_mm_sub_epi32(Y, y_lo), k_y);
+            CrR = _mm_mullo_epi32(Crz, k_cr_r);
+            CbG = _mm_mullo_epi32(Cbz, k_cb_g);
+            CrG = _mm_mullo_epi32(Crz, k_cr_g);
+            CbB = _mm_mullo_epi32(Cbz, k_cb_b);
+            rr = clamp_u8_epi32(
+                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Yv, CrR), round), 13));
+            gg = clamp_u8_epi32(_mm_srai_epi32(
+                _mm_add_epi32(_mm_add_epi32(_mm_add_epi32(Yv, CbG), CrG), round), 13));
+            bb = clamp_u8_epi32(
+                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(Yv, CbB), round), 13));
             store_rgb4(rr, gg, bb, row + x * 3);
         }
     }
@@ -912,14 +946,19 @@ int heic_simd_luma_filter4(uint16_t *plane, size_t base_p, size_t base_q,
 int heic_simd_dequant(int16_t *coeffs, int n, int32_t combined, int shift)
 {
     int i;
-    __m128i c, add;
+    __m128i c, add, z;
     if (!g_simd || shift < 0 || combined > 65536 || n < 8) return 0;
     c = _mm_set1_epi32(combined);
     add = shift > 0 ? _mm_set1_epi32(1 << (shift - 1)) : _mm_setzero_si128();
+    z = _mm_setzero_si128();
     for (i = 0; i + 8 <= n; i += 8) {
         __m128i v = _mm_loadu_si128((const __m128i *)(coeffs + i));
-        __m128i a = _mm_cvtepi16_epi32(v);
-        __m128i b = _mm_cvtepi16_epi32(_mm_srli_si128(v, 8));
+        __m128i a, b;
+        /* Sparse residuals: most 8-packs are zero after CABAC. */
+        if (_mm_movemask_epi8(_mm_cmpeq_epi16(v, z)) == 0xFFFF)
+            continue;
+        a = _mm_cvtepi16_epi32(v);
+        b = _mm_cvtepi16_epi32(_mm_srli_si128(v, 8));
         a = _mm_srai_epi32(_mm_add_epi32(_mm_mullo_epi32(a, c), add), shift);
         b = _mm_srai_epi32(_mm_add_epi32(_mm_mullo_epi32(b, c), add), shift);
         a = clamp_i32(a, -32768, 32767);
@@ -927,7 +966,9 @@ int heic_simd_dequant(int16_t *coeffs, int n, int32_t combined, int shift)
         _mm_storeu_si128((__m128i *)(coeffs + i), _mm_packs_epi32(a, b));
     }
     for (; i < n; i++) {
-        int32_t v = ((int32_t)coeffs[i] * combined + (shift > 0 ? (1 << (shift - 1)) : 0)) >> shift;
+        int32_t v;
+        if (coeffs[i] == 0) continue;
+        v = ((int32_t)coeffs[i] * combined + (shift > 0 ? (1 << (shift - 1)) : 0)) >> shift;
         if (v < -32768) v = -32768;
         if (v > 32767) v = 32767;
         coeffs[i] = (int16_t)v;

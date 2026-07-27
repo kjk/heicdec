@@ -1865,8 +1865,9 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                 coeff->coeffs, sc->mc_scratch, size, bd,
                 max_transform_range, is_intra_4x4);
         } else {
-            heic_inverse_transform(
-                coeff->narrow, sc->residual_buf, size, bd, is_intra_4x4);
+            heic_inverse_transform_nnz(
+                coeff->narrow, sc->residual_buf, size, bd, is_intra_4x4,
+                (int)coeff->num_nonzero);
         }
     }
 

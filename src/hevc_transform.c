@@ -694,6 +694,27 @@ void heic_inverse_transform_extended(
 void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,
                             int bit_depth, int is_intra_4x4_luma)
 {
+    heic_inverse_transform_nnz(coeffs, output, size, bit_depth,
+                               is_intra_4x4_luma, -1);
+}
+
+/* Like heic_inverse_transform, but num_nonzero from residual CABAC skips the
+ * full-block zero scan used by pure-DC detection (big for 16/32 transforms).
+ * Pass num_nonzero < 0 when the count is unknown. */
+void heic_inverse_transform_nnz(const int16_t *coeffs, int16_t *output, int size,
+                                int bit_depth, int is_intra_4x4_luma,
+                                int num_nonzero)
+{
+    /* DST-4x4 intra is not the DCT pure-DC formula. */
+    if (num_nonzero == 0) {
+        memset(output, 0, (size_t)size * (size_t)size * sizeof(int16_t));
+        return;
+    }
+    if (num_nonzero == 1 && coeffs[0] != 0
+        && !(size == 4 && is_intra_4x4_luma)) {
+        htx_idct_dc_fill(output, size, coeffs[0], bit_depth);
+        return;
+    }
     switch (size) {
     case 4:
         if (is_intra_4x4_luma) heic_idst4(coeffs, output, bit_depth);

@@ -192,6 +192,14 @@
       malloc), zero-skip dequant (plain + scaling-list), direct full-range 4:2:0
       SIMD multiplies (no chroma LUT gathers). Skipping plane UNINIT fill was
       tried and reverted (breaks color on unread samples).
+- [x] Perf follow-up (SIMD sparse transform + limited color):
+      - SIMD dequant skips all-zero 8-packs (scalar zero-skip was dead when SIMD ran).
+      - IDCT8/16 skip zero column groups like IDCT32; residual `num_nonzero`
+        drives pure-DC IDCT without scanning the block.
+      - Limited-range 4:4:4 / 4:2:0 SIMD uses clamp + fixed-point multiplies
+        (same scales as LUTs) instead of per-pixel LUT gathers.
+      - HDR still ~+7–11% vs libheif (noise); `nokia_444` often ~+1–5%;
+        `example.heic` remains faster than libheif. Pixel oracle unchanged.
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported
