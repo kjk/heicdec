@@ -213,6 +213,11 @@
       quantization, and use wide first-pass transform arithmetic. The second
       official `EXTPREC_HIGHTHROUGHPUT` picture matches the published HM
       reconstruction MD5 byte-for-byte.
+- [x] HEVC RExt high-precision weighted prediction: validate bit-depth-sized
+      luma/chroma offset ranges, derive chroma offsets around the extended
+      sample midpoint, and apply offsets without 8-bit scaling. A compact
+      four-frame 10-bit HM P sequence with nonzero Y/Cb/Cr offsets matches the
+      HM reconstruction MD5 byte-for-byte.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

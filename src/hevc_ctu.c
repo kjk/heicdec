@@ -1187,9 +1187,10 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
 }
 
 static int weighted_uni_value(int sample, int weight, int offset,
-                              int denom, int bit_depth)
+                              int denom, int bit_depth, int high_precision)
 {
     int shift = 14 - bit_depth;
+    int offset_scale = high_precision ? 1 : 1 << (bit_depth - 8);
     int max_val = (1 << bit_depth) - 1;
     int64_t round;
     int64_t v;
@@ -1197,15 +1198,16 @@ static int weighted_uni_value(int sample, int weight, int offset,
     shift += denom;
     round = (int64_t)1 << (shift - 1);
     v = ((int64_t)sample * weight + round) >> shift;
-    v += (int64_t)offset * ((int64_t)1 << (bit_depth - 8));
+    v += (int64_t)offset * offset_scale;
     return clip_int((int)v, 0, max_val);
 }
 
 static int weighted_bi_value(int a, int b, int w0, int w1,
-                             int o0, int o1, int denom, int bit_depth)
+                             int o0, int o1, int denom, int bit_depth,
+                             int high_precision)
 {
     int shift = 14 - bit_depth;
-    int offset_scale = 1 << (bit_depth - 8);
+    int offset_scale = high_precision ? 1 : 1 << (bit_depth - 8);
     int max_val = (1 << bit_depth) - 1;
     int64_t round;
     int64_t v;
@@ -1222,6 +1224,7 @@ static void apply_internal_weight(heic_slice_ctx *sc, const heic_pu *pu,
                                   heic_pb_motion motion)
 {
     const heic_slice_header *sh = sc->sh;
+    int high_precision = sc->sps->high_precision_offsets_enabled_flag;
     int bi = motion.pred_flag[0] && motion.pred_flag[1];
     int list = motion.pred_flag[0] ? 0 : 1;
     int ref0 = motion.ref_idx[0], ref1 = motion.ref_idx[1];
@@ -1242,12 +1245,12 @@ static void apply_internal_weight(heic_slice_ctx *sc, const heic_pu *pu,
                     p0[y * 64u + x], p1[y * 64u + x],
                     sh->luma_weight[0][ref0], sh->luma_weight[1][ref1],
                     sh->luma_offset[0][ref0], sh->luma_offset[1][ref1],
-                    sh->luma_log2_weight_denom, bd_y);
+                    sh->luma_log2_weight_denom, bd_y, high_precision);
             else
                 v = weighted_uni_value(
                     pred[y * 64u + x], sh->luma_weight[list][motion.ref_idx[list]],
                     sh->luma_offset[list][motion.ref_idx[list]],
-                    sh->luma_log2_weight_denom, bd_y);
+                    sh->luma_log2_weight_denom, bd_y, high_precision);
             sc->frame->y[pos] = (uint16_t)v;
         }
     if (sc->frame->chroma_format != 0) {
@@ -1278,13 +1281,15 @@ static void apply_internal_weight(heic_slice_ctx *sc, const heic_pu *pu,
                             sh->chroma_weight[1][ref1][c],
                             sh->chroma_offset[0][ref0][c],
                             sh->chroma_offset[1][ref1][c],
-                            sh->chroma_log2_weight_denom, bd_c);
+                            sh->chroma_log2_weight_denom, bd_c,
+                            high_precision);
                     else
                         v = weighted_uni_value(
                             src[y * 64u + x],
                             sh->chroma_weight[list][motion.ref_idx[list]][c],
                             sh->chroma_offset[list][motion.ref_idx[list]][c],
-                            sh->chroma_log2_weight_denom, bd_c);
+                            sh->chroma_log2_weight_denom, bd_c,
+                            high_precision);
                     planes[c][pos] = (uint16_t)v;
                 }
         }

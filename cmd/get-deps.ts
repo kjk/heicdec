@@ -16,7 +16,10 @@ import {
 import { join } from "path";
 import { inflateRawSync } from "zlib";
 import { generateAvifFixtures } from "./gen_avif_fixtures";
-import { generateHevcHeif } from "./gen_hevc_fixtures";
+import {
+  generateHevcHeif,
+  generateHighPrecisionWeightingHevc,
+} from "./gen_hevc_fixtures";
 import { generateUnciBlockFixtures } from "./gen_unci_block_fixtures";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
@@ -69,7 +72,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v19-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec";
+  "v20-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_REXT_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -90,6 +93,8 @@ const HEVC_REXT_EXTPREC_SEQUENCE0 =
   "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq0.bit";
 const HEVC_REXT_EXTPREC_SEQUENCE1 =
   "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq1.bit";
+const HEVC_HIGH_PRECISION_WEIGHTING =
+  "high-precision-weighting-main10.bit";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
   "RPLM_A_qualcomm_4.bit",
@@ -239,6 +244,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(hevcSequenceDir, HEVC_REXT_CCP)) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE0)) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE1)) &&
+    existsSync(join(hevcSequenceDir, HEVC_HIGH_PRECISION_WEIGHTING)) &&
     HEVC_REXT_GENERAL_SEQUENCES.every((index) =>
       existsSync(join(
         hevcSequenceDir,
@@ -351,6 +357,9 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
       console.log(`deps/testimages: extracted ${dest0}, ${dest1}`);
     }
   }
+  generateHighPrecisionWeightingHevc(
+    join(hevcSequenceDir, HEVC_HIGH_PRECISION_WEIGHTING),
+  );
   console.log("deps/testimages: generating HEVC fixtures…");
   generateHevcHeif(
     join(hevcSequenceDir, "DSLICE_A_HHI_5.bit"),

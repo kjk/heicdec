@@ -259,6 +259,13 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "1bf9b1d840f38cd5181feaf92661526c",
   },
   {
+    name: "high-precision-weighting-main10.bit",
+    frames: 4,
+    mse: 0,
+    bitDepth: 10,
+    md5: "dce18b1793cd88f18005e6bbaf5db13a",
+  },
+  {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
     frames: 8,
     mse: 0.05,

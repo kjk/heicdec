@@ -29,6 +29,10 @@ static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
     uint8_t luma_flag[2][HEIC_MAX_REF_PICS] = {{0}};
     uint8_t chroma_flag[2][HEIC_MAX_REF_PICS] = {{0}};
     uint32_t denom = heic_bs_ue(bs);
+    int luma_range = sps->high_precision_offsets_enabled_flag
+        ? 1 << (sps->bit_depth_luma_minus8 + 7) : 128;
+    int chroma_range = sps->high_precision_offsets_enabled_flag
+        ? 1 << (sps->bit_depth_chroma_minus8 + 7) : 128;
     int lists = sh->slice_type == HEIC_SLICE_B ? 2 : 1;
     int list, i, c;
     if (denom > 7) return -1;
@@ -36,8 +40,7 @@ static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
     if (sps->chroma_format_idc != 0) {
         int delta = heic_bs_se(bs);
         int chroma_denom = (int)denom + delta;
-        if (chroma_denom < 0) chroma_denom = 0;
-        if (chroma_denom > 7) chroma_denom = 7;
+        if (chroma_denom < 0 || chroma_denom > 7) return -1;
         sh->chroma_log2_weight_denom = (uint8_t)chroma_denom;
     }
     for (list = 0; list < lists; list++) {
@@ -60,7 +63,7 @@ static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
                 sh->luma_weight[list][i] =
                     (int16_t)(luma_denom + delta);
                 offset = heic_bs_se(bs);
-                if (offset < INT16_MIN || offset > INT16_MAX) return -1;
+                if (offset < -luma_range || offset >= luma_range) return -1;
                 sh->luma_offset[list][i] = (int16_t)offset;
             }
             for (c = 0; c < 2; c++)
@@ -69,20 +72,22 @@ static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
             if (chroma_flag[list][i]) {
                 for (c = 0; c < 2; c++) {
                     int delta = heic_bs_se(bs);
-                    int offset, round, wp_offset;
+                    int offset, wp_offset;
                     if (delta < -128 || delta > 127) return -1;
                     sh->chroma_weight[list][i][c] =
                         (int16_t)(chroma_denom + delta);
                     offset = heic_bs_se(bs);
-                    if (offset < INT16_MIN || offset > INT16_MAX) return -1;
-                    round = sh->chroma_log2_weight_denom
-                        ? 1 << (sh->chroma_log2_weight_denom - 1) : 0;
-                    wp_offset = offset
-                        - ((128 * sh->chroma_weight[list][i][c] + round)
-                           >> sh->chroma_log2_weight_denom)
-                        + 128;
-                    if (wp_offset < -128) wp_offset = -128;
-                    if (wp_offset > 127) wp_offset = 127;
+                    if (offset < -4 * chroma_range
+                        || offset >= 4 * chroma_range)
+                        return -1;
+                    wp_offset = offset + chroma_range
+                        - ((chroma_range
+                            * sh->chroma_weight[list][i][c])
+                           >> sh->chroma_log2_weight_denom);
+                    if (wp_offset < -chroma_range)
+                        wp_offset = -chroma_range;
+                    if (wp_offset >= chroma_range)
+                        wp_offset = chroma_range - 1;
                     sh->chroma_offset[list][i][c] =
                         (int16_t)wp_offset;
                 }

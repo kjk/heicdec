@@ -2,6 +2,30 @@
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 
+const HIGH_PRECISION_WEIGHTING_HEVC =
+  "AAAAAUABDAH//wQIAAADAAmIAAADAAADAJcCQAAAAAFCAQEECAAAAwAJiAAAAwAA" +
+  "AwCgIIEH7ZZeSRtB5eSST+efzy////z+fz8/nbYACQAAAAFEAcGQkaESAAABJgGs" +
+  "TkBLB6m3GWVYeLKkf/c65mH34NWr71XSFk7QFw+zQJYSJcLSTw5lkj7NrhpPUrj" +
+  "j2NBWjnaiV3JVuEfHzbuh0F6fXrkSVTMIAkJVk5/wSEMPwLVVd725zjgxl76/IO" +
+  "t7nuNHcORGkbotPzZgmY+LzKEJTQJAzUsusaW5gQCrNq31+sI2xn6M03GcADQqTh" +
+  "5/C2loLAHgQ2UQSMP5Bd0gtuxwCkgPdEvC5vuza4TOv89houbHFUxof32M85aWk" +
+  "e90sAyeyCrSNofiyx2JbBFZjaIyma+i1xGiJc0wy+v9iB7M2eI2QjV8BfRJTzno" +
+  "2qmlfRdzaOSAXCKmQ3wDmOqnQ31dK0m+U9z4MvNPAaBjWOLH8UysYFlRxVtsIrx" +
+  "s+e0N3BC37OrDJTCwzRb4Ixoms68SMnvV8cvucWCrb+mNiakf0Q+EL5nA4SByLf" +
+  "ha9b+2RMcg6gIkjvjdCSE9CU35swZORy9S0jO78ixzoZmNBPx3Yu+MkiyhrybPe" +
+  "2Ff5PGVG7wY1jNAQkV81hePQvEgAAAAAQIB0A04/gaoPoF68L3gAAAAAQIB0BV1n" +
+  "/A1QfQL0BqQPkBeS4C64AAAAAECAdAdt5/8DVB9AvQGpA+QF5AJ9AXUAjV4veA=";
+
+/** Install a 64x64 10-bit HM stream with nonzero high-precision P offsets. */
+export function generateHighPrecisionWeightingHevc(outputPath: string): void {
+  const data = Uint8Array.from(atob(HIGH_PRECISION_WEIGHTING_HEVC), (c) =>
+    c.charCodeAt(0)
+  );
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, data);
+  console.log(`wrote ${outputPath} (${data.length} bytes)`);
+}
+
 function be16(n: number): Uint8Array {
   return new Uint8Array([(n >>> 8) & 0xff, n & 0xff]);
 }
