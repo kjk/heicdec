@@ -529,6 +529,9 @@ typedef struct {
 void heic_frame_free(heic_ctx *ctx, heic_frame *f);
 int  heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
                       int bit_depth, int chroma_format);
+/* Like alloc, but reuses existing planes when geometry matches (grid tiles). */
+int  heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
+                        int bit_depth, int chroma_format);
 
 /* Decode HEVC still from hvcC + length-prefixed slice data. */
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,

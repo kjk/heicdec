@@ -205,6 +205,17 @@ void heic_frame_free(heic_ctx *ctx, heic_frame *f)
     memset(f, 0, sizeof(*f));
 }
 
+static void frame_chroma_dims(int w, int h, int chroma_format, int *cw, int *ch)
+{
+    switch (chroma_format) {
+    case 0: *cw = 0; *ch = 0; break;
+    case 1: *cw = (w + 1) / 2; *ch = (h + 1) / 2; break;
+    case 2: *cw = (w + 1) / 2; *ch = h; break;
+    case 3: *cw = w; *ch = h; break;
+    default: *cw = -1; *ch = -1; break;
+    }
+}
+
 int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
                      int bit_depth, int chroma_format)
 {
@@ -214,6 +225,9 @@ int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
     if (w > (int)ctx->limits.max_width || h > (int)ctx->limits.max_height) return -1;
     if ((uint64_t)w * (uint64_t)h > ctx->limits.max_pixels) return -1;
 
+    frame_chroma_dims(w, h, chroma_format, &cw, &ch);
+    if (cw < 0) return -1;
+
     memset(f, 0, sizeof(*f));
     f->width = w;
     f->height = h;
@@ -221,14 +235,6 @@ int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
     f->chroma_bit_depth = chroma_format ? bit_depth : 0;
     f->chroma_format = chroma_format;
     f->y_stride = w;
-
-    switch (chroma_format) {
-    case 0: cw = 0; ch = 0; break;
-    case 1: cw = (w + 1) / 2; ch = (h + 1) / 2; break;
-    case 2: cw = (w + 1) / 2; ch = h; break;
-    case 3: cw = w; ch = h; break;
-    default: return -1;
-    }
     f->c_width = cw;
     f->c_height = ch;
     f->c_stride = cw > 0 ? cw : 0;
@@ -251,4 +257,50 @@ int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
         memset(f->cr, 0xFF, c_n);
     }
     return 0;
+}
+
+/* Reuse existing plane buffers when geometry matches (grid tiles). */
+int heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
+                       int bit_depth, int chroma_format)
+{
+    int cw, ch;
+    size_t y_n, c_n;
+    if (!ctx || !f || w <= 0 || h <= 0) return -1;
+    if (w > (int)ctx->limits.max_width || h > (int)ctx->limits.max_height) return -1;
+    if ((uint64_t)w * (uint64_t)h > ctx->limits.max_pixels) return -1;
+    frame_chroma_dims(w, h, chroma_format, &cw, &ch);
+    if (cw < 0) return -1;
+
+    if (f->y && f->width == w && f->height == h && f->bit_depth == bit_depth
+        && f->chroma_format == chroma_format && f->y_stride == w
+        && f->c_width == cw && f->c_height == ch
+        && (cw == 0 || (f->cb && f->cr && f->c_stride == cw))) {
+        heic_free_buf(ctx, f->a);
+        heic_free_buf(ctx, f->motion);
+        heic_free_buf(ctx, f->motion_pred_mode);
+        f->a = NULL;
+        f->motion = NULL;
+        f->motion_pred_mode = NULL;
+        f->motion_n = 0;
+        f->motion_stride = 0;
+        f->motion_min_pu = 0;
+        f->a_stride = 0;
+        f->crop_left = f->crop_right = f->crop_top = f->crop_bottom = 0;
+        f->poc = 0;
+        f->poc_valid = 0;
+        f->nal_unit_type = 0;
+        f->temporal_id = 0;
+        f->chroma_bit_depth = chroma_format ? bit_depth : 0;
+        y_n = (size_t)w * (size_t)h * sizeof(uint16_t);
+        memset(f->y, 0xFF, y_n);
+        if (cw > 0) {
+            c_n = (size_t)cw * (size_t)ch * sizeof(uint16_t);
+            memset(f->cb, 0xFF, c_n);
+            memset(f->cr, 0xFF, c_n);
+        }
+        return 0;
+    }
+
+    heic_frame_free(ctx, f);
+    return heic_frame_alloc(ctx, f, w, h, bit_depth, chroma_format);
 }

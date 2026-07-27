@@ -206,6 +206,11 @@
         QP maps (no zero-then-overwrite).
       - HDR ~+5–8% vs libheif (was ~+10%); `nokia_444` often faster than libheif;
         `example.heic` still ~−9%. Inter MD5s (MVCLIP/AMVP/CIP) unchanged.
+- [x] Grid tile buffer reuse + chroma blit:
+      - `heic_frame_prepare` reuses equal-size plane buffers (HDR 512² tiles
+        allocate once, re-UNINIT). HEVC decode no longer `memset`s away planes.
+      - Chroma tile blit uses row `memcpy` like luma.
+      - HDR ~+2–5% vs libheif (was ~+8%); `example` ~−11%; `nokia_444` ≈/≤.
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported

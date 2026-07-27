@@ -432,7 +432,7 @@ static void blit_tile(heic_frame *out, const heic_frame *tile, int tile_idx,
         memcpy(dst, src, (size_t)copy_w * sizeof(uint16_t));
     }
 
-    if (out->chroma_format > 0 && tile->cb && out->cb) {
+    if (out->chroma_format > 0 && tile->cb && tile->cr && out->cb && out->cr) {
         uint32_t sub_x = 2, sub_y = 2;
         uint32_t c_copy_w, c_copy_h, c_dst_x, c_dst_y, c_src_x, c_src_y;
         if (out->chroma_format == 2) {
@@ -448,20 +448,24 @@ static void blit_tile(heic_frame *out, const heic_frame *tile, int tile_idx,
         c_dst_y = dst_y / sub_y;
         c_src_x = src_x0 / sub_x;
         c_src_y = src_y0 / sub_y;
+        if (c_dst_x + c_copy_w > (uint32_t)out->c_width)
+            c_copy_w = (uint32_t)out->c_width - c_dst_x;
+        if (c_src_x + c_copy_w > (uint32_t)tile->c_width)
+            c_copy_w = (uint32_t)tile->c_width - c_src_x;
         for (row = 0; row < c_copy_h; row++) {
+            const uint16_t *sb, *sr;
+            uint16_t *db, *dr;
             if (c_dst_y + row >= (uint32_t)out->c_height) break;
             if (c_src_y + row >= (uint32_t)tile->c_height) break;
-            for (col = 0; col < c_copy_w; col++) {
-                size_t si, di;
-                if (c_dst_x + col >= (uint32_t)out->c_width) break;
-                if (c_src_x + col >= (uint32_t)tile->c_width) break;
-                si = (size_t)(c_src_y + row) * (size_t)tile->c_stride + (c_src_x + col);
-                di = (size_t)(c_dst_y + row) * (size_t)out->c_stride + (c_dst_x + col);
-                out->cb[di] = tile->cb[si];
-                out->cr[di] = tile->cr[si];
-            }
+            sb = tile->cb + (size_t)(c_src_y + row) * (size_t)tile->c_stride + c_src_x;
+            sr = tile->cr + (size_t)(c_src_y + row) * (size_t)tile->c_stride + c_src_x;
+            db = out->cb + (size_t)(c_dst_y + row) * (size_t)out->c_stride + c_dst_x;
+            dr = out->cr + (size_t)(c_dst_y + row) * (size_t)out->c_stride + c_dst_x;
+            memcpy(db, sb, (size_t)c_copy_w * sizeof(uint16_t));
+            memcpy(dr, sr, (size_t)c_copy_w * sizeof(uint16_t));
         }
     }
+    (void)col;
 }
 
 /* ---- grid ---- */
@@ -566,31 +570,36 @@ static int decode_grid(heic_doc *doc, const heic_item *grid_item, heic_frame *ou
         return -1;
     out->chroma_bit_depth = chroma ? chroma_bit_depth : 0;
 
-    for (ti = 0; ti < n_tiles; ti++) {
-        heic_item tile_item;
+    {
         heic_frame tile_frame;
-        if (heic_abort_check(ab)) {
-            heic_frame_free(doc->ctx, out);
-            return -1;
-        }
-        if (heic_container_get_item(&doc->container, tile_ids[ti], &tile_item) != 0) {
-            heic_frame_free(doc->ctx, out);
-            return -1;
-        }
         memset(&tile_frame, 0, sizeof(tile_frame));
-        if (decode_item(doc, &tile_item, &tile_frame, ab, depth + 1) != 0) {
-            heic_frame_free(doc->ctx, &tile_frame);
-            heic_frame_free(doc->ctx, out);
-            heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "grid tile %d decode failed", ti);
-            return -1;
+        for (ti = 0; ti < n_tiles; ti++) {
+            heic_item tile_item;
+            if (heic_abort_check(ab)) {
+                heic_frame_free(doc->ctx, &tile_frame);
+                heic_frame_free(doc->ctx, out);
+                return -1;
+            }
+            if (heic_container_get_item(&doc->container, tile_ids[ti], &tile_item) != 0) {
+                heic_frame_free(doc->ctx, &tile_frame);
+                heic_frame_free(doc->ctx, out);
+                return -1;
+            }
+            /* heic_frame_prepare reuses tile planes when tile size matches. */
+            if (decode_item(doc, &tile_item, &tile_frame, ab, depth + 1) != 0) {
+                heic_frame_free(doc->ctx, &tile_frame);
+                heic_frame_free(doc->ctx, out);
+                heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "grid tile %d decode failed", ti);
+                return -1;
+            }
+            if (ti == 0) {
+                out->full_range = tile_frame.full_range;
+                out->matrix_coeffs = tile_frame.matrix_coeffs;
+                out->color_primaries = tile_frame.color_primaries;
+                out->transfer_characteristics = tile_frame.transfer_characteristics;
+            }
+            blit_tile(out, &tile_frame, ti, cols, tile_w, tile_h, out_w, out_h);
         }
-        if (ti == 0) {
-            out->full_range = tile_frame.full_range;
-            out->matrix_coeffs = tile_frame.matrix_coeffs;
-            out->color_primaries = tile_frame.color_primaries;
-            out->transfer_characteristics = tile_frame.transfer_characteristics;
-        }
-        blit_tile(out, &tile_frame, ti, cols, tile_w, tile_h, out_w, out_h);
         heic_frame_free(doc->ctx, &tile_frame);
     }
     /* Output crop is identity — grid dims are already display size */

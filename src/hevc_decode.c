@@ -170,10 +170,9 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
     int sub_w = 2, sub_h = 2;
     int decode_ok = 0;
 
-    memset(out, 0, sizeof(*out));
     memset(&sps, 0, sizeof(sps));
     memset(&pps, 0, sizeof(pps));
-    if (!ctx || !cfg || !data) return -1;
+    if (!ctx || !cfg || !data || !out) return -1;
     if (heic_abort_check(ab)) return -1;
 
     /* Parameter sets from hvcC */
@@ -213,9 +212,11 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
         }
     }
 
-    if (heic_frame_alloc(ctx, out, (int)sps.pic_width_in_luma_samples,
-                         (int)sps.pic_height_in_luma_samples,
-                         8 + sps.bit_depth_luma_minus8, sps.chroma_format_idc) != 0) {
+    /* prepare reuses plane buffers across equal-size grid tiles. */
+    if (heic_frame_prepare(ctx, out, (int)sps.pic_width_in_luma_samples,
+                           (int)sps.pic_height_in_luma_samples,
+                           8 + sps.bit_depth_luma_minus8,
+                           sps.chroma_format_idc) != 0) {
         heic_nals_free(ctx, nals, n_nals);
         heic_pps_free(ctx, &pps);
         return -1;
