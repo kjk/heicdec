@@ -243,6 +243,10 @@
       partitions inside the current coding unit for both merge and AMVP
       candidates. All eight 10-bit frames of official
       `DBLK_A_MAIN10_VIXS_3` match the reconstruction MD5 byte-for-byte.
+- [x] HEVC parallel merge regions use one CU-wide candidate list for every
+      sub-partition of an 8x8 coding unit when the signaled merge level is
+      larger than 4x4. All eight frames of official `PMERGE_A` through
+      `PMERGE_E` match their reconstruction MD5s byte-for-byte.
 - [x] HEVC deblocking QP propagation: when a CU QP delta is decoded after
       earlier transform units, retroactively update the whole coding unit's
       deblock QP map. All eight frames of official `DBLK_F_VIXS_1` and

@@ -76,7 +76,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v29-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock";
+  "v30-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -115,6 +115,11 @@ const HEVC_SEQUENCE_SAMPLES = [
   "WP_A_Toshiba_3.bit",
   "WP_B_Toshiba_3.bit",
   "MERGE_A_TI_3.bit",
+  "PMERGE_A_TI_3.bit",
+  "PMERGE_B_TI_3.bit",
+  "PMERGE_C_TI_3.bit",
+  "PMERGE_D_TI_3.bit",
+  "PMERGE_E_TI_3.bit",
   "DBLK_A_SONY_3.bit",
   "DBLK_A_MAIN10_VIXS_3.bit",
   "DBLK_B_SONY_3.bit",

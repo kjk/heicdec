@@ -229,6 +229,36 @@ const HEVC_SEQUENCE_TESTS: readonly {
   { name: "WP_A_Toshiba_3.bit", frames: 17, mse: 8 },
   { name: "WP_B_Toshiba_3.bit", frames: 17, mse: 8 },
   { name: "MERGE_A_TI_3.bit", frames: 8, mse: 8 },
+  {
+    name: "PMERGE_A_TI_3.bit",
+    frames: 8,
+    mse: 0,
+    md5: "6e74dbd450123246c22bf01b389bbe11",
+  },
+  {
+    name: "PMERGE_B_TI_3.bit",
+    frames: 8,
+    mse: 0,
+    md5: "7d0e57ebdbbc6633c972083a17d97550",
+  },
+  {
+    name: "PMERGE_C_TI_3.bit",
+    frames: 8,
+    mse: 0,
+    md5: "7e23d874b198ec7a9f6086a20de0db76",
+  },
+  {
+    name: "PMERGE_D_TI_3.bit",
+    frames: 8,
+    mse: 0,
+    md5: "9771b8c8a71e41547f14032e07be7d61",
+  },
+  {
+    name: "PMERGE_E_TI_3.bit",
+    frames: 8,
+    mse: 0,
+    md5: "26aed56afdb6cb7011fd5c3303379a9d",
+  },
   { name: "DBLK_A_SONY_3.bit", frames: 1, mse: 0 },
   {
     name: "DBLK_A_MAIN10_VIXS_3.bit",

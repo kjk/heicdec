@@ -887,8 +887,15 @@ static heic_pb_motion derive_merge(heic_slice_ctx *sc, const heic_pu *pu,
                                    uint32_t cb_size, int part_idx,
                                    int part_mode, int wanted)
 {
+    heic_pu merge_pu;
     heic_pb_motion cand[5];
     int count = 0, max = sc->sh->max_num_merge_cand;
+    if (sc->pps->log2_parallel_merge_level_minus2 > 0 && cb_size == 8) {
+        merge_pu = (heic_pu){cb_x, cb_y, cb_size, cb_size};
+        pu = &merge_pu;
+        part_idx = 0;
+        part_mode = HEIC_PART_2NX2N;
+    }
     int32_t ax = (int32_t)pu->x - 1;
     int32_t ay = (int32_t)(pu->y + pu->h - 1);
     int32_t b1x = (int32_t)(pu->x + pu->w - 1);
