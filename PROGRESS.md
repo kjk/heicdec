@@ -247,6 +247,11 @@
       sub-partition of an 8x8 coding unit when the signaled merge level is
       larger than 4x4. All eight frames of official `PMERGE_A` through
       `PMERGE_E` match their reconstruction MD5s byte-for-byte.
+- [x] HEVC picture-order MSB inference uses the previous temporal-id-0
+      reference picture and only resets for BLA/IDR pictures. All 500 frames
+      of official `MVDL1ZERO_A_docomo_3`, including a midstream CRA and its
+      leading RASL pictures across an LSB wrap, match the reconstruction MD5
+      byte-for-byte.
 - [x] HEVC deblocking QP propagation: when a CU QP delta is decoded after
       earlier transform units, retroactively update the whole coding unit's
       deblock QP map. All eight frames of official `DBLK_F_VIXS_1` and

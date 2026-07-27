@@ -509,6 +509,8 @@ typedef struct {
     int c_width, c_height;
     int poc;
     int poc_valid;
+    uint8_t nal_unit_type;
+    uint8_t temporal_id;
     heic_pb_motion *motion;
     uint8_t *motion_pred_mode;
     size_t motion_n;

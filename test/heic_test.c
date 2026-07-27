@@ -211,7 +211,7 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
     size_t param_lens[16];
     heic_hvcc cfg;
     heic_frame frames[512];
-    const heic_frame *refs[HEIC_MAX_REF_PICS];
+    const heic_frame *refs[512];
     heic_ctx *ctx;
     int order[512];
     int n_nals, n_params = 0, decoded = 0, i, j;
@@ -291,8 +291,7 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
             memcpy(sample + pos, nals[k].data, nal_len);
             pos += nal_len;
         }
-        int n_refs = decoded < HEIC_MAX_REF_PICS
-            ? decoded : HEIC_MAX_REF_PICS;
+        int n_refs = decoded;
         cfg.n_nal_units = n_params;
         for (j = 0; j < n_refs; j++) refs[j] = &frames[decoded - 1 - j];
         memset(&out, 0, sizeof(out));

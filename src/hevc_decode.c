@@ -1,6 +1,25 @@
 /* hevc_decode.c -- HEVC still-image entry */
 #include "heic_internal.h"
 
+static const heic_frame *find_prev_tid0(const heic_frame *const *refs,
+                                        int n_refs)
+{
+    int i;
+    for (i = 0; i < n_refs; i++) {
+        uint8_t type;
+        if (!refs[i] || !refs[i]->poc_valid || refs[i]->temporal_id != 0)
+            continue;
+        type = refs[i]->nal_unit_type;
+        if (type == HEIC_NAL_RADL_N || type == HEIC_NAL_RADL_R
+            || type == HEIC_NAL_RASL_N || type == HEIC_NAL_RASL_R)
+            continue;
+        if (type < HEIC_NAL_BLA_W_LP && (type & 1u) == 0)
+            continue;
+        return refs[i];
+    }
+    return NULL;
+}
+
 static int find_ref_by_poc(const heic_frame *const *refs, int n_refs,
                            int poc, uint32_t poc_mask, int lsb_only)
 {
@@ -315,17 +334,19 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 eps[ne++] = p - slice_ebsp_start;
             }
             if (!failed && !picture) {
+                const heic_frame *prev_tid0 =
+                    find_prev_tid0(refs, n_refs);
                 int poc_bits =
                     sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
                 uint32_t max_poc_lsb = 1u << poc_bits;
-                int is_irap = nals[i].type >= HEIC_NAL_BLA_W_LP
-                           && nals[i].type <= HEIC_NAL_CRA;
+                int reset_poc =
+                    nals[i].type >= HEIC_NAL_BLA_W_LP
+                    && nals[i].type <= HEIC_NAL_IDR_N_LP;
                 out->poc = (int)sh.slice_pic_order_cnt_lsb;
-                if (!is_irap && refs && n_refs > 0 && refs[0]
-                    && refs[0]->poc_valid) {
-                    uint32_t prev_lsb = (uint32_t)refs[0]->poc
+                if (!reset_poc && prev_tid0) {
+                    uint32_t prev_lsb = (uint32_t)prev_tid0->poc
                                       & (max_poc_lsb - 1u);
-                    int prev_msb = refs[0]->poc - (int)prev_lsb;
+                    int prev_msb = prev_tid0->poc - (int)prev_lsb;
                     uint32_t curr_lsb = sh.slice_pic_order_cnt_lsb;
                     if (curr_lsb < prev_lsb
                         && prev_lsb - curr_lsb >= max_poc_lsb / 2)
@@ -337,6 +358,8 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                         out->poc += prev_msb;
                 }
                 out->poc_valid = 1;
+                out->nal_unit_type = (uint8_t)nals[i].type;
+                out->temporal_id = nals[i].temporal_id;
             }
             if (!failed && sh.slice_type != HEIC_SLICE_I
                 && build_ref_lists(ctx, &sps, &sh, out->poc,

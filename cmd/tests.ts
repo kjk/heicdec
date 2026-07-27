@@ -224,6 +224,12 @@ const HEVC_SEQUENCE_TESTS: readonly {
   md5?: string;
 }[] = [
   { name: "LTRPSPS_A_Qualcomm_1.bit", frames: 17, mse: 8 },
+  {
+    name: "MVDL1ZERO_A_docomo_3.bit",
+    frames: 500,
+    mse: 0,
+    md5: "593d1936f6fc2e1775ea2a691a601c34",
+  },
   { name: "RPLM_A_qualcomm_4.bit", frames: 25, mse: 8 },
   { name: "TMVP_A_MS_3.bit", frames: 17, mse: 8 },
   { name: "WP_A_Toshiba_3.bit", frames: 17, mse: 8 },
