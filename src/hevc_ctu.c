@@ -1860,6 +1860,10 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         sc->cu_qp_delta = (int)delta;
         decode_quant_params(sc, x0, sc->cu_base_x, sc->cu_base_y);
         store_qpy(sc, sc->cu_base_x, sc->cu_base_y, sc->cu_log2_size, sc->current_qpy);
+        heic_store_deblock_qp(
+            sc->deblock_qp, sc->deblock_stride, sc->deblock_n,
+            sc->cu_base_x, sc->cu_base_y, 1u << sc->cu_log2_size,
+            (int8_t)sc->current_qpy);
     }
 
     if (sc->sh->cu_chroma_qp_offset_enabled_flag && (cbf_cb || cbf_cr)

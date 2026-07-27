@@ -235,6 +235,10 @@
       every luma/chroma edge, while applying only the PPS chroma QP offsets
       required by the deblocking process. The first `DBLK_A_SONY_3` frame,
       which varies filter offsets by slice, matches libde265 exactly.
+- [x] HEVC deblocking QP propagation: when a CU QP delta is decoded after
+      earlier transform units, retroactively update the whole coding unit's
+      deblock QP map. All eight frames of official `DBLK_F_VIXS_1` and
+      `DBLK_F_VIXS_2` match their reconstruction MD5s byte-for-byte.
 - [x] HEVC intra references across non-rectangular slice boundaries: evaluate
       top/left extensions and the top-left corner per sample before normative
       substitution. Official `SAO_H_Parabola_1` (four frames, diagonal SAO at
