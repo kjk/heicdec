@@ -8,13 +8,15 @@
 //
 // Default (like bench.ts): build dav1d+libheif harness, run heic_test -verify
 // on each file. Success = both decode RGB and mse <= threshold.
-// Failure = we cannot decode while libheif can, size mismatch, or bitmaps differ.
-// Ok (not decodable) = both sides fail to decode (no pixel oracle possible).
+// Failure = we cannot decode while libheif can, size mismatch, bitmaps differ,
+// or both sides fail on a file that is not listed as expected-fail / out-of-scope.
 // When libheif rejects a valid file, compare a compact independently decoded
 // RGB oracle from test/no_libheif_oracles.json.
 //
 // Intentional bad inputs (ok-expect-fail if we fail as expected):
 //   broken containers; bad iovl version; oversize canvas.
+// Out-of-scope valid files (skip when neither decoder can produce pixels):
+//   multilayer HEVC stills, etc.
 import { existsSync, readFileSync, rmSync } from "fs";
 import { basename, join } from "path";
 import {
@@ -27,7 +29,7 @@ import {
 import { getDeps, TESTIMAGES_DIR } from "./get-deps";
 import { selectFiles, corpusSummary } from "./corpus";
 
-/** Open / decode expected to fail (intentionally invalid or out of scope). */
+/** Intentionally invalid / malformed fixtures (ok-expect-fail when we fail). */
 const EXPECT_FAIL = new Set([
   "meta_size_zero.avif",
   "mini_size_zero.avif",
@@ -37,8 +39,25 @@ const EXPECT_FAIL = new Set([
   "iovl_negoff.heic",
 ]);
 
+/**
+ * Valid HEIF that is out of library scope for now. When both our decoder and
+ * libheif fail, count as [skip] rather than [ok] "not decodable".
+ */
+const OUT_OF_SCOPE = new Set([
+  /* Multilayer HEVC stills (Nokia): need VPS layer / inter-layer refs. */
+  "multilayer001.heic",
+  "multilayer002.heic",
+  "multilayer003.heic",
+  "multilayer004.heic",
+  "multilayer005.heic",
+]);
+
 function expectFail(name: string): boolean {
   return EXPECT_FAIL.has(name);
+}
+
+function outOfScope(name: string): boolean {
+  return OUT_OF_SCOPE.has(name);
 }
 
 /** Valid no-oracle fixtures that our decoder must continue to decode. */
@@ -764,13 +783,25 @@ async function main() {
         console.log(`[fail] ${f} required fixture did not decode\n${out.slice(0, 300)}`);
         continue;
       }
-      /* Neither side decodes — acceptable only for non-mandatory corpus files. */
-      ok++;
       if (wantFail) {
+        ok++;
         console.log(`[ok-expect-fail] ${f} not decodable`);
-      } else {
-        console.log(`[ok] ${f} not decodable`);
+        continue;
       }
+      if (outOfScope(name)) {
+        skip++;
+        console.log(`[skip] ${f} out of scope (both failed)`);
+        continue;
+      }
+      /* Neither decoder produced pixels, and the file is not listed as
+       * intentional fail or out-of-scope — treat as a real failure so silent
+       * "both fail = ok" cannot hide unsupported valid images. */
+      fail++;
+      console.log(
+        `[fail] ${f} not decodable by heic or libheif ` +
+          `(add to EXPECT_FAIL or OUT_OF_SCOPE if intentional)\n` +
+          out.slice(0, 300),
+      );
       continue;
     }
 
@@ -862,7 +893,7 @@ async function main() {
       (infoOnly
         ? " (info)"
         : ` (libheif mse<=${mseThreshold}; alternate rgb16 mse<=${ALT_ORACLE_MSE}; ` +
-          `skip=no oracle, not decodable counts as ok)`),
+          `skip=no oracle or out-of-scope; both-fail is fail unless EXPECT_FAIL/OUT_OF_SCOPE)`),
   );
   process.exit(fail ? 1 : 0);
 }

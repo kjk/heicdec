@@ -163,11 +163,9 @@
       plane layout, and 4:2:2 chroma IntraPredModeC remapping (H.265 8.4.3).
       Official `GENERAL_10b_422` sequences match pinned MD5s byte-for-byte;
       `Main_422_10_A_RExt_Sony_2` (9 frames) matches libde265 at mse≈0.002.
-- [ ] Make corpus verdicts strict. A valid image for which both our decoder
-      and libheif fail must not count as an `[ok]` pixel test. Maintain an
-      explicit malformed/out-of-scope set, report unsupported valid files as
-      skips or failures, and add HM/FFmpeg/compact pixel oracles where libheif
-      cannot serve as the reference.
+- [x] Strict corpus verdicts: `both_fail` is a real `[fail]` unless the file is
+      in `EXPECT_FAIL` (malformed/intentional) or `OUT_OF_SCOPE` (skip). Nokia
+      multilayer001–005 are out of scope; must-decode fixtures still fail hard.
 - [ ] Expand raw HEVC conformance coverage by feature family: POC/RPS/RAP and
       output ordering; WPP Main/Main10 A-F; DELTAQP; RQT/TUSIZE/MAXBINS;
       IPRED/CIP; SAO; scaling lists/QMATRIX; persistent Rice adaptation; tiles
@@ -178,10 +176,8 @@
       Route every library-owned allocation, including frame planes and output
       images, through tracked overflow-safe helpers and add default/custom
       allocator OOM regression tests.
-- [ ] Decide multilayer HEVC scope explicitly. Nokia `multilayer001/002/004/005`
-      currently fail in both our decoder and libheif but are counted as okay.
-      Either decode the required VPS/layer and inter-layer reference paths, or
-      classify multilayer as out of scope and report those files as skips.
+- [x] Multilayer HEVC stills classified out of scope (`OUT_OF_SCOPE` skip set).
+      Inter-layer / VPS-layer decode remains optional future work.
 - [ ] Strengthen memory-safety automation: run libFuzzer/AFL seeds through
       ASan plus UBSan, verify every tracked crash/slow artifact on each run,
       minimize new findings, and add CI jobs for MSVC, Clang, Linux, and WASM.
