@@ -252,6 +252,13 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "d92c2386f43fdfb9ff66210bcc2824fe",
   },
   {
+    name: "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq1.bit",
+    frames: 1,
+    mse: 0,
+    bitDepth: 10,
+    md5: "1bf9b1d840f38cd5181feaf92661526c",
+  },
+  {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
     frames: 8,
     mse: 0.05,

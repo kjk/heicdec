@@ -205,22 +205,41 @@ static int decode_greater2(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t c_idx
     return heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
 }
 
-static int32_t decode_abs_remaining(heic_cabac *cabac, uint8_t rice)
+static int32_t decode_abs_remaining(heic_cabac *cabac, uint8_t rice,
+                                    int limited_prefix, int max_transform_range)
 {
     uint32_t prefix = 0;
+    uint32_t suffix;
     int32_t value;
-    while (heic_cabac_decode_bypass(cabac) != 0 && prefix < 18)
-        prefix++;
-    if (prefix >= 18 || prefix - HEIC_MIN(prefix, 3) + rice > 31) {
+    if (limited_prefix) {
+        uint32_t longest = 32u - (3u + (uint32_t)max_transform_range) + 3u;
+        while (prefix < longest && heic_cabac_decode_bypass(cabac) != 0)
+            prefix++;
+    } else {
+        while (heic_cabac_decode_bypass(cabac) != 0 && prefix < 18)
+            prefix++;
+    }
+    if ((!limited_prefix && prefix >= 18)
+        || prefix - HEIC_MIN(prefix, 3) + rice > 31) {
         cabac->error = 1;
         return 0;
     }
     if (prefix <= 3) {
-        uint32_t suffix = rice > 0 ? heic_cabac_decode_bypass_bits(cabac, rice) : 0;
+        suffix = rice > 0 ? heic_cabac_decode_bypass_bits(cabac, rice) : 0;
         value = (int32_t)((prefix << rice) + suffix);
+    } else if (limited_prefix) {
+        uint32_t max_prefix = 32u - (3u + (uint32_t)max_transform_range);
+        uint32_t prefix_len = prefix - 3;
+        uint32_t suffix_len =
+            prefix_len == max_prefix
+                ? (uint32_t)max_transform_range - rice
+                : prefix_len;
+        suffix = heic_cabac_decode_bypass_bits(cabac, (int)(suffix_len + rice));
+        value = (int32_t)(suffix
+            + ((((1u << prefix_len) - 1u) + 3u) << rice));
     } else {
         uint8_t suffix_bits = (uint8_t)(prefix - 3 + rice);
-        uint32_t suffix = heic_cabac_decode_bypass_bits(cabac, suffix_bits);
+        suffix = heic_cabac_decode_bypass_bits(cabac, suffix_bits);
         uint32_t base = ((1u << (prefix - 3)) + 2u) << rice;
         value = (int32_t)(base + suffix);
     }
@@ -235,6 +254,8 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                          int implicit_rdpcm_enabled, int explicit_rdpcm_enabled,
                          int persistent_rice_adaptation_enabled,
                          int cabac_bypass_alignment_enabled,
+                         int extended_precision_processing,
+                         int max_transform_range,
                          uint8_t stat_coeff[4],
                          int pred_mode_intra, uint8_t intra_mode,
                          heic_coeff_buf *out, int *transform_skip, int *rdpcm_mode)
@@ -252,7 +273,10 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
 
     if (!cabac || !ctx || !out || log2_size < 2 || log2_size > 5) return -1;
     size = 1u << log2_size;
-    memset(out->coeffs, 0, (size_t)size * size * sizeof(out->coeffs[0]));
+    if (extended_precision_processing)
+        memset(out->coeffs, 0, (size_t)size * size * sizeof(out->coeffs[0]));
+    else
+        memset(out->narrow, 0, (size_t)size * size * sizeof(out->narrow[0]));
     out->log2_size = log2_size;
     out->num_nonzero = 0;
 
@@ -317,7 +341,7 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         int sig_ctx_add, sig_dc_ctx;
         const uint8_t *sig_ctx_map;
         uint8_t start_pos, last_coeff;
-        int16_t coeff_values[16];
+        int32_t coeff_values[16];
         uint8_t sig_positions[16];
         uint8_t needs_remaining[16];
         int n_sig = 0;
@@ -480,10 +504,12 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         out->num_nonzero = (uint16_t)(out->num_nonzero + n_sig);
         for (i = 0; i < n_sig; i++) {
             int pos = sig_positions[i];
-            int16_t v = coeff_values[i];
+            int32_t v = coeff_values[i];
             if (needs_remaining[i]) {
                 uint8_t old_rice = rice_param;
-                int32_t rem = decode_abs_remaining(cabac, rice_param);
+                int32_t rem = decode_abs_remaining(
+                    cabac, rice_param, extended_precision_processing,
+                    max_transform_range);
                 int32_t sum = (int32_t)v + (int32_t)rem;
                 if ((uint32_t)sum > 3u * (1u << old_rice)) {
                     uint8_t max_rice =
@@ -502,19 +528,23 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                     }
                     first_remaining = 0;
                 }
-                if (sum > 32767) sum = 32767;
-                v = (int16_t)sum;
+                if (sum > (1 << max_transform_range) - 1)
+                    sum = (1 << max_transform_range) - 1;
+                v = sum;
             }
             if (sign_bits & sign_mask)
-                v = (int16_t)(-v);
+                v = -v;
             sign_mask >>= 1;
             sum_abs_level += v;
             if (i == n_sig - 1 && sign_hidden && (sum_abs_level & 1) != 0)
-                v = (int16_t)(-v);
+                v = -v;
             {
                 int x = (int)sb_x * 4 + scan_pos[pos][0];
                 int y = (int)sb_y * 4 + scan_pos[pos][1];
-                out->coeffs[y * (int)size + x] = v;
+                if (extended_precision_processing)
+                    out->coeffs[y * (int)size + x] = v;
+                else
+                    out->narrow[y * (int)size + x] = (int16_t)v;
             }
         }
 

@@ -208,6 +208,11 @@
       remaining-level syntax and switch to the aligned range before sign and
       escape bins. The first official `EXTPREC_HIGHTHROUGHPUT` picture matches
       the published HM reconstruction MD5 byte-for-byte.
+- [x] HEVC RExt extended-precision processing: decode limited-prefix escape
+      levels, retain the expanded transform coefficient range through inverse
+      quantization, and use wide first-pass transform arithmetic. The second
+      official `EXTPREC_HIGHTHROUGHPUT` picture matches the published HM
+      reconstruction MD5 byte-for-byte.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

@@ -944,7 +944,8 @@ enum {
 };
 
 typedef struct {
-    int16_t coeffs[HEIC_MAX_COEFF];
+    int32_t coeffs[HEIC_MAX_COEFF];
+    int16_t narrow[HEIC_MAX_COEFF];
     uint8_t log2_size;
     uint16_t num_nonzero;
 } heic_coeff_buf;
@@ -960,6 +961,8 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                          int implicit_rdpcm_enabled, int explicit_rdpcm_enabled,
                          int persistent_rice_adaptation_enabled,
                          int cabac_bypass_alignment_enabled,
+                         int extended_precision_processing,
+                         int max_transform_range,
                          uint8_t stat_coeff[4],
                          int pred_mode_intra, uint8_t intra_mode,
                          heic_coeff_buf *out, int *transform_skip, int *rdpcm_mode);
@@ -978,8 +981,16 @@ void heic_dequantize(int16_t *coeffs, int n, int qp, int bit_depth,
 void heic_dequantize_scaled(int16_t *coeffs, int n, int qp, int bit_depth,
                             uint8_t log2_tr_size, const heic_scaling_list *list,
                             uint8_t matrix_id);
+void heic_dequantize_extended(int32_t *coeffs, int n, int qp, int bit_depth,
+                              uint8_t log2_tr_size, int max_transform_range);
+void heic_dequantize_scaled_extended(
+    int32_t *coeffs, int n, int qp, int bit_depth, uint8_t log2_tr_size,
+    int max_transform_range, const heic_scaling_list *list, uint8_t matrix_id);
 void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,
                             int bit_depth, int is_intra_4x4_luma);
+void heic_inverse_transform_extended(
+    const int32_t *coeffs, int32_t *output, int size, int bit_depth,
+    int max_transform_range, int is_intra_4x4_luma);
 void heic_add_residual(uint16_t *plane, int stride, int x0, int y0,
                        const int16_t *residual, int size, int max_val);
 

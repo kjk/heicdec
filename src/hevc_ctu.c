@@ -1530,29 +1530,11 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     int transform_skip = 0;
     int rdpcm_mode = 0;
     int size, num, qp, bd, is_intra_4x4, max_val;
+    int extended, max_transform_range;
     uint16_t *plane;
     int stride, plane_w, plane_h;
 
     if (!coeff) return -1;
-    if (heic_decode_residual(&sc->cabac, sc->models, log2_size, c_idx, scan_order,
-                             sc->pps->sign_data_hiding_enabled_flag,
-                             sc->cu_transquant_bypass,
-                             sc->pps->transform_skip_enabled_flag,
-                             sc->pps->log2_max_transform_skip_block_size,
-                             sc->sps->transform_skip_context_enabled_flag,
-                             sc->sps->implicit_rdpcm_enabled_flag,
-                             sc->sps->explicit_rdpcm_enabled_flag,
-                             sc->sps->persistent_rice_adaptation_enabled_flag,
-                             sc->sps->cabac_bypass_alignment_enabled_flag,
-                             sc->stat_coeff,
-                             sc->cu_pred_mode == HEIC_PRED_INTRA, intra_mode,
-                             coeff, &transform_skip, &rdpcm_mode)
-        != 0)
-        return -1;
-    if (coeff->num_nonzero == 0) return 0;
-
-    size = 1 << log2_size;
-    num = size * size;
     if (c_idx == 0) {
         qp = sc->qp_y;
         bd = bit_depth_y(sc->sps);
@@ -1575,6 +1557,28 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         plane_w = sc->frame->c_width;
         plane_h = sc->frame->c_height;
     }
+    extended = sc->sps->extended_precision_processing_flag;
+    max_transform_range = extended ? HEIC_MAX(15, bd + 6) : 15;
+    if (heic_decode_residual(&sc->cabac, sc->models, log2_size, c_idx, scan_order,
+                             sc->pps->sign_data_hiding_enabled_flag,
+                             sc->cu_transquant_bypass,
+                             sc->pps->transform_skip_enabled_flag,
+                             sc->pps->log2_max_transform_skip_block_size,
+                             sc->sps->transform_skip_context_enabled_flag,
+                             sc->sps->implicit_rdpcm_enabled_flag,
+                             sc->sps->explicit_rdpcm_enabled_flag,
+                             sc->sps->persistent_rice_adaptation_enabled_flag,
+                             sc->sps->cabac_bypass_alignment_enabled_flag,
+                             extended, max_transform_range,
+                             sc->stat_coeff,
+                             sc->cu_pred_mode == HEIC_PRED_INTRA, intra_mode,
+                             coeff, &transform_skip, &rdpcm_mode)
+        != 0)
+        return -1;
+    if (coeff->num_nonzero == 0) return 0;
+
+    size = 1 << log2_size;
+    num = size * size;
     if (!plane) return 0;
     max_val = (1 << bd) - 1;
 
@@ -1583,9 +1587,15 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         && (sc->cu_transquant_bypass || transform_skip)) {
         int i;
         for (i = 0; i < num / 2; i++) {
-            int16_t t = coeff->coeffs[i];
-            coeff->coeffs[i] = coeff->coeffs[num - 1 - i];
-            coeff->coeffs[num - 1 - i] = t;
+            if (extended) {
+                int32_t t = coeff->coeffs[i];
+                coeff->coeffs[i] = coeff->coeffs[num - 1 - i];
+                coeff->coeffs[num - 1 - i] = t;
+            } else {
+                int16_t t = coeff->narrow[i];
+                coeff->narrow[i] = coeff->narrow[num - 1 - i];
+                coeff->narrow[num - 1 - i] = t;
+            }
         }
     }
 
@@ -1597,7 +1607,9 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                 for (py = 0; py < size; py++) {
                     int32_t sum = 0;
                     for (px = 0; px < size; px++) {
-                        sum += coeff->coeffs[py * size + px];
+                        int pos = py * size + px;
+                        sum += extended ? coeff->coeffs[pos]
+                                        : coeff->narrow[pos];
                         rdpcm[py * size + px] = sum;
                     }
                 }
@@ -1605,18 +1617,21 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                 for (px = 0; px < size; px++) {
                     int32_t sum = 0;
                     for (py = 0; py < size; py++) {
-                        sum += coeff->coeffs[py * size + px];
+                        int pos = py * size + px;
+                        sum += extended ? coeff->coeffs[pos]
+                                        : coeff->narrow[pos];
                         rdpcm[py * size + px] = sum;
                     }
                 }
             }
         }
-        memcpy(sc->residual_buf, coeff->coeffs, (size_t)num * sizeof(int16_t));
         if (c_idx == 0) {
             if (rdpcm_mode)
                 save_luma_residual32(sc, rdpcm, size);
+            else if (extended)
+                save_luma_residual32(sc, coeff->coeffs, size);
             else
-                save_luma_residual16(sc, sc->residual_buf, size);
+                save_luma_residual16(sc, coeff->narrow, size);
         }
         for (py = 0; py < size; py++) {
             if ((int)y0 + py >= plane_h) break;
@@ -1625,7 +1640,9 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                 if ((int)x0 + px >= plane_w) break;
                 v = (int32_t)plane[((int)y0 + py) * stride + (int)x0 + px]
                     + (rdpcm_mode ? rdpcm[py * size + px]
-                                  : sc->residual_buf[py * size + px])
+                                  : (extended
+                                        ? coeff->coeffs[py * size + px]
+                                        : coeff->narrow[py * size + px]))
                     + (c_idx ? cross_component_residual(
                                    sc, px, py, res_scale) : 0);
                 if (v < 0) v = 0;
@@ -1641,15 +1658,26 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
             sc->pps->pps_scaling_list_data_present_flag
                 ? &sc->pps->scaling_list
                 : &sc->sps->scaling_list;
-        heic_dequantize_scaled(coeff->coeffs, num, qp, bd, log2_size,
-                               list, (uint8_t)(c_idx +
-                                   (sc->cu_pred_mode == HEIC_PRED_INTRA ? 0 : 3)));
+        uint8_t matrix_id = (uint8_t)(
+            c_idx + (sc->cu_pred_mode == HEIC_PRED_INTRA ? 0 : 3));
+        if (extended) {
+            heic_dequantize_scaled_extended(
+                coeff->coeffs, num, qp, bd, log2_size, max_transform_range,
+                list, matrix_id);
+        } else {
+            heic_dequantize_scaled(coeff->narrow, num, qp, bd, log2_size,
+                                   list, matrix_id);
+        }
     } else {
-        heic_dequantize(coeff->coeffs, num, qp, bd, log2_size);
+        if (extended) {
+            heic_dequantize_extended(
+                coeff->coeffs, num, qp, bd, log2_size, max_transform_range);
+        } else {
+            heic_dequantize(coeff->narrow, num, qp, bd, log2_size);
+        }
     }
 
     if (transform_skip) {
-        int extended = sc->sps->extended_precision_processing_flag;
         int bd_shift = HEIC_MAX(20 - bd, extended ? 11 : 0);
         int ts_shift = (extended ? HEIC_MIN(5, bd_shift - 2) : 5)
                        + (int)log2_size;
@@ -1657,8 +1685,13 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         rnd = bd_shift > 0 ? (1 << (bd_shift - 1)) : 0;
         if (rdpcm_mode == 0) {
             for (i = 0; i < num; i++) {
-                int64_t c = (int64_t)coeff->coeffs[i] * ((int64_t)1 << ts_shift);
-                sc->residual_buf[i] = (int16_t)((c + rnd) >> bd_shift);
+                int64_t c =
+                    (int64_t)(extended ? coeff->coeffs[i] : coeff->narrow[i])
+                    * ((int64_t)1 << ts_shift);
+                if (extended)
+                    sc->mc_scratch[i] = (int32_t)((c + rnd) >> bd_shift);
+                else
+                    sc->residual_buf[i] = (int16_t)((c + rnd) >> bd_shift);
             }
         } else {
             int py, px;
@@ -1668,8 +1701,11 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     int32_t sum = 0;
                     for (px = 0; px < size; px++) {
                         int pos = py * size + px;
-                        int64_t c = (int64_t)coeff->coeffs[pos]
-                                    * ((int64_t)1 << ts_shift);
+                        int64_t c =
+                            (int64_t)(extended
+                                ? coeff->coeffs[pos]
+                                : coeff->narrow[pos])
+                            * ((int64_t)1 << ts_shift);
                         sum += (int32_t)((c + rnd) >> bd_shift);
                         rdpcm[pos] = sum;
                     }
@@ -1679,8 +1715,11 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     int32_t sum = 0;
                     for (py = 0; py < size; py++) {
                         int pos = py * size + px;
-                        int64_t c = (int64_t)coeff->coeffs[pos]
-                                    * ((int64_t)1 << ts_shift);
+                        int64_t c =
+                            (int64_t)(extended
+                                ? coeff->coeffs[pos]
+                                : coeff->narrow[pos])
+                            * ((int64_t)1 << ts_shift);
                         sum += (int32_t)((c + rnd) >> bd_shift);
                         rdpcm[pos] = sum;
                     }
@@ -1706,7 +1745,34 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     } else {
         is_intra_4x4 = (log2_size == 2 && c_idx == 0 &&
                         sc->cu_pred_mode == HEIC_PRED_INTRA);
-        heic_inverse_transform(coeff->coeffs, sc->residual_buf, size, bd, is_intra_4x4);
+        if (extended) {
+            heic_inverse_transform_extended(
+                coeff->coeffs, sc->mc_scratch, size, bd,
+                max_transform_range, is_intra_4x4);
+        } else {
+            heic_inverse_transform(
+                coeff->narrow, sc->residual_buf, size, bd, is_intra_4x4);
+        }
+    }
+
+    if (extended) {
+        int py, px;
+        if (c_idx == 0) save_luma_residual32(sc, sc->mc_scratch, size);
+        for (py = 0; py < size; py++) {
+            if ((int)y0 + py >= plane_h) break;
+            for (px = 0; px < size; px++) {
+                int64_t v;
+                if ((int)x0 + px >= plane_w) break;
+                v = (int64_t)plane[((int)y0 + py) * stride + (int)x0 + px]
+                    + sc->mc_scratch[py * size + px]
+                    + (c_idx ? cross_component_residual(
+                                   sc, px, py, res_scale) : 0);
+                if (v < 0) v = 0;
+                if (v > max_val) v = max_val;
+                plane[((int)y0 + py) * stride + (int)x0 + px] = (uint16_t)v;
+            }
+        }
+        return 0;
     }
 
     if (c_idx == 0) save_luma_residual16(sc, sc->residual_buf, size);

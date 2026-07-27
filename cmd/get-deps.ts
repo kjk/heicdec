@@ -69,7 +69,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v18-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align";
+  "v19-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_REXT_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -82,12 +82,14 @@ const HEVC_REXT_GENERAL_SEQUENCES = [1, 2, 3, 4, 5, 6] as const;
 const HEVC_REXT_CCP = "CCP_8bit_RExt_QCOM_1.bin";
 const HEVC_REXT_CCP_ENTRY = "CCP_8bit_RExt_QCOM.bin";
 const HEVC_REXT_CCP_ZIP = "CCP_8bit_RExt_QCOM_1.zip";
-const HEVC_REXT_CABAC_ALIGN =
+const HEVC_REXT_EXTPREC =
   "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1.bit";
-const HEVC_REXT_CABAC_ALIGN_ZIP =
+const HEVC_REXT_EXTPREC_ZIP =
   "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1.zip";
-const HEVC_REXT_CABAC_ALIGN_SEQUENCE =
+const HEVC_REXT_EXTPREC_SEQUENCE0 =
   "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq0.bit";
+const HEVC_REXT_EXTPREC_SEQUENCE1 =
+  "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq1.bit";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
   "RPLM_A_qualcomm_4.bit",
@@ -235,7 +237,8 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(miniDir, "chroma-qp-offset-rext.heic")) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_TSCTX)) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_CCP)) &&
-    existsSync(join(hevcSequenceDir, HEVC_REXT_CABAC_ALIGN_SEQUENCE)) &&
+    existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE0)) &&
+    existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE1)) &&
     HEVC_REXT_GENERAL_SEQUENCES.every((index) =>
       existsSync(join(
         hevcSequenceDir,
@@ -336,14 +339,16 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     }
   }
   {
-    const source = join(hevcSequenceDir, HEVC_REXT_CABAC_ALIGN);
-    const dest = join(hevcSequenceDir, HEVC_REXT_CABAC_ALIGN_SEQUENCE);
-    const zip = join(hevcSequenceDir, HEVC_REXT_CABAC_ALIGN_ZIP);
-    if (!existsSync(dest) || opts.force) {
-      await download(`${HEVC_REXT_BASE}/${HEVC_REXT_CABAC_ALIGN_ZIP}`, zip);
-      extractZipEntry(zip, HEVC_REXT_CABAC_ALIGN, source);
-      extractAnnexBSequence(source, dest, 0, 2);
-      console.log(`deps/testimages: extracted ${dest}`);
+    const source = join(hevcSequenceDir, HEVC_REXT_EXTPREC);
+    const dest0 = join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE0);
+    const dest1 = join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE1);
+    const zip = join(hevcSequenceDir, HEVC_REXT_EXTPREC_ZIP);
+    if (!existsSync(dest0) || !existsSync(dest1) || opts.force) {
+      await download(`${HEVC_REXT_BASE}/${HEVC_REXT_EXTPREC_ZIP}`, zip);
+      extractZipEntry(zip, HEVC_REXT_EXTPREC, source);
+      extractAnnexBSequence(source, dest0, 0, 2);
+      extractAnnexBSequence(source, dest1, 1, 2);
+      console.log(`deps/testimages: extracted ${dest0}, ${dest1}`);
     }
   }
   console.log("deps/testimages: generating HEVC fixtures…");
