@@ -14,6 +14,8 @@ typedef struct {
     int qp_y, qp_cb, qp_cr;
     int is_cu_qp_delta_coded;
     int cu_qp_delta;
+    int is_cu_chroma_qp_offset_coded;
+    int cu_qp_offset_cb, cu_qp_offset_cr;
     int cu_transquant_bypass;
     uint32_t cu_base_x, cu_base_y;
     uint8_t cu_log2_size;
@@ -353,8 +355,10 @@ static void decode_quant_params(heic_slice_ctx *sc, uint32_t x0,
     if (sc->qp_y < 0) sc->qp_y = 0;
 
     qp_bd_c = 6 * (bit_depth_c(sc->sps) - 8);
-    qpi_cb = qpy + sc->pps->pps_cb_qp_offset + sc->sh->slice_cb_qp_offset;
-    qpi_cr = qpy + sc->pps->pps_cr_qp_offset + sc->sh->slice_cr_qp_offset;
+    qpi_cb = qpy + sc->pps->pps_cb_qp_offset + sc->sh->slice_cb_qp_offset
+             + sc->cu_qp_offset_cb;
+    qpi_cr = qpy + sc->pps->pps_cr_qp_offset + sc->sh->slice_cr_qp_offset
+             + sc->cu_qp_offset_cr;
     if (qpi_cb < -qp_bd_c) qpi_cb = -qp_bd_c;
     if (qpi_cb > 57) qpi_cb = 57;
     if (qpi_cr < -qp_bd_c) qpi_cr = -qp_bd_c;
@@ -1772,6 +1776,27 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         store_qpy(sc, sc->cu_base_x, sc->cu_base_y, sc->cu_log2_size, sc->current_qpy);
     }
 
+    if (sc->sh->cu_chroma_qp_offset_enabled_flag && (cbf_cb || cbf_cr)
+        && !sc->cu_transquant_bypass
+        && !sc->is_cu_chroma_qp_offset_coded) {
+        int enabled = heic_cabac_decode_bin(
+            &sc->cabac,
+            &sc->models[HEIC_CTX_CU_CHROMA_QP_OFFSET_FLAG]);
+        int idx = 0;
+        if (enabled && sc->pps->chroma_qp_offset_list_len > 1) {
+            while (idx < 5
+                   && heic_cabac_decode_bin(
+                       &sc->cabac,
+                       &sc->models[HEIC_CTX_CU_CHROMA_QP_OFFSET_IDX]))
+                idx++;
+        }
+        if (idx >= sc->pps->chroma_qp_offset_list_len) return -1;
+        sc->is_cu_chroma_qp_offset_coded = 1;
+        sc->cu_qp_offset_cb = enabled ? sc->pps->cb_qp_offset_list[idx] : 0;
+        sc->cu_qp_offset_cr = enabled ? sc->pps->cr_qp_offset_list[idx] : 0;
+        decode_quant_params(sc, x0, sc->cu_base_x, sc->cu_base_y);
+    }
+
     luma_mode = get_intra_mode(sc, x0, y0, 0);
     sis = sc->sps->intra_smoothing_disabled_flag
               ? -1 : sc->sps->strong_intra_smoothing_enabled_flag;
@@ -2268,6 +2293,7 @@ static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     uint32_t ph = sc->sps->pic_height_in_luma_samples;
     uint8_t log2_min = sc->sps->log2_min_cb_size;
     uint8_t log2_qg;
+    uint8_t log2_chroma_qg;
     int split;
 
     /* Hard bounds: prevent log2_cb-1 wrap (255) infinite recursion. */
@@ -2289,6 +2315,14 @@ static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         sc->is_cu_qp_delta_coded = 0;
         sc->cu_qp_delta = 0;
     }
+    log2_chroma_qg =
+        sc->sps->log2_ctb_size > sc->pps->diff_cu_chroma_qp_offset_depth
+            ? (uint8_t)(sc->sps->log2_ctb_size
+                        - sc->pps->diff_cu_chroma_qp_offset_depth)
+            : 0;
+    if (sc->sh->cu_chroma_qp_offset_enabled_flag
+        && log2_cb >= log2_chroma_qg)
+        sc->is_cu_chroma_qp_offset_coded = 0;
 
     if (split) {
         uint32_t half = cb / 2;
@@ -2855,6 +2889,9 @@ int heic_hevc_picture_decode_segment(
         sc->current_qg_y = -1;
         sc->is_cu_qp_delta_coded = 0;
         sc->cu_qp_delta = 0;
+        sc->is_cu_chroma_qp_offset_coded = 0;
+        sc->cu_qp_offset_cb = 0;
+        sc->cu_qp_offset_cr = 0;
         memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
         work->filter_sh = work->sh;
     } else if (wpp && sc->ctb_x == 0 && sc->ctb_y > 0
@@ -2945,6 +2982,9 @@ int heic_hevc_picture_decode_segment(
                     sc->current_qg_y = -1;
                     sc->is_cu_qp_delta_coded = 0;
                     sc->cu_qp_delta = 0;
+                    sc->is_cu_chroma_qp_offset_coded = 0;
+                    sc->cu_qp_offset_cb = 0;
+                    sc->cu_qp_offset_cr = 0;
                 }
             }
         } else {

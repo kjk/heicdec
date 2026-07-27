@@ -200,6 +200,10 @@
       normalization for transform, transform-skip/RDPCM, and transquant-bypass
       paths. All nine frames of official `CCP_8bit_RExt_QCOM_1` match libde265
       at mse 0.0010 / maxdiff 4; the first intra picture is byte-for-byte exact.
+- [x] HEVC RExt CU chroma QP offset lists: slice enable syntax, CABAC flag/index,
+      chroma QP group state, and per-CU Cb/Cr offsets. Official `GENERAL`
+      sequence 6 matches libde265 byte-for-byte; a generated 4:4:4 HEIF wrapper
+      is covered by the normal libheif corpus.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

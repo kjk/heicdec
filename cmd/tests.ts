@@ -241,6 +241,7 @@ const HEVC_SEQUENCE_TESTS: readonly {
   { name: "GENERAL_8b_444_RExt_Sony_2-seq3.bit", frames: 1, mse: 0 },
   { name: "GENERAL_8b_444_RExt_Sony_2-seq4.bit", frames: 1, mse: 0 },
   { name: "GENERAL_8b_444_RExt_Sony_2-seq5.bit", frames: 1, mse: 0 },
+  { name: "GENERAL_8b_444_RExt_Sony_2-seq6.bit", frames: 1, mse: 0 },
   { name: "CCP_8bit_RExt_QCOM_1.bin", frames: 9, mse: 0.01 },
   {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",

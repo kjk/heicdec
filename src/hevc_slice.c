@@ -357,6 +357,8 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
         out->slice_cb_qp_offset = (int8_t)heic_bs_se(&bs);
         out->slice_cr_qp_offset = (int8_t)heic_bs_se(&bs);
     }
+    if (pps->chroma_qp_offset_list_enabled_flag)
+        out->cu_chroma_qp_offset_enabled_flag = heic_bs_bit(&bs);
 
     if (pps->deblocking_filter_override_enabled_flag)
         out->deblocking_filter_override_flag = heic_bs_bit(&bs);

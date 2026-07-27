@@ -795,7 +795,7 @@ void heic_pps_free(heic_ctx *ctx, heic_pps *pps);
 
 /* ---- CABAC (hevc_cabac.c) ---- */
 
-#define HEIC_NUM_CONTEXTS 172
+#define HEIC_NUM_CONTEXTS 174
 
 /* Context indices (imazen/heic cabac::context) */
 #define HEIC_CTX_SPLIT_CU_FLAG              0
@@ -830,6 +830,8 @@ void heic_pps_free(heic_ctx *ctx, heic_pps *pps);
 #define HEIC_CTX_EXPLICIT_RDPCM_DIR          160
 #define HEIC_CTX_LOG2_RES_SCALE_ABS_PLUS1    162
 #define HEIC_CTX_RES_SCALE_SIGN_FLAG         170
+#define HEIC_CTX_CU_CHROMA_QP_OFFSET_FLAG    172
+#define HEIC_CTX_CU_CHROMA_QP_OFFSET_IDX     173
 
 typedef struct {
     uint8_t state; /* 0..63 */
@@ -910,6 +912,7 @@ typedef struct {
     int8_t   slice_qp_delta;
     int8_t   slice_cb_qp_offset;
     int8_t   slice_cr_qp_offset;
+    int      cu_chroma_qp_offset_enabled_flag;
     int      deblocking_filter_override_flag;
     int      slice_deblocking_filter_disabled_flag;
     int8_t   slice_beta_offset_div2;

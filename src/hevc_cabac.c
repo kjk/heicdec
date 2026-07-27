@@ -94,6 +94,8 @@ void heic_cabac_init_contexts(heic_ctx_model *ctx, int slice_type, int cabac_ini
     for (i = HEIC_CTX_LOG2_RES_SCALE_ABS_PLUS1;
          i < HEIC_CTX_RES_SCALE_SIGN_FLAG + 2; i++)
         heic_ctx_model_init(&ctx[i], 154, slice_qp);
+    heic_ctx_model_init(&ctx[HEIC_CTX_CU_CHROMA_QP_OFFSET_FLAG], 154, slice_qp);
+    heic_ctx_model_init(&ctx[HEIC_CTX_CU_CHROMA_QP_OFFSET_IDX], 154, slice_qp);
 }
 
 static int cabac_read_bit(heic_cabac *c)

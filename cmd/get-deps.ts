@@ -69,7 +69,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v15-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp";
+  "v17-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_REXT_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -78,7 +78,7 @@ const HEVC_REXT_TSCTX = "TSCTX_8bit_I_RExt_SHARP_1.bin";
 const HEVC_REXT_TSCTX_ZIP = "TSCTX_8bit_I_RExt_SHARP_1.zip";
 const HEVC_REXT_GENERAL = "GENERAL_8b_444_RExt_Sony_2.bit";
 const HEVC_REXT_GENERAL_ZIP = "GENERAL_8b_444_RExt_Sony_2.zip";
-const HEVC_REXT_GENERAL_SEQUENCES = [1, 2, 3, 4, 5] as const;
+const HEVC_REXT_GENERAL_SEQUENCES = [1, 2, 3, 4, 5, 6] as const;
 const HEVC_REXT_CCP = "CCP_8bit_RExt_QCOM_1.bin";
 const HEVC_REXT_CCP_ENTRY = "CCP_8bit_RExt_QCOM.bin";
 const HEVC_REXT_CCP_ZIP = "CCP_8bit_RExt_QCOM_1.zip";
@@ -207,6 +207,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(miniDir, "transform-skip.heic")) &&
     existsSync(join(miniDir, "transform-skip-main10.heic")) &&
     existsSync(join(miniDir, "transform-skip-context-rext.heic")) &&
+    existsSync(join(miniDir, "chroma-qp-offset-rext.heic")) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_TSCTX)) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_CCP)) &&
     HEVC_REXT_GENERAL_SEQUENCES.every((index) =>
@@ -346,6 +347,16 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     join(miniDir, "transform-skip-context-rext.heic"),
     1920,
     1080,
+    8,
+    8,
+    3,
+    4,
+  );
+  generateHevcHeif(
+    join(hevcSequenceDir, "GENERAL_8b_444_RExt_Sony_2-seq6.bit"),
+    join(miniDir, "chroma-qp-offset-rext.heic"),
+    400,
+    384,
     8,
     8,
     3,
