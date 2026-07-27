@@ -195,6 +195,11 @@
       persistent Rice state across WPP rows. Official `TSCTX` (3 frames) and
       `GENERAL` sequence 1-5 feature isolates match libde265 byte-for-byte; a
       generated 4:4:4 HEIF wrapper is covered by the normal libheif corpus.
+- [x] HEVC cross-component prediction: RExt CABAC scale syntax, retained luma
+      transform residuals, chroma prediction when CBF is zero, and bit-depth
+      normalization for transform, transform-skip/RDPCM, and transquant-bypass
+      paths. All nine frames of official `CCP_8bit_RExt_QCOM_1` match libde265
+      at mse 0.0010 / maxdiff 4; the first intra picture is byte-for-byte exact.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

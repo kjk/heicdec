@@ -795,7 +795,7 @@ void heic_pps_free(heic_ctx *ctx, heic_pps *pps);
 
 /* ---- CABAC (hevc_cabac.c) ---- */
 
-#define HEIC_NUM_CONTEXTS 170
+#define HEIC_NUM_CONTEXTS 172
 
 /* Context indices (imazen/heic cabac::context) */
 #define HEIC_CTX_SPLIT_CU_FLAG              0
@@ -828,6 +828,8 @@ void heic_pps_free(heic_ctx *ctx, heic_pps *pps);
 #define HEIC_CTX_CU_QP_DELTA_ABS            156
 #define HEIC_CTX_EXPLICIT_RDPCM_FLAG         158
 #define HEIC_CTX_EXPLICIT_RDPCM_DIR          160
+#define HEIC_CTX_LOG2_RES_SCALE_ABS_PLUS1    162
+#define HEIC_CTX_RES_SCALE_SIGN_FLAG         170
 
 typedef struct {
     uint8_t state; /* 0..63 */
