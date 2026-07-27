@@ -243,10 +243,22 @@ const HEVC_SEQUENCE_TESTS: readonly {
   },
   { name: "LTRPSPS_A_Qualcomm_1.bit", frames: 17, mse: 8 },
   {
+    name: "MVCLIP_A_qualcomm_3.bit",
+    frames: 5,
+    mse: 0,
+    md5: "78b398c201089b6b17bcbda2bbccf3ae",
+  },
+  {
     name: "MVDL1ZERO_A_docomo_3.bit",
     frames: 500,
     mse: 0,
     md5: "593d1936f6fc2e1775ea2a691a601c34",
+  },
+  {
+    name: "MVEDGE_A_qualcomm_3.bit",
+    frames: 17,
+    mse: 0,
+    md5: "101c5bfe16ff1739909161794af29a2d",
   },
   { name: "RPLM_A_qualcomm_4.bit", frames: 25, mse: 8 },
   { name: "TMVP_A_MS_3.bit", frames: 17, mse: 8 },

@@ -1908,12 +1908,114 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                            int intra_split, int inter_split,
                            int cbf_cb_parent, int cbf_cr_parent);
 
+/* One chroma residual block at plane coords (cx,cy), size 1<<clog2.
+ * cbf_bit is 0 or 1 for this vertical half (top=bit0, bottom=bit1 for 4:2:2). */
+static int decode_chroma_block(heic_slice_ctx *sc, uint32_t cx, uint32_t cy,
+                               uint8_t clog2, uint8_t c_idx, int cbf_bit,
+                               int cscan, uint8_t chroma_mode, int sis,
+                               int res_scale)
+{
+    if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
+        predict_intra_block(sc, cx, cy, clog2, chroma_mode, c_idx, sis) != 0)
+        return -1;
+    if (cbf_bit) {
+        if (decode_and_apply_residual(sc, cx, cy, clog2, c_idx, cscan,
+                                      chroma_mode, res_scale) != 0)
+            return -1;
+    } else if (apply_cross_component_only(
+                   sc, cx, cy, clog2, c_idx, res_scale) != 0)
+        return -1;
+    return 0;
+}
+
+/* Chroma for a non-split luma TU (or the 8x8→4x4 split chroma step).
+ * cbf_cb/cbf_cr: bit0 = top (or only) block, bit1 = bottom block for 4:2:2.
+ * For 4:2:0 / 4:4:4 only bit0 is used. */
+static int decode_chroma_for_tu(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
+                                uint8_t log2_size, int cbf_cb, int cbf_cr,
+                                int cbf_luma, uint8_t luma_mode, int sis)
+{
+    int cat = chroma_array_type(sc->sps);
+    int is_444, is_422;
+    uint8_t clog2, chroma_mode;
+    uint32_t cx, cy, y_off;
+    int cscan, do_cross_component, res_scale;
+
+    if (cat == 0) return 0;
+    is_444 = cat == 3;
+    is_422 = cat == 2;
+    if (is_444) {
+        clog2 = log2_size;
+        cx = x0;
+        cy = y0;
+        y_off = 0;
+    } else {
+        /* 4:2:0 / 4:2:2: chroma TU is half width; 4:2:2 keeps full height
+         * via two stacked square TUs (H.265 7.3.8.10 / 7.4.9.10).
+         * log2_size==2 is the post-split 8x8→4x4 chroma step (residual 4x4). */
+        if (log2_size < 2) return -1;
+        clog2 = (uint8_t)(log2_size == 2 ? 2 : log2_size - 1);
+        cx = x0 / 2;
+        cy = is_422 ? y0 : y0 / 2;
+        y_off = is_422 ? (1u << clog2) : 0;
+    }
+    chroma_mode = get_intra_mode(sc, x0, y0, 1);
+    cscan = sc->cu_pred_mode == HEIC_PRED_INTRA
+                ? heic_get_scan_order(clog2, chroma_mode, 1, is_444)
+                : HEIC_SCAN_DIAG;
+    do_cross_component =
+        sc->pps->cross_component_prediction_enabled_flag && cbf_luma
+        && (sc->cu_pred_mode != HEIC_PRED_INTRA || chroma_mode == luma_mode);
+
+    res_scale = do_cross_component ? decode_cross_component_scale(sc, 1) : 0;
+    if (sc->cabac.error) return -1;
+    if (decode_chroma_block(sc, cx, cy, clog2, 1, cbf_cb & 1, cscan,
+                            chroma_mode, sis, res_scale) != 0)
+        return -1;
+    if (is_422) {
+        if (decode_chroma_block(sc, cx, cy + y_off, clog2, 1, (cbf_cb >> 1) & 1,
+                                cscan, chroma_mode, sis, res_scale) != 0)
+            return -1;
+    }
+
+    res_scale = do_cross_component ? decode_cross_component_scale(sc, 2) : 0;
+    if (sc->cabac.error) return -1;
+    if (decode_chroma_block(sc, cx, cy, clog2, 2, cbf_cr & 1, cscan,
+                            chroma_mode, sis, res_scale) != 0)
+        return -1;
+    if (is_422) {
+        if (decode_chroma_block(sc, cx, cy + y_off, clog2, 2, (cbf_cr >> 1) & 1,
+                                cscan, chroma_mode, sis, res_scale) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int decode_cbf_chroma_flags(heic_slice_ctx *sc, uint8_t log2_size,
+                                   uint8_t trafo_depth, int split, int cat,
+                                   int parent, int *out_cbf)
+{
+    int cbf = 0;
+    int ctx = HEIC_CTX_CBF_CBCR + trafo_depth;
+    if (trafo_depth == 0 || parent) {
+        cbf = heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx]) != 0;
+        /* 4:2:2: second vertical chroma CBF when not split, or at 8x8
+         * (even when split) — H.265 cbf_cb[][][trafoDepth] for y0+half. */
+        if (cat == 2 && (!split || log2_size == 3)) {
+            if (heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx]) != 0)
+                cbf |= 2;
+        }
+    }
+    *out_cbf = cbf;
+    return sc->cabac.error ? -1 : 0;
+}
+
 static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                           uint8_t log2_size, uint8_t trafo_depth, int cbf_cb,
                           int cbf_cr)
 {
     int cbf_luma, sis, scan, chroma_here, is_444;
-    uint8_t luma_mode, chroma_mode;
+    uint8_t luma_mode;
     int ctx_off, ctx_idx;
 
     if (sc->cu_pred_mode == HEIC_PRED_INTRA || trafo_depth != 0 ||
@@ -1995,53 +2097,8 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     is_444 = sc->frame->chroma_format == 3;
     chroma_here = is_444 || log2_size >= 3;
     if (chroma_here && chroma_array_type(sc->sps) != 0) {
-        uint8_t clog2;
-        uint32_t cx, cy;
-        int cscan, do_cross_component, res_scale;
-        if (is_444) {
-            clog2 = log2_size;
-            cx = x0;
-            cy = y0;
-        } else {
-            clog2 = (uint8_t)(log2_size - 1);
-            cx = x0 / 2;
-            cy = y0 / 2;
-        }
-        chroma_mode = get_intra_mode(sc, x0, y0, 1);
-        cscan = sc->cu_pred_mode == HEIC_PRED_INTRA
-                    ? heic_get_scan_order(clog2, chroma_mode, 1, is_444)
-                    : HEIC_SCAN_DIAG;
-        do_cross_component =
-            sc->pps->cross_component_prediction_enabled_flag && cbf_luma
-            && (sc->cu_pred_mode != HEIC_PRED_INTRA
-                || chroma_mode == luma_mode);
-        res_scale = do_cross_component
-                        ? decode_cross_component_scale(sc, 1) : 0;
-        if (sc->cabac.error) return -1;
-        if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-            predict_intra_block(
-                sc, cx, cy, clog2, chroma_mode, 1, sis) != 0)
-            return -1;
-        if (cbf_cb) {
-            if (decode_and_apply_residual(sc, cx, cy, clog2, 1, cscan,
-                                          chroma_mode, res_scale) != 0)
-                return -1;
-        } else if (apply_cross_component_only(
-                       sc, cx, cy, clog2, 1, res_scale) != 0)
-            return -1;
-        res_scale = do_cross_component
-                        ? decode_cross_component_scale(sc, 2) : 0;
-        if (sc->cabac.error) return -1;
-        if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-            predict_intra_block(
-                sc, cx, cy, clog2, chroma_mode, 2, sis) != 0)
-            return -1;
-        if (cbf_cr) {
-            if (decode_and_apply_residual(sc, cx, cy, clog2, 2, cscan,
-                                          chroma_mode, res_scale) != 0)
-                return -1;
-        } else if (apply_cross_component_only(
-                       sc, cx, cy, clog2, 2, res_scale) != 0)
+        if (decode_chroma_for_tu(sc, x0, y0, log2_size, cbf_cb, cbf_cr,
+                                 cbf_luma, luma_mode, sis) != 0)
             return -1;
     }
     return 0;
@@ -2087,17 +2144,14 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         cbf_cb = 0;
         cbf_cr = 0;
     } else if (log2_size > 2 || cat == 3) {
-        if (trafo_depth == 0 || cbf_cb_parent) {
-            int ctx = HEIC_CTX_CBF_CBCR + trafo_depth;
-            cbf_cb = heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx]) != 0;
-        } else
-            cbf_cb = 0;
-        if (trafo_depth == 0 || cbf_cr_parent) {
-            int ctx = HEIC_CTX_CBF_CBCR + trafo_depth;
-            cbf_cr = heic_cabac_decode_bin(&sc->cabac, &sc->models[ctx]) != 0;
-        } else
-            cbf_cr = 0;
+        if (decode_cbf_chroma_flags(sc, log2_size, trafo_depth, split, cat,
+                                    cbf_cb_parent, &cbf_cb) != 0)
+            return -1;
+        if (decode_cbf_chroma_flags(sc, log2_size, trafo_depth, split, cat,
+                                    cbf_cr_parent, &cbf_cr) != 0)
+            return -1;
     } else {
+        /* 4x4: inherit parent flags (may be 2-bit for 4:2:2). */
         cbf_cb = cbf_cb_parent;
         cbf_cr = cbf_cr_parent;
     }
@@ -2120,29 +2174,14 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
             != 0)
             return -1;
 
-        /* 4:2:0 chroma at 8x8→4x4 split */
+        /* After 8x8→4x4 luma split: code chroma residual for the 8x8 region
+         * (4:2:0 one 4x4; 4:2:2 two stacked 4x4). */
         if (log2_size == 3 && sc->frame->chroma_format != 3 && cat != 0) {
             int sis = sc->sps->intra_smoothing_disabled_flag
                           ? -1 : sc->sps->strong_intra_smoothing_enabled_flag;
-            uint8_t cm = get_intra_mode(sc, x0, y0, 1);
-            int scan = sc->cu_pred_mode == HEIC_PRED_INTRA
-                           ? heic_get_scan_order(2, cm, 1, 0)
-                           : HEIC_SCAN_DIAG;
-            if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-                predict_intra_block(
-                    sc, x0 / 2, y0 / 2, 2, cm, 1, sis) != 0)
-                return -1;
-            if (cbf_cb
-                && decode_and_apply_residual(sc, x0 / 2, y0 / 2, 2, 1, scan,
-                                             cm, 0) != 0)
-                return -1;
-            if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-                predict_intra_block(
-                    sc, x0 / 2, y0 / 2, 2, cm, 2, sis) != 0)
-                return -1;
-            if (cbf_cr
-                && decode_and_apply_residual(sc, x0 / 2, y0 / 2, 2, 2, scan,
-                                             cm, 0) != 0)
+            uint8_t lm = get_intra_mode(sc, x0, y0, 0);
+            if (decode_chroma_for_tu(sc, x0, y0, 2, cbf_cb, cbf_cr, 0, lm,
+                                     sis) != 0)
                 return -1;
         }
     } else {
