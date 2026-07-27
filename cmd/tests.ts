@@ -638,6 +638,37 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "fd6e6d973d39622d197dbdf4543643f2",
   },
+  /* WPP + multi-segment (dependent entry-point parse); exact vs libde265. */
+  {
+    name: "WPP_A_ericsson_MAIN_2.bit",
+    frames: 48,
+    mse: 0,
+    md5: "cd7e815eb47e8138fec2185d4de84304",
+  },
+  {
+    name: "WPP_B_ericsson_MAIN_2.bit",
+    frames: 48,
+    mse: 0,
+    md5: "e37c7e561a1226640a7bf98e81df78b1",
+  },
+  {
+    name: "WPP_C_ericsson_MAIN_2.bit",
+    frames: 48,
+    mse: 0,
+    md5: "e067aa3a6a12cd5743849ded793c8d3f",
+  },
+  {
+    name: "WPP_E_ericsson_MAIN_2.bit",
+    frames: 48,
+    mse: 0,
+    md5: "485798dbf95ad61232075df2f294aa3f",
+  },
+  {
+    name: "WPP_F_ericsson_MAIN_2.bit",
+    frames: 48,
+    mse: 0,
+    md5: "2aaf16274fe8e799d72fa08a4963850d",
+  },
 ];
 
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {

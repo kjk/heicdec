@@ -389,11 +389,13 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
     throw new Error("libheif requested but not found. Run -build-libheif first");
   }
   const comp = compressFeatureFlags(zlib, brotli);
+  /* meson/cmake deps (dav1d, libheif, libde265) are /MD; match CRT when linking them. */
+  const useMd = withLibheif || needDav1d;
   syncFeatureStamp(
     dir,
     false,
     ".heic_features",
-    `dav1d=${needDav1d ? 1 : 0};libheif=${withLibheif ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0};pdb=1`,
+    `dav1d=${needDav1d ? 1 : 0};libheif=${withLibheif ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0};crt=${useMd ? "MD" : "MT"};pdb=1`,
     "obj",
   );
   let def = comp.def;
@@ -408,8 +410,7 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
     for (const p of heif.heifInc) inc += ` -I${p}`;
   }
   const units = cUnits(dir, "obj", withLibheif);
-  /* cmake builds heif/libde265 with /MD; match that when linking the oracle. */
-  const msvcC = withLibheif
+  const msvcC = useMd
     ? HEIC_MSVC_CL_C.replace(/\s-MT\b/, " -MD")
     : HEIC_MSVC_CL_C;
   /* One PDB for all objs + the final exe (winperf symbolicates from this). */
@@ -442,9 +443,9 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
     )
   ) {
     /* -DEBUG → heic_test_msvc.pdb; oracle is C++ so pull MD C++ runtime. */
-    const link = withLibheif
-      ? `cl -nologo -MD -Zi ${objs.join(" ")}${linkExtra} -Fe:${exePath} -Fd${pdb} -link -DEBUG -DEFAULTLIB:msvcprt`
-      : `cl -nologo -Zi ${objs.join(" ")}${linkExtra} -Fe:${exePath} -Fd${pdb} -link -DEBUG`;
+    const crt = useMd ? "-MD " : "";
+    const cxxRt = withLibheif ? " -DEFAULTLIB:msvcprt" : "";
+    const link = `cl -nologo ${crt}-Zi ${objs.join(" ")}${linkExtra} -Fe:${exePath} -Fd${pdb} -link -DEBUG${cxxRt}`;
     await runCmd(link, ROOT);
   }
   return exePath;
@@ -821,10 +822,17 @@ export async function buildFuzz(clean = false): Promise<string> {
   }
 
   const cc = findFuzzClang();
+  /* HEIC_FUZZ_UBSAN=1 adds undefined sanitizer (Linux/macOS CI; Windows clang
+   * ASan+UBSan together is flaky with prebuilt /MD deps). */
+  const wantUbsan =
+    process.env.HEIC_FUZZ_UBSAN === "1" || process.env.HEIC_FUZZ_UBSAN === "true";
+  const sanitize = wantUbsan && !isWindows
+    ? "address,undefined,fuzzer"
+    : "address,fuzzer";
   // -O1 for readable ASan traces (same as djvudec fuzz).
-  const cflags = `-fsanitize=address,fuzzer ${clangCFlags("-g -O1")}${def}${inc}`;
+  const cflags = `-fsanitize=${sanitize} ${clangCFlags("-g -O1")}${def}${inc}`;
   console.log(
-    `building heic_fuzz (clang+asan+fuzzer` +
+    `building heic_fuzz (clang+${sanitize}` +
       `${dav1d ? "+dav1d" : ""}${zlib ? "+zlib" : ""}${brotli ? "+brotli" : ""})...`,
   );
   try {
@@ -842,7 +850,7 @@ export async function buildFuzz(clean = false): Promise<string> {
       /* ASan inflates stack frames; Windows default 1MB is tight for nested
        * HEVC TT/CQT + residual under fuzz REDUCE. Give the fuzzer 8MB. */
       const stackFlag = isWindows ? " -Wl,/STACK:8388608" : "";
-      await $`${cc} -fsanitize=address,fuzzer ${{ raw: objs.join(" ") }}${{ raw: linkExtra }}${{ raw: stackFlag }} -o ${FUZZ_EXE}`.cwd(
+      await $`${cc} -fsanitize=${sanitize} ${{ raw: objs.join(" ") }}${{ raw: linkExtra }}${{ raw: stackFlag }} -o ${FUZZ_EXE}`.cwd(
         ROOT,
       );
     }

@@ -28,8 +28,16 @@ export const DIST_H = join(DIST, "heic.h");
 export const DIST_C = join(DIST, "heic.c");
 
 /* Source fragments included by a module must be embedded too: dist/heic.c is
- * deliberately standalone and cannot depend on files left under src/. */
+ * deliberately standalone and cannot depend on files left under src/.
+ * Headers that would duplicate symbols if pasted into every .c are stripped
+ * and injected once after heic_internal.h (see ONCE_HEADERS). */
 const EMBEDDED_INCLUDES = ["hevc_cabac_init.inc"];
+const ONCE_HEADERS = ["hevc_cabac_inline.h"];
+const STRIP_LOCAL_HEADERS = [
+  "heic_internal\\.h",
+  "heic\\.h",
+  "hevc_cabac_inline\\.h",
+];
 
 function stripIncludes(text: string, headers: string[]): string {
   const re = new RegExp(
@@ -135,12 +143,19 @@ export async function buildDist(): Promise<void> {
   parts.push(publicHeader.trimEnd() + "\n");
   const internal = readFileSync(join(SRC, "heic_internal.h"), "utf8");
   parts.push(stripIncludes(internal, ["heic\\.h"]).trimEnd() + "\n");
+  /* Inline once: residual/ctu/cabac all #include this; embedding per .c would
+   * redeclare static symbols in the amalgamation. */
+  for (const name of ONCE_HEADERS) {
+    const once = readFileSync(join(SRC, name), "utf8");
+    parts.push(
+      stripIncludes(once, ["heic_internal\\.h", "heic\\.h"]).trimEnd() + "\n",
+    );
+  }
 
   for (const name of DIST_MODULES) {
     const code = readFileSync(join(SRC, name), "utf8");
     parts.push(
-      embedIncludes(stripIncludes(code, ["heic_internal\\.h", "heic\\.h"])).trimEnd() +
-        "\n",
+      embedIncludes(stripIncludes(code, STRIP_LOCAL_HEADERS)).trimEnd() + "\n",
     );
   }
 

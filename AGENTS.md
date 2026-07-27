@@ -120,8 +120,12 @@ bun cmd/verify-wasm.ts <file.heic>
   over `-max-len` skipped); the corpus dir **is** the checkpoint — kill to
   stop, rerun to resume. Auto-builds dav1d/zlib/brotli when missing so AVIF +
   unci compression are covered (`-no-deps` for pure-C HEVC only).
-- Flags: `-jobs N`, `-repro FILE`, `-minimize` (`-merge=1` corpus shrink),
-  `-max-len N`, `-no-deps`.
+- Flags: `-jobs N`, `-repro FILE`, `-check-crashes` (CI: replay all
+  `fuzz/crashes/*`, expect exit 0), `-minimize` (`-merge=1` corpus shrink),
+  `-max-len N`, `-no-deps`. Linux/macOS CI may set `HEIC_FUZZ_UBSAN=1` for
+  ASan+UBSan+fuzzer.
+- GitHub Actions: `.github/workflows/ci.yml` (MSVC smoke, clang crash
+  regression, Linux amalgamation+UBSan, WASM).
 - `bun cmd/fuzz-afl.ts` — same harness via **AFL++** (macOS/*nix;
   `brew install afl++`). Shares `fuzz/corpus/` with libFuzzer; AFL state in
   `fuzz/afl-out/` (gitignored). On exit (and with `-import`), queue/crashes

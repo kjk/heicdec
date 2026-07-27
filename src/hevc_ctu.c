@@ -3436,14 +3436,16 @@ int heic_hevc_picture_decode_segment(
             if (sc->ctb_x >= pic_w) {
                 sc->ctb_x = 0;
                 sc->ctb_y++;
-                /* WPP: new row — restore contexts from prev row col1 + seek entry */
-                if (wpp && sc->ctb_y < pic_h && pic_w > 1) {
+                /* WPP: end_of_sub_stream_one_bit at every row boundary (even
+                 * PicWidthInCtbsY==1 — FATE WPP_D is 64×H with one CTB column).
+                 * Context restore from CTB (1,y-1) only applies when pic_w>1. */
+                if (wpp && sc->ctb_y < pic_h) {
                     (void)heic_cabac_decode_terminate(&sc->cabac); /* end_of_subset */
-                    if (work->wpp_have_saved)
+                    if (pic_w > 1 && work->wpp_have_saved) {
                         memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
-                    if (work->wpp_have_saved)
                         memcpy(sc->stat_coeff, work->wpp_stat_coeff,
                                sizeof(sc->stat_coeff));
+                    }
                     if (entry_idx < n_entry) {
                         uint32_t ebsp = work->entry_cum[entry_idx];
                         uint32_t rbsp = ep_positions && n_ep > 0

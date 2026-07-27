@@ -52,6 +52,7 @@ function usage(): never {
   -jobs N        run N parallel workers sharing the corpus
   -max-len N     max input size in bytes (default 4000000)
   -repro FILE    replay a single crash artifact and exit
+  -check-crashes replay every fuzz/crashes artifact under ASan (CI regression)
   -minimize      shrink the corpus to a minimal covering set
   -no-deps       skip auto-building dav1d/zlib/brotli (HEVC-only fuzz)
   -h, --help`,
@@ -63,6 +64,7 @@ const args = process.argv.slice(2);
 let jobs = 1;
 let maxLen = 4000000;
 let repro = "";
+let checkCrashes = false;
 let minimize = false;
 let noDeps = false;
 
@@ -71,6 +73,7 @@ for (let i = 0; i < args.length; i++) {
   if (a === "-jobs") jobs = intArg(args[++i], "-jobs");
   else if (a === "-max-len") maxLen = intArg(args[++i], "-max-len");
   else if (a === "-repro") repro = args[++i] ?? usage();
+  else if (a === "-check-crashes") checkCrashes = true;
   else if (a === "-minimize") minimize = true;
   else if (a === "-no-deps") noDeps = true;
   else if (a === "-h" || a === "--help") usage();
@@ -132,6 +135,34 @@ if (repro) {
   }
   console.log(`replaying ${path}`);
   process.exit(await run([path]));
+}
+
+// -check-crashes: every tracked artifact must complete without ASan/libFuzzer
+// crash (exit 0). Used by CI as a fixed regression suite.
+if (checkCrashes) {
+  const arts = listArtifacts();
+  if (arts.length === 0) {
+    console.log("no crash/slow artifacts in fuzz/crashes — nothing to check");
+    process.exit(0);
+  }
+  let fail = 0;
+  console.log(`checking ${arts.length} fuzz/crashes artifact(s) under ASan...`);
+  for (const name of arts) {
+    const path = join(CRASHES, name);
+    const rc = await run([path]);
+    if (rc !== 0) {
+      fail++;
+      console.error(`[fail] ${name} exit=${rc}`);
+    } else {
+      console.log(`[ok] ${name}`);
+    }
+  }
+  if (fail) {
+    console.error(`${fail}/${arts.length} artifact(s) still crash`);
+    process.exit(1);
+  }
+  console.log(`check-crashes: ${arts.length} ok`);
+  process.exit(0);
 }
 
 // -minimize: merge the corpus into a fresh minimal covering set, then swap.

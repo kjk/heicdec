@@ -30,6 +30,41 @@ heic_doc_close(doc);
 heic_ctx_free(ctx);
 ```
 
+### SumatraPDF surface
+
+[SumatraPDF](https://www.sumatrapdfreader.org/) uses this library as its
+HEIC/AVIF reader (`AvifReader.cpp`):
+
+| Need | API |
+|------|-----|
+| size from buffer | `heic_doc_open` + `heic_doc_info` |
+| decode to BGRA pixmap | `heic_doc_decode(HEIC_FORMAT_BGRA)` |
+| EXIF TIFF blob | `heic_doc_exif` (4-byte HEIF prefix already stripped) |
+
+Smoke that path with `heic_test -sumatra file.heic` (or `bun cmd/verify-release.ts`).
+
+### Supported profiles and intentional exclusions
+
+| In scope | Notes |
+|----------|--------|
+| HEVC stills (`hvc1`/`heic`/`heix`/`mif1`) | I-frames, grids, tiles, WPP (entry points), P-item predictives |
+| AV1 stills (`av01`/`avif`) | via **dav1d** (link separately; not in amalgamation/WASM) |
+| unci (ISO 23001-17) | planar/pixel/row/tile; optional zlib/brotli |
+| Alpha | `auxl` HEVC/AVIF; AVIF alpha sequences |
+| EXIF / XMP / ICC / clap / irot / imir / iovl | EXIF returns TIFF only |
+| HEVC/AV1 image sequences | `moov` + public sequence API |
+| Apple HDR gain map | independent aux decode; **no** tone-map/EOTF |
+
+| Out of scope / limited | Notes |
+|------------------------|--------|
+| Encode / write HEIF | decode-only |
+| Multilayer HEVC (inter-layer) | classified skip |
+| JPEG / H.264 in HEIF | rejected clearly |
+| PQ/HLG tone-mapping | CICP exposed; caller tone-maps |
+| GPU backends | CPU only |
+| WPP_D / WPP Main10 / DELTAQP_A/B / RPS_D / SLIST / PERSIST / NoOutPrior–RAP | see `PROGRESS.md` remaining gaps |
+| Negative-offset `iovl` vs libheif | ISO offsets; libheif may paint black |
+
 ## Build & test
 
 Requires `clang` or MSVC, `bun`, and `git`. For AVIF, also `meson` + `ninja`
@@ -46,11 +81,14 @@ bun cmd/build.ts -libheif        # also link strukturag libheif oracle
 bun cmd/bench.ts -rand 5         # compact best-of-3 timing vs libheif
 bun cmd/bench.ts -verbose -rand 5 # also show open/decode/close timing
 bun cmd/fuzz.ts                  # libFuzzer + ASan (seeded from deps corpus)
+bun cmd/fuzz.ts -check-crashes   # replay fuzz/crashes/* under ASan (CI)
+bun cmd/verify-release.ts        # Sumatra/API/memory-limit + amalgamation/WASM
 bun cmd/fuzz-afl.ts              # AFL++ on macOS (shares fuzz/corpus/)
 bun cmd/build-dist.ts            # amalgamation → dist/ (+ split JS/WASM demo)
 bun cmd/build-wasm.ts            # WebAssembly drop only (bootstraps emsdk if needed)
 bun cmd/run-wasm-demo.ts         # serve dist/wasm/demo.html on localhost:8000
 bun cmd/verify-wasm.ts single.heic
+bun cmd/verify-release.ts        # Sumatra surface + API + amalgamation + WASM
 ```
 
 Fuzzing notes: first run builds optional dav1d/zlib/brotli when missing, seeds
@@ -86,6 +124,9 @@ heic_test -thumbnail -out thumb.ppm in.heic
 heic_test -bench in.heic              # vs libheif (build with -libheif)
 heic_test -verify in.heic             # RGB MSE vs libheif (build with -libheif)
 heic_test -exif in.heic
+heic_test -sumatra in.heic        # size + BGRA + EXIF (SumatraPDF surface)
+heic_test -api in.heic            # custom allocator + abort
+heic_test -memory-limit           # max_memory_bytes regression
 ```
 
 Oracle build (static, cmake/ninja, same idea as djvudec↔libdjvu):

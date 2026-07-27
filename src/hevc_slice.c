@@ -140,6 +140,10 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
         return -1;
     }
     if (dependent) {
+        /* Inherit independent slice fields, then still parse entry points +
+         * header extension (H.265 7.3.6.1 — those sit outside the
+         * !dependent_slice_segment_flag block). Skipping them misaligns
+         * data_offset and breaks multi-segment WPP (FATE WPP_A–F). */
         *out = *independent;
         out->entry_point_offsets = NULL;
         out->num_entry_point_offsets = 0;
@@ -148,8 +152,7 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
         out->pps_id = pps_id;
         out->dependent_slice_segment_flag = 1;
         out->slice_segment_address = segment_address;
-        goto finish_header;
-    }
+    } else {
     out->first_slice_segment_in_pic_flag = first;
     out->no_output_of_prior_pics_flag = no_output;
     out->pps_id = pps_id;
@@ -387,7 +390,9 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
     else
         out->slice_loop_filter_across_slices_enabled_flag =
             pps->pps_loop_filter_across_slices_enabled_flag;
+    } /* !dependent */
 
+    /* Present for both independent and dependent segments (tiles / WPP). */
     if (pps->tiles_enabled_flag || pps->entropy_coding_sync_enabled_flag) {
         out->num_entry_point_offsets = heic_bs_ue(&bs);
         if (out->num_entry_point_offsets > 0) {
@@ -414,7 +419,6 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             (void)heic_bs_bits(&bs, 8);
     }
 
-finish_header:
     /* Slice header ends with byte_alignment (imazen/heic slice.rs): always
        consume alignment_bit_equal_to_one, then discard any remaining bits in the
        current byte.  When the header is already byte-aligned, the old

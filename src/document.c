@@ -297,14 +297,23 @@ int heic_doc_exif(heic_doc *doc, uint8_t **out, size_t *out_len)
             if (owned) heic_free_buf(doc->ctx, (void *)data);
             continue;
         }
-        /* Strip 4-byte TIFF offset prefix (HEIF). */
-        payload = len - 4;
-        copy = (uint8_t *)heic_zalloc(doc->ctx, payload);
-        if (!copy) {
-            if (owned) heic_free_buf(doc->ctx, (void *)data);
-            return 0;
+        /* HEIF ExifDataBlock: u32 BE TIFF offset from start of this field,
+         * then payload. TIFF starts at 4 + offset (imazen/ISO). */
+        {
+            size_t tiff_off = (size_t)heic_rb32(data);
+            size_t tiff_start = 4 + tiff_off;
+            if (tiff_start >= len) {
+                if (owned) heic_free_buf(doc->ctx, (void *)data);
+                continue;
+            }
+            payload = len - tiff_start;
+            copy = (uint8_t *)heic_alloc(doc->ctx, payload);
+            if (!copy) {
+                if (owned) heic_free_buf(doc->ctx, (void *)data);
+                return 0;
+            }
+            memcpy(copy, data + tiff_start, payload);
         }
-        memcpy(copy, data + 4, payload);
         if (owned) heic_free_buf(doc->ctx, (void *)data);
         *out = copy;
         *out_len = payload;

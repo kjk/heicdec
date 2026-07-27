@@ -1,0 +1,114 @@
+# CI for heicdec — build, release smoke, amalgamation/WASM, fuzz crash regression.
+#
+# Full pixel-oracle corpus (tests.ts -all + libheif) is optional/local; CI keeps
+# the feedback loop under ~15–20 min without cloning every encoder oracle path
+# when deps build tools are missing.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Non-interactive; scripts already print install hints if meson/cmake missing.
+  BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.bun-cache
+
+jobs:
+  windows-msvc:
+    name: Windows MSVC + release smoke
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Clone deps
+        run: bun cmd/get-deps.ts
+      - name: Build harness (HEVC-only)
+        run: bun cmd/build.ts -msvc
+      - name: Release integration smoke
+        # Needs dav1d for AV1 surface; build-dav1d if meson/nasm present.
+        run: |
+          if (Get-Command meson -ErrorAction SilentlyContinue) {
+            bun cmd/build.ts -build-dav1d
+            bun cmd/verify-release.ts
+          } else {
+            Write-Host "meson missing — HEVC-only release checks"
+            $h = "out/msvc/heic_test_msvc.exe"
+            & $h -memory-limit
+            & $h -sumatra deps/heic/testdata/libheif-examples/example.heic
+            & $h -api deps/heic/testdata/libheif-examples/example.heic
+            bun cmd/build-dist.ts
+          }
+
+  windows-clang-fuzz:
+    name: Windows clang ASan crash regression
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: MSVC environment (clang from VS)
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Clone deps
+        run: bun cmd/get-deps.ts
+      - name: Replay tracked fuzz crashes under ASan
+        run: bun cmd/fuzz.ts -check-crashes -no-deps
+
+  linux:
+    name: Linux clang + UBSan crashes + amalgamation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang ninja-build meson nasm cmake pkg-config
+      - name: Clone deps
+        run: bun cmd/get-deps.ts
+      - name: Build clang harness
+        run: bun cmd/build.ts -clang
+      - name: Memory-limit + Sumatra surface
+        run: |
+          H=out/clang/heic_test_clang
+          test -x "$H"
+          "$H" -memory-limit
+          "$H" -sumatra deps/heic/testdata/libheif-examples/example.heic
+          "$H" -api deps/heic/testdata/libheif-examples/example.heic
+      - name: Amalgamation
+        run: bun cmd/build-dist.ts
+      - name: Fuzz crashes (ASan + UBSan)
+        env:
+          HEIC_FUZZ_UBSAN: "1"
+        run: bun cmd/fuzz.ts -check-crashes -no-deps
+
+  wasm:
+    name: WASM decode smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Clone deps (testdata)
+        run: bun cmd/get-deps.ts
+      - name: Build amalgamation + WASM
+        run: bun cmd/build-dist.ts
+      - name: Verify WASM decode
+        run: bun cmd/verify-wasm.ts deps/heic/testdata/features/single.heic

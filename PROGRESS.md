@@ -167,10 +167,11 @@
       multilayer001–005 are out of scope; must-decode fixtures still fail hard.
 - [x] Expanded raw HEVC conformance by feature family (FATE streams, exact MD5
       vs libde265): DELTAQP_C; RQT_A–C + TUSIZE + MAXBINS_A–C; IPRED_A–C +
-      CIP_A–C; SAO_A–G; TILES_A/B; POC_A; RPS_A/B/C/E/F. Remaining gaps:
-      WPP Main/Main10 A–F (overlapping slice-segment address with entry points),
-      DELTAQP_A/B, NoOutPrior/RAP output-order size mismatches, RPS_D, SLIST,
-      PERSIST_RPARAM.
+      CIP_A–C; SAO_A–G; TILES_A/B; POC_A; RPS_A/B/C/E/F; WPP Main A/B/C/E/F
+      (48-frame Ericsson streams). Fix: dependent slice headers still parse
+      entry-point offsets + header extension (H.265 7.3.6.1). Remaining gaps:
+      WPP_D (single-CTB-wide), WPP Main10 (P-frame WPP desync), DELTAQP_A/B,
+      NoOutPrior/RAP DPB output order, RPS_D, SLIST, PERSIST_RPARAM.
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`
@@ -180,9 +181,12 @@
 - [x] Feature-family HEVC sequences installed via get-deps (FATE) with pinned
       reconstruction MD5s for DELTAQP_C, RQT, TUSIZE, MAXBINS, IPRED, CIP,
       SAO_A–G, TILES, POC_A, RPS_A/B/C/E/F.
-- [ ] Strengthen memory-safety automation: run libFuzzer/AFL seeds through
-      ASan plus UBSan, verify every tracked crash/slow artifact on each run,
-      minimize new findings, and add CI jobs for MSVC, Clang, Linux, and WASM.
+- [x] Strengthen memory-safety automation:
+      - `bun cmd/fuzz.ts -check-crashes` replays every `fuzz/crashes/*` under ASan
+      - `HEIC_FUZZ_UBSAN=1` enables ASan+UBSan+fuzzer on Linux/macOS
+      - GitHub Actions `.github/workflows/ci.yml`: Windows MSVC release smoke,
+        Windows clang crash regression, Linux clang+UBSan crashes + amalgamation,
+        WASM decode smoke
 - [ ] Resume performance work after the correctness sweep. Profile the new
       4:2:2 and motion-vector streams plus the full HEIF corpus; then target
       measured hot paths with AVX2/ARM64 NEON and consider parallel decoding
@@ -238,10 +242,16 @@
         unescape uses non-zeroing alloc when copy is required.
       - Residual last-sig uses O(1) inverse for 8×8 subblock diagonal scan.
       - HDR often ≈/≤ libheif in noise; example still faster.
-- [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
+- [x] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported
       profiles plus intentional exclusions.
+      - `heic_test -sumatra` / `-api` / `-memory-limit`
+      - `bun cmd/verify-release.ts` (orchestrates + build-dist + verify-wasm)
+      - README: Sumatra surface table + supported/excluded profiles
+      - amalgamation embeds `hevc_cabac_inline.h` once (no duplicate statics)
+      - MSVC links dav1d (and libheif) with `/MD` so `__imp__aligned_malloc` /
+        CRT match meson-built static libs; feature stamp tracks `crt=MD|MT`
 
 - [x] unci (ISO 23001-17): planar/pixel/row/tile-comp; multi-tile; 1..16-bit RGB/mono
 - [x] unci: YUV 444/422/420 (planar + tile-comp); default matrix BT.601 like libheif

@@ -1093,6 +1093,184 @@ static int do_profile_libheif(const uint8_t *data, size_t len, int loops)
 }
 #endif
 
+/* Tracking allocator for public-API tests. */
+typedef struct {
+    size_t live;
+    size_t peak;
+    int n_alloc;
+    int n_free;
+    int fail_after; /* if >=0, fail the Nth alloc (0-based after n_alloc++) */
+} track_alloc;
+
+static void *track_alloc_cb(void *user, void *ctx, size_t size)
+{
+    track_alloc *t = (track_alloc *)user;
+    void *p;
+    (void)ctx;
+    if (t->fail_after >= 0 && t->n_alloc >= t->fail_after) {
+        t->n_alloc++;
+        return NULL;
+    }
+    p = malloc(size ? size : 1);
+    if (!p) return NULL;
+    t->n_alloc++;
+    t->live += size;
+    if (t->live > t->peak) t->peak = t->live;
+    return p;
+}
+
+static void track_free_cb(void *user, void *ctx, void *p)
+{
+    track_alloc *t = (track_alloc *)user;
+    (void)ctx;
+    if (!p) return;
+    t->n_free++;
+    free(p);
+}
+
+/* SumatraPDF AvifReader surface: size probe, BGRA decode, EXIF TIFF blob. */
+static int do_sumatra_surface_test(const uint8_t *data, size_t len)
+{
+    heic_ctx *ctx;
+    heic_doc *doc;
+    heic_image_info info;
+    heic_image *img = NULL;
+    uint8_t *exif = NULL;
+    size_t elen = 0;
+    int ok = 1;
+    uint32_t x, y;
+    size_t nonblack = 0;
+
+    heic_init();
+    ctx = heic_ctx_new(NULL, NULL, on_error_only, NULL);
+    if (!ctx) {
+        fprintf(stderr, "sumatra: ctx_new failed\n");
+        return 1;
+    }
+    doc = heic_doc_open(ctx, data, len);
+    if (!doc) {
+        fprintf(stderr, "sumatra: doc_open failed\n");
+        heic_ctx_free(ctx);
+        return 1;
+    }
+    memset(&info, 0, sizeof(info));
+    if (heic_doc_info(doc, &info) != 0 || info.width == 0 || info.height == 0) {
+        fprintf(stderr, "sumatra: info failed\n");
+        ok = 0;
+        goto done;
+    }
+    /* Match AvifReader.cpp: BGRA primary decode. */
+    img = heic_doc_decode(doc, HEIC_FORMAT_BGRA);
+    if (!img || !img->data || img->width != info.width || img->height != info.height) {
+        fprintf(stderr, "sumatra: BGRA decode failed\n");
+        ok = 0;
+        goto done;
+    }
+    if (img->format != HEIC_FORMAT_BGRA || img->stride < (int)info.width * 4) {
+        fprintf(stderr, "sumatra: bad BGRA layout\n");
+        ok = 0;
+        goto done;
+    }
+    /* Sample a few pixels so we did not get an all-zero buffer. */
+    for (y = 0; y < info.height; y += info.height > 8 ? info.height / 8 : 1) {
+        const uint8_t *row = img->data + (size_t)y * (size_t)img->stride;
+        for (x = 0; x < info.width; x += info.width > 8 ? info.width / 8 : 1) {
+            const uint8_t *p = row + (size_t)x * 4;
+            if (p[0] | p[1] | p[2]) nonblack++;
+        }
+    }
+    if (nonblack == 0) {
+        fprintf(stderr, "sumatra: BGRA output looks empty\n");
+        ok = 0;
+        goto done;
+    }
+    /* EXIF is optional; when present, prefix is already stripped (TIFF).
+       Some HEIF EXIF payloads are non-TIFF (app-specific); only require
+       TIFF magic when the blob is large enough to be a real TIFF. */
+    if (heic_doc_exif(doc, &exif, &elen) && exif && elen >= 8) {
+        int le = exif[0] == 'I' && exif[1] == 'I';
+        int be = exif[0] == 'M' && exif[1] == 'M';
+        if (!le && !be) {
+            fprintf(stderr, "sumatra: EXIF does not look like TIFF (len=%zu)\n",
+                    elen);
+            ok = 0;
+        }
+        heic_free(ctx, exif);
+        exif = NULL;
+    } else if (exif) {
+        heic_free(ctx, exif);
+        exif = NULL;
+    }
+done:
+    if (img) heic_image_destroy(ctx, img);
+    heic_doc_close(doc);
+    heic_ctx_free(ctx);
+    if (ok)
+        printf("sumatra: ok %ux%u bgra nonblack_samples=%zu\n",
+               (unsigned)info.width, (unsigned)info.height, nonblack);
+    return ok ? 0 : 1;
+}
+
+/* Custom allocator bookkeeping + cooperative abort. */
+static int do_api_surface_test(const uint8_t *data, size_t len)
+{
+    track_alloc track;
+    heic_ctx *ctx;
+    heic_doc *doc;
+    heic_image *img;
+    heic_abort ab;
+    int ok = 1;
+
+    heic_init();
+    memset(&track, 0, sizeof(track));
+    track.fail_after = -1;
+    ctx = heic_ctx_new(track_alloc_cb, track_free_cb, on_error_only, &track);
+    if (!ctx) {
+        fprintf(stderr, "api: tracked ctx_new failed\n");
+        return 1;
+    }
+    doc = heic_doc_open(ctx, data, len);
+    if (!doc) {
+        fprintf(stderr, "api: doc_open failed\n");
+        heic_ctx_free(ctx);
+        return 1;
+    }
+    img = heic_doc_decode(doc, HEIC_FORMAT_BGR);
+    if (!img || !img->data) {
+        fprintf(stderr, "api: BGR decode failed\n");
+        ok = 0;
+    } else if (img->format != HEIC_FORMAT_BGR || img->stride < (int)img->width * 3) {
+        fprintf(stderr, "api: bad BGR layout\n");
+        ok = 0;
+    }
+    if (img) heic_image_destroy(ctx, img);
+    /* Abort token: request before decode; decode must fail promptly. */
+    heic_abort_init(&ab);
+    heic_abort_request(&ab);
+    img = heic_doc_decode_abortable(doc, HEIC_FORMAT_RGB, &ab);
+    if (img) {
+        fprintf(stderr, "api: expected abortable decode to fail\n");
+        heic_image_destroy(ctx, img);
+        ok = 0;
+    }
+    heic_doc_close(doc);
+    heic_ctx_free(ctx);
+    if (track.n_alloc == 0 || track.n_free == 0) {
+        fprintf(stderr, "api: allocator not exercised (alloc=%d free=%d)\n",
+                track.n_alloc, track.n_free);
+        ok = 0;
+    }
+    /* freess should not wildly under-count (size-header free path). */
+    if (track.n_free > track.n_alloc) {
+        fprintf(stderr, "api: free count %d > alloc %d\n", track.n_free, track.n_alloc);
+        ok = 0;
+    }
+    if (ok)
+        printf("api: ok alloc=%d free=%d peak_bytes≈%zu\n",
+               track.n_alloc, track.n_free, track.peak);
+    return ok ? 0 : 1;
+}
+
 /* Exercise max_memory_bytes: a tiny cap must reject a frame alloc; freeing
    must allow a subsequent alloc of the same size. */
 static int do_memory_limit_test(void)
@@ -1177,7 +1355,7 @@ int main(int argc, char **argv)
     int do_verify_sequence_mode = 0, do_verify_gain_map_mode = 0;
     int do_hevc_sequence_mode = 0;
     int do_sequence_info = 0, sequence_frame = -1;
-    int do_memory_limit = 0;
+    int do_memory_limit = 0, do_sumatra = 0, do_api = 0;
     int profile_heic_loops = 0, profile_libheif_loops = 0;
     int hevc_sequence_frames = 512;
     int want_rgba = 0;
@@ -1201,6 +1379,10 @@ int main(int argc, char **argv)
             do_verify_sequence_mode = 1;
         else if (strcmp(argv[i], "-memory-limit") == 0)
             do_memory_limit = 1;
+        else if (strcmp(argv[i], "-sumatra") == 0)
+            do_sumatra = 1;
+        else if (strcmp(argv[i], "-api") == 0)
+            do_api = 1;
         else if (strcmp(argv[i], "-sequence-info") == 0)
             do_sequence_info = 1;
         else if (strcmp(argv[i], "-sequence-frame") == 0 && i + 1 < argc) {
@@ -1236,10 +1418,12 @@ int main(int argc, char **argv)
          && !do_verify_gain_map_mode
          && !do_verify_sequence_mode
          && !do_sequence_info && sequence_frame < 0
-         && !profile_heic_loops && !profile_libheif_loops)) {
+         && !profile_heic_loops && !profile_libheif_loops
+         && !do_sumatra && !do_api)) {
         fprintf(stderr,
                 "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bench] [-verify] "
                 "[-verify-gain-map] [-verify-sequence] [-memory-limit] "
+                "[-sumatra] [-api] "
                 "[-sequence-info] [-sequence-frame N] "
                 "[-hevc-sequence [-hevc-frames N]] "
                 "[-profile-heic N] [-profile-libheif N] "
@@ -1254,6 +1438,17 @@ int main(int argc, char **argv)
     }
 
     heic_init();
+
+    if (do_sumatra) {
+        rc = do_sumatra_surface_test(data, len);
+        free(data);
+        return rc;
+    }
+    if (do_api) {
+        rc = do_api_surface_test(data, len);
+        free(data);
+        return rc;
+    }
 
     if (do_hevc_sequence_mode) {
         rc = do_hevc_sequence(data, len, out_path, hevc_sequence_frames);
