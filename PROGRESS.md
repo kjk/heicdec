@@ -221,6 +221,12 @@
       - Cache finished I-slice `heic_hevc_picture` maps on `heic_ctx`; next
         equal-size tile resets maps in place instead of free/realloc.
       - HDR ~+2–4% vs libheif; MVCLIP/AMVP MD5s unchanged.
+- [x] CABAC bin force-inline + I-slice deblock + scan inverse tables:
+      - `hevc_cabac_inline.h`: `__forceinline` decode_bin/bypass used by
+        residual + CTU (no call overhead per CABAC bin).
+      - I-slice deblock skips `compute_bs` (bS always 2 when pred_mode=NULL).
+      - Residual last-sig scan uses O(1) inverse tables for 4x4 / 2x2 scans.
+      - HDR often ~+0–3% vs libheif (noise); `example` ~−12%; oracle OK.
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported

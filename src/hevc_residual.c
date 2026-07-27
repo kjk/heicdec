@@ -1,5 +1,10 @@
 /* hevc_residual.c -- residual_coding CABAC path (port of imazen/heic residual.rs) */
 #include "heic_internal.h"
+#include "hevc_cabac_inline.h"
+
+/* Hot residual path: force-inlined CABAC (avoids call overhead per bin). */
+#define heic_cabac_decode_bin    heic_cabac_decode_bin_i
+#define heic_cabac_decode_bypass heic_cabac_decode_bypass_i
 
 /* 4x4 scan tables (H.265 Table 6-7 etc.) */
 static const uint8_t HEIC_SCAN_4X4_DIAG[16][2] = {
@@ -113,9 +118,31 @@ static void get_scan_sub(uint8_t log2_size, int order,
     }
 }
 
+/* Inverse of HEIC_SCAN_4X4_* : index = y*4+x → scan position. */
+static const uint8_t HEIC_INV_4X4_DIAG[16] = {
+    0, 2, 5, 9, 1, 4, 8, 12, 3, 7, 11, 14, 6, 10, 13, 15
+};
+static const uint8_t HEIC_INV_4X4_HORIZ[16] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+};
+static const uint8_t HEIC_INV_4X4_VERT[16] = {
+    0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15
+};
+/* Inverse 2x2 subblock scans (index = sy*2+sx). */
+static const uint8_t HEIC_INV_2X2_DIAG[4] = {0, 2, 1, 3};
+static const uint8_t HEIC_INV_2X2_HORIZ[4] = {0, 1, 2, 3};
+
 static uint32_t find_scan_pos(const uint8_t (*scan)[2], int n, uint32_t x, uint32_t y)
 {
     int i;
+    /* Fast paths for fixed tables used by residual coding. */
+    if (n == 1) return 0;
+    if (n == 4) {
+        if (scan == HEIC_SCAN_2X2_DIAG) return HEIC_INV_2X2_DIAG[(y << 1) | x];
+        if (scan == HEIC_SCAN_2X2_HORIZ) return HEIC_INV_2X2_HORIZ[(y << 1) | x];
+    }
+    if (n == 16 && scan == HEIC_SCAN_4X4_SB_DIAG)
+        return (uint32_t)HEIC_INV_4X4_DIAG[(y << 2) | x];
     for (i = 0; i < n; i++)
         if (scan[i][0] == x && scan[i][1] == y) return (uint32_t)i;
     return 0;
@@ -123,9 +150,14 @@ static uint32_t find_scan_pos(const uint8_t (*scan)[2], int n, uint32_t x, uint3
 
 static uint8_t find_scan_pos_4x4(const uint8_t (*scan)[2], uint8_t x, uint8_t y)
 {
-    int i;
-    for (i = 0; i < 16; i++)
-        if (scan[i][0] == x && scan[i][1] == y) return (uint8_t)i;
+    if (scan == HEIC_SCAN_4X4_DIAG) return HEIC_INV_4X4_DIAG[(y << 2) | x];
+    if (scan == HEIC_SCAN_4X4_HORIZ) return HEIC_INV_4X4_HORIZ[(y << 2) | x];
+    if (scan == HEIC_SCAN_4X4_VERT) return HEIC_INV_4X4_VERT[(y << 2) | x];
+    {
+        int i;
+        for (i = 0; i < 16; i++)
+            if (scan[i][0] == x && scan[i][1] == y) return (uint8_t)i;
+    }
     return 0;
 }
 

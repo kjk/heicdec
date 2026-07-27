@@ -512,61 +512,73 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
     h = (uint32_t)frame->height;
     if (w == 0 || h == 0) return;
 
-    /* Pass 1: vertical edges (x every 8, y every 4) */
-    for (x = 8; x < w; x += 8) {
-        for (y = 0; y < h; y += 4) {
-            uint32_t bx = x / 4, by = y / 4;
-            size_t idx = (size_t)by * deblock_stride + bx;
-            int flags_v = flags[idx];
-            int qp_q, qp_p, bs;
-            const heic_ctb_filter_info *q_filter;
-            if (!deblock_edge_allowed(
-                    filter_map, width_ctbs, ctb_size,
-                    loop_filter_across_tiles, x, y, 1, &q_filter))
-                continue;
-            if ((flags_v & vert_edge_mask) == 0) continue;
-            qp_q = (int)qp_map[idx];
-            qp_p = bx > 0 ? (int)qp_map[(size_t)by * deblock_stride + (bx - 1)] : qp_q;
-            bs = compute_bs(x, y, 1,
-                            (flags_v & HEIC_DEBLOCK_FLAG_VERT) != 0,
-                            pred_mode, mv_info, pu_stride, min_pu, cbf_map,
-                            deblock_stride, ref_poc);
-            if (bs > 0)
-                filter_edge_luma(
-                    frame, x, y, 1, qp_p, qp_q,
-                    q_filter ? q_filter->beta_offset : 0,
-                    q_filter ? q_filter->tc_offset : 0, bs,
-                    !pcm_at(pcm_map, deblock_stride, x - 1, y),
-                    !pcm_at(pcm_map, deblock_stride, x, y));
+    /* I-slice stills pass pred_mode=NULL → bS is always 2 on marked edges. */
+    {
+        int i_slice = (pred_mode == NULL);
+        /* Pass 1: vertical edges (x every 8, y every 4) */
+        for (x = 8; x < w; x += 8) {
+            for (y = 0; y < h; y += 4) {
+                uint32_t bx = x / 4, by = y / 4;
+                size_t idx = (size_t)by * deblock_stride + bx;
+                int flags_v = flags[idx];
+                int qp_q, qp_p, bs;
+                const heic_ctb_filter_info *q_filter;
+                if (!deblock_edge_allowed(
+                        filter_map, width_ctbs, ctb_size,
+                        loop_filter_across_tiles, x, y, 1, &q_filter))
+                    continue;
+                if ((flags_v & vert_edge_mask) == 0) continue;
+                qp_q = (int)qp_map[idx];
+                qp_p = bx > 0
+                           ? (int)qp_map[(size_t)by * deblock_stride + (bx - 1)]
+                           : qp_q;
+                bs = i_slice
+                         ? 2
+                         : compute_bs(x, y, 1,
+                                      (flags_v & HEIC_DEBLOCK_FLAG_VERT) != 0,
+                                      pred_mode, mv_info, pu_stride, min_pu,
+                                      cbf_map, deblock_stride, ref_poc);
+                if (bs > 0)
+                    filter_edge_luma(
+                        frame, x, y, 1, qp_p, qp_q,
+                        q_filter ? q_filter->beta_offset : 0,
+                        q_filter ? q_filter->tc_offset : 0, bs,
+                        !pcm_at(pcm_map, deblock_stride, x - 1, y),
+                        !pcm_at(pcm_map, deblock_stride, x, y));
+            }
         }
-    }
 
-    /* Pass 2: horizontal edges (y every 8, x every 4) */
-    for (y = 8; y < h; y += 8) {
-        for (x = 0; x < w; x += 4) {
-            uint32_t bx = x / 4, by = y / 4;
-            size_t idx = (size_t)by * deblock_stride + bx;
-            int flags_h = flags[idx];
-            int qp_q, qp_p, bs;
-            const heic_ctb_filter_info *q_filter;
-            if (!deblock_edge_allowed(
-                    filter_map, width_ctbs, ctb_size,
-                    loop_filter_across_tiles, x, y, 0, &q_filter))
-                continue;
-            if ((flags_h & horiz_edge_mask) == 0) continue;
-            qp_q = (int)qp_map[idx];
-            qp_p = by > 0 ? (int)qp_map[(size_t)(by - 1) * deblock_stride + bx] : qp_q;
-            bs = compute_bs(x, y, 0,
-                            (flags_h & HEIC_DEBLOCK_FLAG_HORIZ) != 0,
-                            pred_mode, mv_info, pu_stride, min_pu, cbf_map,
-                            deblock_stride, ref_poc);
-            if (bs > 0)
-                filter_edge_luma(
-                    frame, x, y, 0, qp_p, qp_q,
-                    q_filter ? q_filter->beta_offset : 0,
-                    q_filter ? q_filter->tc_offset : 0, bs,
-                    !pcm_at(pcm_map, deblock_stride, x, y - 1),
-                    !pcm_at(pcm_map, deblock_stride, x, y));
+        /* Pass 2: horizontal edges (y every 8, x every 4) */
+        for (y = 8; y < h; y += 8) {
+            for (x = 0; x < w; x += 4) {
+                uint32_t bx = x / 4, by = y / 4;
+                size_t idx = (size_t)by * deblock_stride + bx;
+                int flags_h = flags[idx];
+                int qp_q, qp_p, bs;
+                const heic_ctb_filter_info *q_filter;
+                if (!deblock_edge_allowed(
+                        filter_map, width_ctbs, ctb_size,
+                        loop_filter_across_tiles, x, y, 0, &q_filter))
+                    continue;
+                if ((flags_h & horiz_edge_mask) == 0) continue;
+                qp_q = (int)qp_map[idx];
+                qp_p = by > 0
+                           ? (int)qp_map[(size_t)(by - 1) * deblock_stride + bx]
+                           : qp_q;
+                bs = i_slice
+                         ? 2
+                         : compute_bs(x, y, 0,
+                                      (flags_h & HEIC_DEBLOCK_FLAG_HORIZ) != 0,
+                                      pred_mode, mv_info, pu_stride, min_pu,
+                                      cbf_map, deblock_stride, ref_poc);
+                if (bs > 0)
+                    filter_edge_luma(
+                        frame, x, y, 0, qp_p, qp_q,
+                        q_filter ? q_filter->beta_offset : 0,
+                        q_filter ? q_filter->tc_offset : 0, bs,
+                        !pcm_at(pcm_map, deblock_stride, x, y - 1),
+                        !pcm_at(pcm_map, deblock_stride, x, y));
+            }
         }
     }
 
