@@ -84,6 +84,13 @@ void heic_cabac_init_contexts(heic_ctx_model *ctx, int slice_type, int cabac_ini
         table = cabac_init_flag ? HEIC_CABAC_INIT_P : HEIC_CABAC_INIT_B;
     for (i = 0; i < HEIC_NUM_CONTEXTS; i++)
         heic_ctx_model_init(&ctx[i], table[i], slice_qp);
+    heic_ctx_model_init(&ctx[HEIC_CTX_SIG_COEFF_FLAG_REXT],
+                        slice_type == HEIC_SLICE_I ? 141 : 140, slice_qp);
+    heic_ctx_model_init(&ctx[HEIC_CTX_SIG_COEFF_FLAG_REXT + 1],
+                        slice_type == HEIC_SLICE_I ? 111 : 140, slice_qp);
+    for (i = HEIC_CTX_EXPLICIT_RDPCM_FLAG;
+         i < HEIC_CTX_EXPLICIT_RDPCM_DIR + 2; i++)
+        heic_ctx_model_init(&ctx[i], 139, slice_qp);
 }
 
 static int cabac_read_bit(heic_cabac *c)

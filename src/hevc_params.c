@@ -30,6 +30,66 @@ static void skip_profile_tier_level(heic_bs *bs, int max_sub_layers_minus1)
     (void)j;
 }
 
+/* Consume hrd_parameters() so the following SPS extension syntax stays aligned. */
+static int skip_hrd_parameters(heic_bs *bs, int common_inf_present,
+                               int max_sub_layers_minus1)
+{
+    int nal_hrd = 0, vcl_hrd = 0, sub_pic_hrd = 0;
+    int i, kind;
+    if (common_inf_present) {
+        nal_hrd = heic_bs_bit(bs);
+        vcl_hrd = heic_bs_bit(bs);
+        if (nal_hrd || vcl_hrd) {
+            sub_pic_hrd = heic_bs_bit(bs);
+            if (sub_pic_hrd) {
+                (void)heic_bs_bits(bs, 8);
+                (void)heic_bs_bits(bs, 5);
+                (void)heic_bs_bit(bs);
+                (void)heic_bs_bits(bs, 5);
+            }
+            (void)heic_bs_bits(bs, 4);
+            (void)heic_bs_bits(bs, 4);
+            if (sub_pic_hrd) (void)heic_bs_bits(bs, 4);
+            (void)heic_bs_bits(bs, 5);
+            (void)heic_bs_bits(bs, 5);
+            (void)heic_bs_bits(bs, 5);
+        }
+    }
+    for (i = 0; i <= max_sub_layers_minus1; i++) {
+        int fixed_general = heic_bs_bit(bs);
+        int fixed_within = fixed_general;
+        int low_delay = 0;
+        uint32_t cpb_count = 1;
+        if (!fixed_general) fixed_within = heic_bs_bit(bs);
+        if (fixed_within)
+            (void)heic_bs_ue(bs);
+        else
+            low_delay = heic_bs_bit(bs);
+        if (!low_delay) {
+            uint32_t minus1 = heic_bs_ue(bs);
+            if (minus1 > 31) {
+                bs->error = 1;
+                return -1;
+            }
+            cpb_count = minus1 + 1;
+        }
+        for (kind = 0; kind < 2; kind++) {
+            uint32_t j;
+            if ((kind == 0 && !nal_hrd) || (kind == 1 && !vcl_hrd)) continue;
+            for (j = 0; j < cpb_count; j++) {
+                (void)heic_bs_ue(bs);
+                (void)heic_bs_ue(bs);
+                if (sub_pic_hrd) {
+                    (void)heic_bs_ue(bs);
+                    (void)heic_bs_ue(bs);
+                }
+                (void)heic_bs_bit(bs);
+            }
+        }
+    }
+    return bs->error ? -1 : 0;
+}
+
 static const uint8_t HEIC_DEFAULT_INTRA_8X8[64] = {
     16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 17, 16, 17, 16, 17, 18,
     17, 18, 18, 17, 18, 21, 19, 20, 21, 20, 19, 21, 24, 22, 22, 24,
@@ -354,7 +414,6 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
 
     out->vui_parameters_present_flag = heic_bs_bit(&bs);
     if (out->vui_parameters_present_flag) {
-        /* Minimal VUI: we only need colour description when present. */
         if (heic_bs_bit(&bs)) { /* aspect_ratio_info */
             uint8_t idc = (uint8_t)heic_bs_bits(&bs, 8);
             if (idc == 255) {
@@ -374,7 +433,56 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
                 out->matrix_coeffs = (uint8_t)heic_bs_bits(&bs, 8);
             }
         }
-        /* remaining VUI ignored for still-image probe/decode bootstrap */
+        if (heic_bs_bit(&bs)) {
+            (void)heic_bs_ue(&bs);
+            (void)heic_bs_ue(&bs);
+        }
+        (void)heic_bs_bit(&bs); /* neutral_chroma_indication_flag */
+        (void)heic_bs_bit(&bs); /* field_seq_flag */
+        (void)heic_bs_bit(&bs); /* frame_field_info_present_flag */
+        if (heic_bs_bit(&bs)) {
+            (void)heic_bs_ue(&bs);
+            (void)heic_bs_ue(&bs);
+            (void)heic_bs_ue(&bs);
+            (void)heic_bs_ue(&bs);
+        }
+        if (heic_bs_bit(&bs)) {
+            (void)heic_bs_bits(&bs, 32);
+            (void)heic_bs_bits(&bs, 32);
+            if (heic_bs_bit(&bs)) (void)heic_bs_ue(&bs);
+            if (heic_bs_bit(&bs)
+                && skip_hrd_parameters(&bs, 1, out->sps_max_sub_layers_minus1) != 0)
+                return -1;
+        }
+        if (heic_bs_bit(&bs)) {
+            (void)heic_bs_bit(&bs);
+            (void)heic_bs_bit(&bs);
+            (void)heic_bs_bit(&bs);
+            (void)heic_bs_ue(&bs);
+            (void)heic_bs_ue(&bs);
+            (void)heic_bs_ue(&bs);
+            (void)heic_bs_ue(&bs);
+            (void)heic_bs_ue(&bs);
+        }
+    }
+
+    if (heic_bs_bit(&bs)) { /* sps_extension_present_flag */
+        int range_extension = heic_bs_bit(&bs);
+        (void)heic_bs_bit(&bs);  /* sps_multilayer_extension_flag */
+        (void)heic_bs_bit(&bs);  /* sps_3d_extension_flag */
+        (void)heic_bs_bit(&bs);  /* sps_scc_extension_flag */
+        (void)heic_bs_bits(&bs, 4);
+        if (range_extension) {
+            out->transform_skip_rotation_enabled_flag = heic_bs_bit(&bs);
+            out->transform_skip_context_enabled_flag = heic_bs_bit(&bs);
+            out->implicit_rdpcm_enabled_flag = heic_bs_bit(&bs);
+            out->explicit_rdpcm_enabled_flag = heic_bs_bit(&bs);
+            out->extended_precision_processing_flag = heic_bs_bit(&bs);
+            out->intra_smoothing_disabled_flag = heic_bs_bit(&bs);
+            out->high_precision_offsets_enabled_flag = heic_bs_bit(&bs);
+            out->persistent_rice_adaptation_enabled_flag = heic_bs_bit(&bs);
+            out->cabac_bypass_alignment_enabled_flag = heic_bs_bit(&bs);
+        }
     }
 
     if (bs.error) return -1;
@@ -421,6 +529,7 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
     uint32_t num_ref_idx_l1_default_active_minus1;
     memset(out, 0, sizeof(*out));
     scaling_list_default(&out->scaling_list);
+    out->log2_max_transform_skip_block_size = 2;
     if (!rbsp || len < 1) return -1;
     heic_bs_init(&bs, rbsp, len);
 
@@ -508,7 +617,63 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
     out->lists_modification_present_flag = heic_bs_bit(&bs);
     out->log2_parallel_merge_level_minus2 = (uint8_t)heic_bs_ue(&bs);
     out->slice_segment_header_extension_present_flag = heic_bs_bit(&bs);
-    /* pps_extension_* ignored for stills; stop here (bitstream may have more). */
+    if (heic_bs_bit(&bs)) { /* pps_extension_present_flag */
+        int unsupported_extension;
+        uint32_t i;
+        out->pps_range_extension_flag = heic_bs_bit(&bs);
+        unsupported_extension = heic_bs_bit(&bs); /* multilayer */
+        unsupported_extension |= (int)heic_bs_bits(&bs, 6);
+        if (out->pps_range_extension_flag) {
+            if (out->transform_skip_enabled_flag) {
+                uint32_t minus2 = heic_bs_ue(&bs);
+                if (minus2 > 3) {
+                    heic_error(ctx, HEIC_SEVERITY_ERROR,
+                               "PPS transform skip block size out of range");
+                    return -1;
+                }
+                out->log2_max_transform_skip_block_size = (uint8_t)(minus2 + 2);
+            }
+            out->cross_component_prediction_enabled_flag = heic_bs_bit(&bs);
+            out->chroma_qp_offset_list_enabled_flag = heic_bs_bit(&bs);
+            if (out->chroma_qp_offset_list_enabled_flag) {
+                uint32_t depth = heic_bs_ue(&bs);
+                uint32_t len_minus1 = heic_bs_ue(&bs);
+                if (depth > 6 || len_minus1 > 5) {
+                    heic_error(ctx, HEIC_SEVERITY_ERROR,
+                               "PPS chroma QP offset list out of range");
+                    return -1;
+                }
+                out->diff_cu_chroma_qp_offset_depth = (uint8_t)depth;
+                out->chroma_qp_offset_list_len = (uint8_t)(len_minus1 + 1);
+                for (i = 0; i <= len_minus1; i++) {
+                    int32_t cb = heic_bs_se(&bs);
+                    int32_t cr = heic_bs_se(&bs);
+                    if (cb < -12 || cb > 12 || cr < -12 || cr > 12) {
+                        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                                   "PPS chroma QP offset out of range");
+                        return -1;
+                    }
+                    out->cb_qp_offset_list[i] = (int8_t)cb;
+                    out->cr_qp_offset_list[i] = (int8_t)cr;
+                }
+            }
+            {
+                uint32_t luma = heic_bs_ue(&bs);
+                uint32_t chroma = heic_bs_ue(&bs);
+                if (luma > 6 || chroma > 6) {
+                    heic_error(ctx, HEIC_SEVERITY_ERROR,
+                               "PPS SAO offset scale out of range");
+                    return -1;
+                }
+                out->log2_sao_offset_scale_luma = (uint8_t)luma;
+                out->log2_sao_offset_scale_chroma = (uint8_t)chroma;
+            }
+        }
+        if (unsupported_extension) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR, "unsupported PPS extension");
+            return -1;
+        }
+    }
     if (bs.error) return -1;
     return 0;
 }

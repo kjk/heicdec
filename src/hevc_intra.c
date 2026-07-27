@@ -501,7 +501,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
     fill_border(frame, x, y, size, c_idx, border, center, slice_address,
                 pic_width_in_ctbs, ctb_size);
 
-    if (c_idx == 0 || frame->chroma_format == 3)
+    if (strong_intra_smoothing >= 0
+        && (c_idx == 0 || frame->chroma_format == 3))
         sample_filter(border, center, (int)size, c_idx, mode,
                       strong_intra_smoothing,
                       c_idx == 0 ? frame->bit_depth : frame->chroma_bit_depth);

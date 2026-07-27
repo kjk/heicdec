@@ -87,15 +87,17 @@ function hvccBox(
   params: Nal[],
   bitDepthLuma: number,
   bitDepthChroma: number,
+  chromaFormat: number,
+  profileIdc: number,
 ): Uint8Array {
   const header = new Uint8Array(23);
   header[0] = 1;
-  header[1] = bitDepthLuma > 8 ? 2 : 1;
+  header[1] = profileIdc;
   header[12] = 120;
   header[13] = 0xf0;
   header[14] = 0;
   header[15] = 0xfc;
-  header[16] = 0xfd;
+  header[16] = 0xfc | chromaFormat;
   header[17] = 0xf8 | (bitDepthLuma - 8);
   header[18] = 0xf8 | (bitDepthChroma - 8);
   header[21] = 3;
@@ -140,6 +142,8 @@ export function generateHevcHeif(
   height: number,
   bitDepthLuma = 8,
   bitDepthChroma = bitDepthLuma,
+  chromaFormat = 1,
+  profileIdc = bitDepthLuma > 8 ? 2 : 1,
 ): void {
   const nals = splitAnnexB(new Uint8Array(readFileSync(sourcePath)));
   const params = [32, 33, 34].map((type) => {
@@ -166,7 +170,13 @@ export function generateHevcHeif(
   const ispe = fullbox("ispe", 0, 0, concat(be32(width), be32(height)));
   const ipco = box(
     "ipco",
-    concat(ispe, hvccBox(params, bitDepthLuma, bitDepthChroma)),
+    concat(ispe, hvccBox(
+      params,
+      bitDepthLuma,
+      bitDepthChroma,
+      chromaFormat,
+      profileIdc,
+    )),
   );
   const ipma = fullbox("ipma", 0, 0, concat(
     be32(1),

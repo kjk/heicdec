@@ -6,8 +6,15 @@
 // Also fills deps/testimages/ with AVIF samples, official HEIF Mini samples,
 // and regenerated grid/alpha + unci block fixtures (no checked-in binaries).
 import { $ } from "bun";
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "fs";
 import { join } from "path";
+import { inflateRawSync } from "zlib";
 import { generateAvifFixtures } from "./gen_avif_fixtures";
 import { generateHevcHeif } from "./gen_hevc_fixtures";
 import { generateUnciBlockFixtures } from "./gen_unci_block_fixtures";
@@ -62,8 +69,16 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v12-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip";
+  "v14-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
+const HEVC_REXT_BASE =
+  "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
+  "bitstream_exchange/draft_conformance/RExt";
+const HEVC_REXT_TSCTX = "TSCTX_8bit_I_RExt_SHARP_1.bin";
+const HEVC_REXT_TSCTX_ZIP = "TSCTX_8bit_I_RExt_SHARP_1.zip";
+const HEVC_REXT_GENERAL = "GENERAL_8b_444_RExt_Sony_2.bit";
+const HEVC_REXT_GENERAL_ZIP = "GENERAL_8b_444_RExt_Sony_2.zip";
+const HEVC_REXT_GENERAL_SEQUENCES = [1, 2, 3, 4, 5] as const;
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
   "RPLM_A_qualcomm_4.bit",
@@ -89,6 +104,82 @@ async function download(url: string, dest: string): Promise<void> {
   console.log(`deps/testimages: downloaded ${dest} (${buf.length} bytes)`);
 }
 
+function extractZipEntry(zipPath: string, entrySuffix: string, dest: string): void {
+  const zip = new Uint8Array(readFileSync(zipPath));
+  const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  let eocd = -1;
+  for (let i = zip.length - 22; i >= Math.max(0, zip.length - 65557); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error(`invalid ZIP: ${zipPath}`);
+  const entries = view.getUint16(eocd + 10, true);
+  let pos = view.getUint32(eocd + 16, true);
+  const decoder = new TextDecoder();
+  for (let i = 0; i < entries; i++) {
+    if (view.getUint32(pos, true) !== 0x02014b50)
+      throw new Error(`invalid ZIP directory: ${zipPath}`);
+    const method = view.getUint16(pos + 10, true);
+    const compressedSize = view.getUint32(pos + 20, true);
+    const nameLen = view.getUint16(pos + 28, true);
+    const extraLen = view.getUint16(pos + 30, true);
+    const commentLen = view.getUint16(pos + 32, true);
+    const localOffset = view.getUint32(pos + 42, true);
+    const name = decoder.decode(zip.subarray(pos + 46, pos + 46 + nameLen));
+    if (name.endsWith(entrySuffix)) {
+      const localNameLen = view.getUint16(localOffset + 26, true);
+      const localExtraLen = view.getUint16(localOffset + 28, true);
+      const dataOffset = localOffset + 30 + localNameLen + localExtraLen;
+      const compressed = zip.subarray(dataOffset, dataOffset + compressedSize);
+      if (method === 0)
+        writeFileSync(dest, compressed);
+      else if (method === 8)
+        writeFileSync(dest, inflateRawSync(compressed));
+      else
+        throw new Error(`unsupported ZIP method ${method}: ${zipPath}`);
+      return;
+    }
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+  throw new Error(`ZIP entry ${entrySuffix} not found in ${zipPath}`);
+}
+
+function splitAnnexBSequences(
+  sourcePath: string,
+  outputDir: string,
+  wanted: readonly number[],
+): void {
+  const data = new Uint8Array(readFileSync(sourcePath));
+  const starts: number[] = [];
+  for (let i = 0; i + 5 < data.length;) {
+    let prefix = 0;
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1)
+      prefix = 3;
+    else if (
+      data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0
+      && data[i + 3] === 1
+    )
+      prefix = 4;
+    if (prefix) {
+      if (((data[i + prefix]! >>> 1) & 0x3f) === 32) starts.push(i);
+      i += prefix;
+    } else {
+      i++;
+    }
+  }
+  if (starts.length < 7)
+    throw new Error(`expected 7 RExt sequences in ${sourcePath}`);
+  starts.push(data.length);
+  for (const index of wanted) {
+    writeFileSync(
+      join(outputDir, `GENERAL_8b_444_RExt_Sony_2-seq${index}.bit`),
+      data.subarray(starts[index]!, starts[index + 1]!),
+    );
+  }
+}
+
 /** Download link-u fox AVIFs and regenerate grid/alpha + unci block fixtures. */
 export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<void> {
   const root = TESTIMAGES_DIR;
@@ -112,6 +203,14 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(miniDir, "transquant-bypass.heic")) &&
     existsSync(join(miniDir, "transform-skip.heic")) &&
     existsSync(join(miniDir, "transform-skip-main10.heic")) &&
+    existsSync(join(miniDir, "transform-skip-context-rext.heic")) &&
+    existsSync(join(hevcSequenceDir, HEVC_REXT_TSCTX)) &&
+    HEVC_REXT_GENERAL_SEQUENCES.every((index) =>
+      existsSync(join(
+        hevcSequenceDir,
+        `GENERAL_8b_444_RExt_Sony_2-seq${index}.bit`,
+      ))
+    ) &&
     HEVC_SEQUENCE_SAMPLES.every((name) =>
       existsSync(join(hevcSequenceDir, name)),
     )
@@ -165,6 +264,37 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     if (!existsSync(dest) || opts.force)
       await download(`${HEVC_SEQUENCE_BASE}/${name}`, dest);
   }
+  {
+    const dest = join(hevcSequenceDir, HEVC_REXT_TSCTX);
+    const zip = join(hevcSequenceDir, HEVC_REXT_TSCTX_ZIP);
+    if (!existsSync(dest) || opts.force) {
+      await download(`${HEVC_REXT_BASE}/${HEVC_REXT_TSCTX_ZIP}`, zip);
+      extractZipEntry(zip, HEVC_REXT_TSCTX, dest);
+      console.log(`deps/testimages: extracted ${dest}`);
+    }
+  }
+  {
+    const source = join(hevcSequenceDir, HEVC_REXT_GENERAL);
+    const zip = join(hevcSequenceDir, HEVC_REXT_GENERAL_ZIP);
+    if (
+      opts.force
+      || HEVC_REXT_GENERAL_SEQUENCES.some((index) =>
+        !existsSync(join(
+          hevcSequenceDir,
+          `GENERAL_8b_444_RExt_Sony_2-seq${index}.bit`,
+        ))
+      )
+    ) {
+      await download(`${HEVC_REXT_BASE}/${HEVC_REXT_GENERAL_ZIP}`, zip);
+      extractZipEntry(zip, HEVC_REXT_GENERAL, source);
+      splitAnnexBSequences(
+        source,
+        hevcSequenceDir,
+        HEVC_REXT_GENERAL_SEQUENCES,
+      );
+      console.log(`deps/testimages: split ${source}`);
+    }
+  }
   console.log("deps/testimages: generating HEVC fixtures…");
   generateHevcHeif(
     join(hevcSequenceDir, "DSLICE_A_HHI_5.bit"),
@@ -197,6 +327,16 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     768,
     10,
     9,
+  );
+  generateHevcHeif(
+    join(hevcSequenceDir, HEVC_REXT_TSCTX),
+    join(miniDir, "transform-skip-context-rext.heic"),
+    1920,
+    1080,
+    8,
+    8,
+    3,
+    4,
   );
   writeFileSync(stampPath, STAMP_WANT);
   console.log(`deps/testimages: ready (${STAMP_WANT})`);

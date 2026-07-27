@@ -189,6 +189,12 @@
       libde265 at mse 0.002; all 8 `TSUNEQBD_A_MAIN10_Technicolor_2` frames
       match at mse 0.009, including independent 10-bit luma / 9-bit chroma
       reconstruction, inter prediction, and RGB
+- [x] HEVC Range Extensions transform tools: full VUI/SPS/PPS extension
+      parsing, larger transform skip, RExt significant-coefficient contexts,
+      coefficient rotation, implicit RDPCM, intra smoothing disable, and
+      persistent Rice state across WPP rows. Official `TSCTX` (3 frames) and
+      `GENERAL` sequence 1-5 feature isolates match libde265 byte-for-byte; a
+      generated 4:4:4 HEIF wrapper is covered by the normal libheif corpus.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

@@ -205,15 +205,16 @@ static int decode_greater2(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t c_idx
     return heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
 }
 
-static int32_t decode_abs_remaining(heic_cabac *cabac, uint8_t *rice_param,
-                                    int32_t base_level)
+static int32_t decode_abs_remaining(heic_cabac *cabac, uint8_t rice)
 {
     uint32_t prefix = 0;
     int32_t value;
-    uint8_t rice = *rice_param;
-    uint32_t threshold;
-    while (heic_cabac_decode_bypass(cabac) != 0 && prefix < 24)
+    while (heic_cabac_decode_bypass(cabac) != 0 && prefix < 18)
         prefix++;
+    if (prefix >= 18 || prefix - HEIC_MIN(prefix, 3) + rice > 31) {
+        cabac->error = 1;
+        return 0;
+    }
     if (prefix <= 3) {
         uint32_t suffix = rice > 0 ? heic_cabac_decode_bypass_bits(cabac, rice) : 0;
         value = (int32_t)((prefix << rice) + suffix);
@@ -223,24 +224,23 @@ static int32_t decode_abs_remaining(heic_cabac *cabac, uint8_t *rice_param,
         uint32_t base = ((1u << (prefix - 3)) + 2u) << rice;
         value = (int32_t)(base + suffix);
     }
-    threshold = 3u * (1u << rice);
-    if ((uint32_t)(base_level < 0 ? -base_level : base_level)
-          + (uint32_t)(value < 0 ? -value : value)
-        > threshold) {
-        if (rice < 4) rice++;
-    }
-    *rice_param = rice;
     return value;
 }
 
 int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                          uint8_t log2_size, uint8_t c_idx, int scan_order,
                          int sign_data_hiding, int cu_transquant_bypass,
-                         int transform_skip_enabled,
-                         heic_coeff_buf *out, int *transform_skip)
+                         int transform_skip_enabled, uint8_t max_transform_skip_log2,
+                         int transform_skip_context_enabled,
+                         int implicit_rdpcm_enabled, int explicit_rdpcm_enabled,
+                         int persistent_rice_adaptation_enabled,
+                         uint8_t stat_coeff[4],
+                         int pred_mode_intra, uint8_t intra_mode,
+                         heic_coeff_buf *out, int *transform_skip, int *rdpcm_mode)
 {
     uint32_t size, last_x, last_y, last_sb_idx, last_sb_x, last_sb_y;
-    int sb_width, transform_skip_flag = 0;
+    int sb_width, transform_skip_flag = 0, residual_dpcm = 0;
+    int sig_ctx_override, sb_type;
     const uint8_t (*scan_sub)[2];
     const uint8_t (*scan_pos)[2];
     int scan_sub_n, scan_idx;
@@ -255,11 +255,30 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
     out->log2_size = log2_size;
     out->num_nonzero = 0;
 
-    if (transform_skip_enabled && !cu_transquant_bypass && log2_size <= 2) {
+    if (transform_skip_enabled && !cu_transquant_bypass
+        && log2_size <= max_transform_skip_log2) {
         int ctx_idx = HEIC_CTX_TRANSFORM_SKIP_FLAG + (c_idx > 0 ? 1 : 0);
         transform_skip_flag = heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
     }
     if (transform_skip) *transform_skip = transform_skip_flag;
+    if (!pred_mode_intra && explicit_rdpcm_enabled
+        && (transform_skip_flag || cu_transquant_bypass)) {
+        int ctx_off = c_idx > 0 ? 1 : 0;
+        if (heic_cabac_decode_bin(cabac,
+                &ctx[HEIC_CTX_EXPLICIT_RDPCM_FLAG + ctx_off])) {
+            residual_dpcm = 1 + heic_cabac_decode_bin(cabac,
+                &ctx[HEIC_CTX_EXPLICIT_RDPCM_DIR + ctx_off]);
+        }
+    } else if (pred_mode_intra && implicit_rdpcm_enabled
+               && (transform_skip_flag || cu_transquant_bypass)) {
+        if (intra_mode == 10) residual_dpcm = 1;
+        else if (intra_mode == 26) residual_dpcm = 2;
+    }
+    if (rdpcm_mode) *rdpcm_mode = residual_dpcm;
+    sig_ctx_override = transform_skip_context_enabled
+                       && (transform_skip_flag || cu_transquant_bypass);
+    sb_type = (c_idx == 0 ? 2 : 0)
+              + ((transform_skip_flag || cu_transquant_bypass) ? 1 : 0);
 
     if (decode_last_sig_pos(cabac, ctx, log2_size, c_idx, &last_x, &last_y) != 0)
         return -1;
@@ -315,6 +334,7 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         int i;
         uint8_t rice_param;
         int32_t sum_abs_level;
+        int first_remaining;
 
         right_coded = ((int)sb_x + 1) < sb_width
                           ? coded_sb_flags[sb_y][sb_x + 1]
@@ -369,8 +389,10 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
 
         if (!(sb_idx == last_sb_idx && start_pos == 0)) {
             for (n = (int)last_coeff; n >= 1; n--) {
-                int sig = heic_cabac_decode_bin(
-                              cabac, &ctx[sig_ctx_add + sig_ctx_map[n]]) != 0;
+                int sig_ctx = sig_ctx_override
+                                  ? HEIC_CTX_SIG_COEFF_FLAG + (c_idx == 0 ? 42 : 43)
+                                  : sig_ctx_add + sig_ctx_map[n];
+                int sig = heic_cabac_decode_bin(cabac, &ctx[sig_ctx]) != 0;
                 if (sig) {
                     sig_positions[n_sig++] = (uint8_t)n;
                     can_infer_dc = 0;
@@ -382,7 +404,10 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
             if (can_infer_dc) {
                 sig_positions[n_sig++] = 0;
             } else {
-                int sig = heic_cabac_decode_bin(cabac, &ctx[sig_dc_ctx]) != 0;
+                int sig_ctx = sig_ctx_override
+                                  ? HEIC_CTX_SIG_COEFF_FLAG + (c_idx == 0 ? 42 : 43)
+                                  : sig_dc_ctx;
+                int sig = heic_cabac_decode_bin(cabac, &ctx[sig_ctx]) != 0;
                 if (sig) sig_positions[n_sig++] = 0;
             }
         }
@@ -433,22 +458,42 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
         /* Highest scan index first in array, lowest last. */
         last_sig_pos = sig_positions[0];
         first_sig_pos = sig_positions[n_sig - 1];
-        sign_hidden = sign_data_hiding && !cu_transquant_bypass
+        sign_hidden = sign_data_hiding && !cu_transquant_bypass && !residual_dpcm
                       && (last_sig_pos - first_sig_pos) > 3;
 
         n_signs = n_sig - (sign_hidden ? 1 : 0);
         sign_bits = heic_cabac_decode_bypass_bits(cabac, n_signs);
         sign_mask = n_signs > 0 ? 1u << (n_signs - 1) : 0;
 
-        rice_param = 0;
+        rice_param = persistent_rice_adaptation_enabled && stat_coeff
+                         ? (uint8_t)(stat_coeff[sb_type] / 4) : 0;
+        first_remaining = 1;
         sum_abs_level = 0;
         out->num_nonzero = (uint16_t)(out->num_nonzero + n_sig);
         for (i = 0; i < n_sig; i++) {
             int pos = sig_positions[i];
             int16_t v = coeff_values[i];
             if (needs_remaining[i]) {
-                int32_t rem = decode_abs_remaining(cabac, &rice_param, v);
+                uint8_t old_rice = rice_param;
+                int32_t rem = decode_abs_remaining(cabac, rice_param);
                 int32_t sum = (int32_t)v + (int32_t)rem;
+                if ((uint32_t)sum > 3u * (1u << old_rice)) {
+                    uint8_t max_rice =
+                        persistent_rice_adaptation_enabled ? 13 : 4;
+                    if (rice_param < max_rice) rice_param++;
+                }
+                if (persistent_rice_adaptation_enabled && stat_coeff
+                    && first_remaining) {
+                    uint8_t stat = stat_coeff[sb_type];
+                    uint8_t stat_rice = (uint8_t)(stat / 4);
+                    if ((uint32_t)rem >= 3u * (1u << stat_rice)) {
+                        if (stat < 55) stat_coeff[sb_type] = (uint8_t)(stat + 1);
+                    } else if ((uint32_t)rem * 2u < (1u << stat_rice)
+                               && stat > 0) {
+                        stat_coeff[sb_type] = (uint8_t)(stat - 1);
+                    }
+                    first_remaining = 0;
+                }
                 if (sum > 32767) sum = 32767;
                 v = (int16_t)sum;
             }

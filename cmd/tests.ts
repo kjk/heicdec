@@ -56,6 +56,7 @@ const MUST_DECODE = new Set([
   "C041.heic",
   "sequence_inter.avif",
   "sequence_alpha.avif",
+  "transform-skip-context-rext.heic",
 ]);
 
 /** Parse `30x20 mse=0.0000 maxdiff=0 n_diff=0` from -verify stdout. */
@@ -234,6 +235,12 @@ const HEVC_SEQUENCE_TESTS: readonly {
   { name: "ipcm_B_NEC_3.bit", frames: 1, mse: 8 },
   { name: "ipcm_C_NEC_3.bit", frames: 1, mse: 8 },
   { name: "TSKIP_A_MS_3.bit", frames: 17, mse: 0.01 },
+  { name: "TSCTX_8bit_I_RExt_SHARP_1.bin", frames: 3, mse: 0 },
+  { name: "GENERAL_8b_444_RExt_Sony_2-seq1.bit", frames: 1, mse: 0 },
+  { name: "GENERAL_8b_444_RExt_Sony_2-seq2.bit", frames: 1, mse: 0 },
+  { name: "GENERAL_8b_444_RExt_Sony_2-seq3.bit", frames: 1, mse: 0 },
+  { name: "GENERAL_8b_444_RExt_Sony_2-seq4.bit", frames: 1, mse: 0 },
+  { name: "GENERAL_8b_444_RExt_Sony_2-seq5.bit", frames: 1, mse: 0 },
   {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
     frames: 8,

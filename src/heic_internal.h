@@ -713,6 +713,15 @@ typedef struct {
     uint8_t  colour_primaries;
     uint8_t  transfer_characteristics;
     uint8_t  matrix_coeffs;
+    int      transform_skip_rotation_enabled_flag;
+    int      transform_skip_context_enabled_flag;
+    int      implicit_rdpcm_enabled_flag;
+    int      explicit_rdpcm_enabled_flag;
+    int      extended_precision_processing_flag;
+    int      intra_smoothing_disabled_flag;
+    int      high_precision_offsets_enabled_flag;
+    int      persistent_rice_adaptation_enabled_flag;
+    int      cabac_bypass_alignment_enabled_flag;
     int      tiles_enabled; /* from PPS, but often needed with SPS dims */
     /* derived */
     uint8_t  log2_min_cb_size;
@@ -766,6 +775,16 @@ typedef struct {
     int      lists_modification_present_flag;
     uint8_t  log2_parallel_merge_level_minus2;
     int      slice_segment_header_extension_present_flag;
+    int      pps_range_extension_flag;
+    uint8_t  log2_max_transform_skip_block_size;
+    int      cross_component_prediction_enabled_flag;
+    int      chroma_qp_offset_list_enabled_flag;
+    uint8_t  diff_cu_chroma_qp_offset_depth;
+    uint8_t  chroma_qp_offset_list_len;
+    int8_t   cb_qp_offset_list[6];
+    int8_t   cr_qp_offset_list[6];
+    uint8_t  log2_sao_offset_scale_luma;
+    uint8_t  log2_sao_offset_scale_chroma;
 } heic_pps;
 
 int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out);
@@ -801,11 +820,14 @@ void heic_pps_free(heic_ctx *ctx, heic_pps *pps);
 #define HEIC_CTX_LAST_SIG_COEFF_Y_PREFIX    58
 #define HEIC_CTX_CODED_SUB_BLOCK_FLAG       76
 #define HEIC_CTX_SIG_COEFF_FLAG             80
+#define HEIC_CTX_SIG_COEFF_FLAG_REXT        122
 #define HEIC_CTX_COEFF_ABS_LEVEL_GREATER1   124
 #define HEIC_CTX_COEFF_ABS_LEVEL_GREATER2   148
 #define HEIC_CTX_SAO_MERGE_FLAG             154
 #define HEIC_CTX_SAO_TYPE_IDX               155
 #define HEIC_CTX_CU_QP_DELTA_ABS            156
+#define HEIC_CTX_EXPLICIT_RDPCM_FLAG         158
+#define HEIC_CTX_EXPLICIT_RDPCM_DIR          160
 
 typedef struct {
     uint8_t state; /* 0..63 */
@@ -923,12 +945,17 @@ typedef struct {
 
 int heic_get_scan_order(uint8_t log2_size, uint8_t intra_mode, uint8_t c_idx,
                         int chroma_444);
-/* Returns 0 on success. *transform_skip set if transform skip flag was 1. */
+/* Returns 0 on success. rdpcm_mode is 0=off, 1=horizontal, 2=vertical. */
 int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                          uint8_t log2_size, uint8_t c_idx, int scan_order,
                          int sign_data_hiding, int cu_transquant_bypass,
-                         int transform_skip_enabled,
-                         heic_coeff_buf *out, int *transform_skip);
+                         int transform_skip_enabled, uint8_t max_transform_skip_log2,
+                         int transform_skip_context_enabled,
+                         int implicit_rdpcm_enabled, int explicit_rdpcm_enabled,
+                         int persistent_rice_adaptation_enabled,
+                         uint8_t stat_coeff[4],
+                         int pred_mode_intra, uint8_t intra_mode,
+                         heic_coeff_buf *out, int *transform_skip, int *rdpcm_mode);
 
 /* ---- transform / dequant (hevc_transform.c) ---- */
 
