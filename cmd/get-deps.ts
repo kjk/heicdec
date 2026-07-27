@@ -76,7 +76,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v34-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge";
+  "v35-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -102,6 +102,14 @@ const HEVC_REXT_EXTPREC_SEQUENCE0 =
   "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq0.bit";
 const HEVC_REXT_EXTPREC_SEQUENCE1 =
   "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq1.bit";
+const HEVC_REXT_MAIN422 = "Main_422_10_A_RExt_Sony_2.bin";
+const HEVC_REXT_MAIN422_ZIP = "Main_422_10_A_RExt_Sony_2.zip";
+const HEVC_REXT_GENERAL_422 = "GENERAL_10b_422_RExt_Sony_1.bit";
+const HEVC_REXT_GENERAL_422_ZIP = "GENERAL_10b_422_RExt_Sony_1.zip";
+const HEVC_REXT_GENERAL_422_SEQUENCE0 =
+  "GENERAL_10b_422_RExt_Sony_1-seq0.bit";
+const HEVC_REXT_GENERAL_422_SEQUENCE1 =
+  "GENERAL_10b_422_RExt_Sony_1-seq1.bit";
 const HEVC_HIGH_PRECISION_WEIGHTING =
   "high-precision-weighting-main10.bit";
 const HEVC_SAO_OFFSET_SCALE = "sao-offset-scale-main12.bit";
@@ -278,6 +286,9 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(hevcSequenceDir, HEVC_REXT_CCP)) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE0)) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE1)) &&
+    existsSync(join(hevcSequenceDir, HEVC_REXT_MAIN422)) &&
+    existsSync(join(hevcSequenceDir, HEVC_REXT_GENERAL_422_SEQUENCE0)) &&
+    existsSync(join(hevcSequenceDir, HEVC_REXT_GENERAL_422_SEQUENCE1)) &&
     existsSync(join(hevcSequenceDir, HEVC_HIGH_PRECISION_WEIGHTING)) &&
     existsSync(join(hevcSequenceDir, HEVC_SAO_OFFSET_SCALE)) &&
     existsSync(join(hevcSequenceDir, HEVC_SAO_DIAGONAL)) &&
@@ -398,6 +409,28 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     if (!existsSync(dest0) || !existsSync(dest1) || opts.force) {
       await download(`${HEVC_REXT_BASE}/${HEVC_REXT_EXTPREC_ZIP}`, zip);
       extractZipEntry(zip, HEVC_REXT_EXTPREC, source);
+      extractAnnexBSequence(source, dest0, 0, 2);
+      extractAnnexBSequence(source, dest1, 1, 2);
+      console.log(`deps/testimages: extracted ${dest0}, ${dest1}`);
+    }
+  }
+  {
+    const dest = join(hevcSequenceDir, HEVC_REXT_MAIN422);
+    const zip = join(hevcSequenceDir, HEVC_REXT_MAIN422_ZIP);
+    if (!existsSync(dest) || opts.force) {
+      await download(`${HEVC_REXT_BASE}/${HEVC_REXT_MAIN422_ZIP}`, zip);
+      extractZipEntry(zip, HEVC_REXT_MAIN422, dest);
+      console.log(`deps/testimages: extracted ${dest}`);
+    }
+  }
+  {
+    const source = join(hevcSequenceDir, HEVC_REXT_GENERAL_422);
+    const dest0 = join(hevcSequenceDir, HEVC_REXT_GENERAL_422_SEQUENCE0);
+    const dest1 = join(hevcSequenceDir, HEVC_REXT_GENERAL_422_SEQUENCE1);
+    const zip = join(hevcSequenceDir, HEVC_REXT_GENERAL_422_ZIP);
+    if (!existsSync(dest0) || !existsSync(dest1) || opts.force) {
+      await download(`${HEVC_REXT_BASE}/${HEVC_REXT_GENERAL_422_ZIP}`, zip);
+      extractZipEntry(zip, HEVC_REXT_GENERAL_422, source);
       extractAnnexBSequence(source, dest0, 0, 2);
       extractAnnexBSequence(source, dest1, 1, 2);
       console.log(`deps/testimages: extracted ${dest0}, ${dest1}`);

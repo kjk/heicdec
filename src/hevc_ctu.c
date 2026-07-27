@@ -1499,6 +1499,18 @@ static uint8_t derive_intra_luma(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     return map_rem_mode(decode_rem_intra(sc), mpm);
 }
 
+/* H.265 8.4.3: when ChromaArrayType==2 (4:2:2), remap chroma IntraPredModeC
+ * so angular modes match the non-square luma-to-chroma sample grid. Also
+ * affects residual scan order for chroma TUs. */
+static uint8_t map_chroma_mode_422(uint8_t mode)
+{
+    static const uint8_t TAB[35] = {
+        0,  1,  2,  2,  2,  2,  3,  5,  7,  8, 10, 12, 13, 15, 17, 18, 19, 20,
+        21, 22, 23, 23, 24, 24, 25, 25, 26, 27, 27, 28, 28, 29, 29, 30, 31
+    };
+    return mode < 35 ? TAB[mode] : mode;
+}
+
 static uint8_t decode_intra_chroma(heic_slice_ctx *sc, uint8_t luma)
 {
     int first;
@@ -1507,13 +1519,18 @@ static uint8_t decode_intra_chroma(heic_slice_ctx *sc, uint8_t luma)
     if (chroma_array_type(sc->sps) == 0) return luma;
     first = heic_cabac_decode_bin(&sc->cabac,
                                   &sc->models[HEIC_CTX_INTRA_CHROMA_PRED_MODE]);
-    if (first == 0) return luma;
-    mode_idx = heic_cabac_decode_bypass_bits(&sc->cabac, 2);
-    if (mode_idx == 0) cand = 0;
-    else if (mode_idx == 1) cand = 26;
-    else if (mode_idx == 2) cand = 10;
-    else cand = 1;
-    if (cand == luma) return 34;
+    if (first == 0) {
+        cand = luma; /* DM */
+    } else {
+        mode_idx = heic_cabac_decode_bypass_bits(&sc->cabac, 2);
+        if (mode_idx == 0) cand = 0;
+        else if (mode_idx == 1) cand = 26;
+        else if (mode_idx == 2) cand = 10;
+        else cand = 1;
+        if (cand == luma) cand = 34;
+    }
+    if (chroma_array_type(sc->sps) == 2)
+        cand = map_chroma_mode_422(cand);
     return cand;
 }
 

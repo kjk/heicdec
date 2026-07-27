@@ -159,11 +159,10 @@
       and match pinned reconstruction MD5s byte-for-byte vs libde265.
 - [ ] `MVHEVCS_A/B/E/F` need multilayer PPS extensions (`pps_multilayer_extension`);
       both our decoder and libde265 reject them today — fold into multilayer scope.
-- [ ] Complete HEVC Main 4:2:2 / Main 4:2:2 10 decoding. Dual vertical chroma
-      CBF/TU syntax is in place (H.265 7.3.8.10); `GENERAL_10b_422` first CTB
-      row is byte-exact pre-loop-filter vs libde265, but CABAC desyncs mid-picture
-      (and `Main_422_10_A_RExt_Sony_2` still fails later with qp-delta range).
-      Finish remaining 4:2:2 residual/transform-tree edge cases, then pin HM MD5s.
+- [x] HEVC Main 4:2:2 / Main 4:2:2 10: dual vertical chroma CBF/TUs, SubHeightC=1
+      plane layout, and 4:2:2 chroma IntraPredModeC remapping (H.265 8.4.3).
+      Official `GENERAL_10b_422` sequences match pinned MD5s byte-for-byte;
+      `Main_422_10_A_RExt_Sony_2` (9 frames) matches libde265 at mse≈0.002.
 - [ ] Make corpus verdicts strict. A valid image for which both our decoder
       and libheif fail must not count as an `[ok]` pixel test. Maintain an
       explicit malformed/out-of-scope set, report unsupported valid files as
@@ -292,9 +291,9 @@
 - [x] HEVC motion-vector clipping and edge cases: official
       `MVCLIP_A_qualcomm_3` (5 frames) and `MVEDGE_A_qualcomm_3` (17 frames)
       match pinned reconstruction MD5s byte-for-byte.
-- [x] HEVC 4:2:2 transform-tree start: two vertical chroma CBFs and stacked
-      square chroma TUs (leaf and 8x8→4x4 split); chroma plane origin uses
-      SubHeightC=1. Partial: first CTB row of `GENERAL_10b_422` is exact.
+- [x] HEVC Main 4:2:2 10: dual vertical chroma CBF/TUs (SubHeightC=1),
+      4:2:2 chroma IntraPredModeC remap table, official `GENERAL_10b_422`
+      (exact MD5) and `Main_422_10_A_RExt_Sony_2` (9 frames, mse≈0.002)
 - [x] HEVC parallel merge regions use one CU-wide candidate list for every
       sub-partition of an 8x8 coding unit when the signaled merge level is
       larger than 4x4. All eight frames of official `PMERGE_A` through

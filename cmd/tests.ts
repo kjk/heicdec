@@ -424,6 +424,26 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "3c94b5ebc0aed0abae4e619b9dcca9cc",
   },
+  {
+    name: "GENERAL_10b_422_RExt_Sony_1-seq0.bit",
+    frames: 1,
+    mse: 0,
+    bitDepth: 10,
+    md5: "d233e896d07a8b130fe265e50b23c5c7",
+  },
+  {
+    name: "GENERAL_10b_422_RExt_Sony_1-seq1.bit",
+    frames: 1,
+    mse: 0,
+    bitDepth: 10,
+    md5: "8d0b46fde56f7a60d9c7051934380f09",
+  },
+  {
+    name: "Main_422_10_A_RExt_Sony_2.bin",
+    frames: 9,
+    mse: 0.05,
+    bitDepth: 10,
+  },
 ];
 
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
