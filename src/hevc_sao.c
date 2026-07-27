@@ -267,21 +267,21 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                     (!pcm_map || orig_cb)) {
                     apply_sao_band(frame->cb, frame->c_stride, cx0, cy0, cx1, cy1,
                                    sao->sao_band_position[1], sao->sao_offset_val[1],
-                                   frame->bit_depth);
+                                   frame->chroma_bit_depth);
                 } else if (sao->sao_type_idx[1] == 2 && orig_cb) {
                     apply_sao_edge(orig_cb, frame->cb, frame->c_stride, cw, ch, cx0,
                                    cy0, cx1, cy1, sao->sao_eo_class[1],
-                                   sao->sao_offset_val[1], frame->bit_depth);
+                                   sao->sao_offset_val[1], frame->chroma_bit_depth);
                 }
                 if (sao->sao_type_idx[2] == 1 &&
                     (!pcm_map || orig_cr)) {
                     apply_sao_band(frame->cr, frame->c_stride, cx0, cy0, cx1, cy1,
                                    sao->sao_band_position[2], sao->sao_offset_val[2],
-                                   frame->bit_depth);
+                                   frame->chroma_bit_depth);
                 } else if (sao->sao_type_idx[2] == 2 && orig_cr) {
                     apply_sao_edge(orig_cr, frame->cr, frame->c_stride, cw, ch, cx0,
                                    cy0, cx1, cy1, sao->sao_eo_class[2],
-                                   sao->sao_offset_val[2], frame->bit_depth);
+                                   sao->sao_offset_val[2], frame->chroma_bit_depth);
                 }
             }
         }

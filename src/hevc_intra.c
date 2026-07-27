@@ -140,11 +140,12 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
         frame_h = frame->c_height;
     }
     if (!plane) {
-        def = 1 << (frame->bit_depth - 1);
+        int bd = c_idx == 0 ? frame->bit_depth : frame->chroma_bit_depth;
+        def = 1 << (bd - 1);
         for (i = 0; i < total; i++) border[center - 2 * (int)size + (int)i] = def;
         return;
     }
-    def = 1 << (frame->bit_depth - 1);
+    def = 1 << ((c_idx == 0 ? frame->bit_depth : frame->chroma_bit_depth) - 1);
     avail_left = x > 0
         && sample_in_slice(frame, c_idx, x - 1, y, slice_address,
                            pic_width_in_ctbs, ctb_size);
@@ -502,7 +503,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
 
     if (c_idx == 0 || frame->chroma_format == 3)
         sample_filter(border, center, (int)size, c_idx, mode,
-                      strong_intra_smoothing, frame->bit_depth);
+                      strong_intra_smoothing,
+                      c_idx == 0 ? frame->bit_depth : frame->chroma_bit_depth);
 
     if (c_idx == 0) {
         plane = frame->y;
@@ -521,7 +523,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
         last = ((size_t)y + (size_t)size - 1) * (size_t)stride + (size_t)x + (size_t)size;
         if (last > (size_t)plane_n) return -1;
     }
-    max_val = (1 << frame->bit_depth) - 1;
+    max_val = (1 << (c_idx == 0 ? frame->bit_depth
+                                : frame->chroma_bit_depth)) - 1;
 
     if (mode == 0)
         predict_planar(plane, stride, x, y, size, log2_size, max_val, border, center);

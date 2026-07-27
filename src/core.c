@@ -169,6 +169,7 @@ int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
     f->width = w;
     f->height = h;
     f->bit_depth = bit_depth;
+    f->chroma_bit_depth = chroma_format ? bit_depth : 0;
     f->chroma_format = chroma_format;
     f->y_stride = w;
 

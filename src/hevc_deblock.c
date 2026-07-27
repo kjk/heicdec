@@ -289,7 +289,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                                     const uint8_t *pcm_map)
 {
     int w = frame->width, h = frame->height;
-    int bit_depth_c = frame->bit_depth;
+    int bit_depth_c = frame->chroma_bit_depth;
     int max_val = (1 << bit_depth_c) - 1;
     int sub_x, sub_y;
     int c_stride, c_height, c_width;

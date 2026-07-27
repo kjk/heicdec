@@ -205,23 +205,23 @@ static int decode_greater2(heic_cabac *cabac, heic_ctx_model *ctx, uint8_t c_idx
     return heic_cabac_decode_bin(cabac, &ctx[ctx_idx]) != 0;
 }
 
-static int16_t decode_abs_remaining(heic_cabac *cabac, uint8_t *rice_param,
-                                    int16_t base_level)
+static int32_t decode_abs_remaining(heic_cabac *cabac, uint8_t *rice_param,
+                                    int32_t base_level)
 {
     uint32_t prefix = 0;
-    int16_t value;
+    int32_t value;
     uint8_t rice = *rice_param;
     uint32_t threshold;
     while (heic_cabac_decode_bypass(cabac) != 0 && prefix < 24)
         prefix++;
     if (prefix <= 3) {
         uint32_t suffix = rice > 0 ? heic_cabac_decode_bypass_bits(cabac, rice) : 0;
-        value = (int16_t)((prefix << rice) + suffix);
+        value = (int32_t)((prefix << rice) + suffix);
     } else {
         uint8_t suffix_bits = (uint8_t)(prefix - 3 + rice);
         uint32_t suffix = heic_cabac_decode_bypass_bits(cabac, suffix_bits);
         uint32_t base = ((1u << (prefix - 3)) + 2u) << rice;
-        value = (int16_t)(base + suffix);
+        value = (int32_t)(base + suffix);
     }
     threshold = 3u * (1u << rice);
     if ((uint32_t)(base_level < 0 ? -base_level : base_level)
@@ -447,7 +447,7 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
             int pos = sig_positions[i];
             int16_t v = coeff_values[i];
             if (needs_remaining[i]) {
-                int16_t rem = decode_abs_remaining(cabac, &rice_param, v);
+                int32_t rem = decode_abs_remaining(cabac, &rice_param, v);
                 int32_t sum = (int32_t)v + (int32_t)rem;
                 if (sum > 32767) sum = 32767;
                 v = (int16_t)sum;

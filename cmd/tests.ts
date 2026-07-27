@@ -215,7 +215,12 @@ async function compareAltOracle(
   }
 }
 
-const HEVC_SEQUENCE_TESTS = [
+const HEVC_SEQUENCE_TESTS: readonly {
+  name: string;
+  frames: number;
+  mse: number;
+  bitDepth?: number;
+}[] = [
   { name: "LTRPSPS_A_Qualcomm_1.bit", frames: 17, mse: 8 },
   { name: "RPLM_A_qualcomm_4.bit", frames: 25, mse: 8 },
   { name: "TMVP_A_MS_3.bit", frames: 17, mse: 8 },
@@ -228,7 +233,14 @@ const HEVC_SEQUENCE_TESTS = [
   { name: "ipcm_A_NEC_3.bit", frames: 1, mse: 8 },
   { name: "ipcm_B_NEC_3.bit", frames: 1, mse: 8 },
   { name: "ipcm_C_NEC_3.bit", frames: 1, mse: 8 },
-] as const;
+  { name: "TSKIP_A_MS_3.bit", frames: 17, mse: 0.01 },
+  {
+    name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
+    frames: 1,
+    mse: 0,
+    bitDepth: 10,
+  },
+];
 
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
   const root = join(import.meta.dir, "..");
@@ -276,14 +288,22 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
       );
       continue;
     }
+    const sampleBytes = (t.bitDepth ?? 8) > 8 ? 2 : 1;
+    if (a.length % sampleBytes !== 0) {
+      fail++;
+      console.log(`[fail] HEVC sequence ${t.name} invalid raw size ${a.length}`);
+      continue;
+    }
     let sse = 0;
     let maxDiff = 0;
-    for (let i = 0; i < a.length; i++) {
-      const d = Math.abs(a[i] - b[i]);
+    for (let i = 0; i < a.length; i += sampleBytes) {
+      const av = sampleBytes === 1 ? a[i] : a[i] | (a[i + 1] << 8);
+      const bv = sampleBytes === 1 ? b[i] : b[i] | (b[i + 1] << 8);
+      const d = Math.abs(av - bv);
       sse += d * d;
       if (d > maxDiff) maxDiff = d;
     }
-    const mse = sse / a.length;
+    const mse = sse / (a.length / sampleBytes);
     if (mse <= t.mse) {
       ok++;
       console.log(

@@ -62,7 +62,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v11-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass";
+  "v12-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
@@ -77,6 +77,8 @@ const HEVC_SEQUENCE_SAMPLES = [
   "ipcm_A_NEC_3.bit",
   "ipcm_B_NEC_3.bit",
   "ipcm_C_NEC_3.bit",
+  "TSKIP_A_MS_3.bit",
+  "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
 ];
 
 async function download(url: string, dest: string): Promise<void> {
@@ -108,6 +110,8 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(miniDir, "dependent-slices.heic")) &&
     existsSync(join(miniDir, "dependent-slices-wpp.heic")) &&
     existsSync(join(miniDir, "transquant-bypass.heic")) &&
+    existsSync(join(miniDir, "transform-skip.heic")) &&
+    existsSync(join(miniDir, "transform-skip-main10.heic")) &&
     HEVC_SEQUENCE_SAMPLES.every((name) =>
       existsSync(join(hevcSequenceDir, name)),
     )
@@ -179,6 +183,20 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     join(miniDir, "transquant-bypass.heic"),
     416,
     240,
+  );
+  generateHevcHeif(
+    join(hevcSequenceDir, "TSKIP_A_MS_3.bit"),
+    join(miniDir, "transform-skip.heic"),
+    1280,
+    720,
+  );
+  generateHevcHeif(
+    join(hevcSequenceDir, "TSUNEQBD_A_MAIN10_Technicolor_2.bit"),
+    join(miniDir, "transform-skip-main10.heic"),
+    1024,
+    768,
+    10,
+    9,
   );
   writeFileSync(stampPath, STAMP_WANT);
   console.log(`deps/testimages: ready (${STAMP_WANT})`);

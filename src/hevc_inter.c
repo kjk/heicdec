@@ -206,8 +206,8 @@ static int mc_chroma_plane(const heic_frame *ref, heic_frame *dst,
     int int_x = (int)cx + (cmv_x >> 3);
     int int_y = (int)cy + (cmv_y >> 3);
     int frac_x = cmv_x & 7, frac_y = cmv_y & 7;
-    int shift1 = ref->bit_depth - 8 + 6;
-    int max_val = (1 << ref->bit_depth) - 1;
+    int shift1 = ref->chroma_bit_depth - 8 + 6;
+    int max_val = (1 << ref->chroma_bit_depth) - 1;
     uint32_t i, j;
     if (!cw || !ch || cx >= (uint32_t)dst->c_width ||
         cy >= (uint32_t)dst->c_height)
@@ -288,8 +288,8 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
     int int_x = (int)cx + (cmv_x >> 3);
     int int_y = (int)cy + (cmv_y >> 3);
     int frac_x = cmv_x & 7, frac_y = cmv_y & 7;
-    int shift1 = ref->bit_depth - 8;
-    int shift3 = 14 - ref->bit_depth;
+    int shift1 = ref->chroma_bit_depth - 8;
+    int shift3 = 14 - ref->chroma_bit_depth;
     uint32_t i, j;
     if (!cw || !ch) return 0;
     if (!src || !out || out_stride < cw) return -1;

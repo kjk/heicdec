@@ -166,6 +166,7 @@ static int frame_materialize_crop(heic_ctx *ctx, heic_frame *f)
 
     if (heic_frame_alloc(ctx, &g, w, h, f->bit_depth, f->chroma_format) != 0)
         return -1;
+    g.chroma_bit_depth = f->chroma_bit_depth;
     g.full_range = f->full_range;
     g.matrix_coeffs = f->matrix_coeffs;
     g.color_primaries = f->color_primaries;
@@ -280,6 +281,7 @@ static int frame_rotate_90_cw(heic_ctx *ctx, heic_frame *f)
     int dy, dx;
     if (heic_frame_alloc(ctx, &g, nw, nh, f->bit_depth, f->chroma_format) != 0)
         return -1;
+    g.chroma_bit_depth = f->chroma_bit_depth;
     g.full_range = f->full_range;
     g.matrix_coeffs = f->matrix_coeffs;
     g.color_primaries = f->color_primaries;
@@ -330,6 +332,7 @@ static int frame_rotate_270_cw(heic_ctx *ctx, heic_frame *f)
     int dy, dx;
     if (heic_frame_alloc(ctx, &g, nw, nh, f->bit_depth, f->chroma_format) != 0)
         return -1;
+    g.chroma_bit_depth = f->chroma_bit_depth;
     g.full_range = f->full_range;
     g.matrix_coeffs = f->matrix_coeffs;
     g.color_primaries = f->color_primaries;
@@ -475,7 +478,7 @@ static int decode_grid(heic_doc *doc, const heic_item *grid_item, heic_frame *ou
     int n_tiles, expected, ti;
     heic_item first;
     uint32_t tile_w, tile_h;
-    int bit_depth, chroma;
+    int bit_depth, chroma_bit_depth, chroma;
 
     if (heic_container_item_data(&doc->container, grid_item->id, &gdata, &glen, &owned) != 0)
         return -1;
@@ -544,9 +547,11 @@ static int decode_grid(heic_doc *doc, const heic_item *grid_item, heic_frame *ou
 
     if (first.hvcc) {
         bit_depth = 8 + first.hvcc->bit_depth_luma_minus8;
+        chroma_bit_depth = 8 + first.hvcc->bit_depth_chroma_minus8;
         chroma = first.hvcc->chroma_format;
     } else if (first.av1c) {
         bit_depth = first.av1c->high_bitdepth ? (first.av1c->twelve_bit ? 12 : 10) : 8;
+        chroma_bit_depth = bit_depth;
         chroma = first.av1c->monochrome
                      ? 0
                      : (first.av1c->chroma_subsampling_x
@@ -559,6 +564,7 @@ static int decode_grid(heic_doc *doc, const heic_item *grid_item, heic_frame *ou
 
     if (heic_frame_alloc(doc->ctx, out, (int)out_w, (int)out_h, bit_depth, chroma) != 0)
         return -1;
+    out->chroma_bit_depth = chroma ? chroma_bit_depth : 0;
 
     for (ti = 0; ti < n_tiles; ti++) {
         heic_item tile_item;
@@ -680,7 +686,7 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
     uint32_t canvas_w, canvas_h;
     int32_t offsets[64][2];
     heic_item first;
-    int bit_depth, chroma;
+    int bit_depth, chroma_bit_depth, chroma;
     uint16_t fill_y, fill_cb, fill_cr;
     size_t n;
 
@@ -748,18 +754,22 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
     if (heic_container_get_item(&doc->container, tile_ids[0], &first) != 0) return -1;
     if (first.hvcc) {
         bit_depth = 8 + first.hvcc->bit_depth_luma_minus8;
+        chroma_bit_depth = 8 + first.hvcc->bit_depth_chroma_minus8;
         chroma = first.hvcc->chroma_format;
     } else {
         bit_depth = 8;
+        chroma_bit_depth = 8;
         chroma = 1;
     }
     if (heic_frame_alloc(doc->ctx, out, (int)canvas_w, (int)canvas_h, bit_depth, chroma) != 0)
         return -1;
+    out->chroma_bit_depth = chroma ? chroma_bit_depth : 0;
 
     /* Fill canvas: use high 8 bits of R/G/B as crude Y fill (preview-quality).
        Proper RGB→YCbCr can wait; stills use solid fills. */
     fill_y = (uint16_t)((fill[0] >> 8) << (bit_depth > 8 ? bit_depth - 8 : 0));
-    fill_cb = (uint16_t)(128 << (bit_depth > 8 ? bit_depth - 8 : 0));
+    fill_cb = (uint16_t)(128 << (chroma_bit_depth > 8
+                                     ? chroma_bit_depth - 8 : 0));
     fill_cr = fill_cb;
     n = (size_t)out->width * (size_t)out->height;
     for (i = 0; i < (int)n; i++) out->y[i] = fill_y;

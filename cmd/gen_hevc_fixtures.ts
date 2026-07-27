@@ -83,17 +83,21 @@ function splitAnnexB(data: Uint8Array): Nal[] {
   return nals;
 }
 
-function hvccBox(params: Nal[]): Uint8Array {
+function hvccBox(
+  params: Nal[],
+  bitDepthLuma: number,
+  bitDepthChroma: number,
+): Uint8Array {
   const header = new Uint8Array(23);
   header[0] = 1;
-  header[1] = 1;
+  header[1] = bitDepthLuma > 8 ? 2 : 1;
   header[12] = 120;
   header[13] = 0xf0;
   header[14] = 0;
   header[15] = 0xfc;
   header[16] = 0xfd;
-  header[17] = 0xf8;
-  header[18] = 0xf8;
+  header[17] = 0xf8 | (bitDepthLuma - 8);
+  header[18] = 0xf8 | (bitDepthChroma - 8);
   header[21] = 3;
   header[22] = params.length;
   const arrays = params.map((nal) =>
@@ -134,6 +138,8 @@ export function generateHevcHeif(
   outputPath: string,
   width: number,
   height: number,
+  bitDepthLuma = 8,
+  bitDepthChroma = bitDepthLuma,
 ): void {
   const nals = splitAnnexB(new Uint8Array(readFileSync(sourcePath)));
   const params = [32, 33, 34].map((type) => {
@@ -158,7 +164,10 @@ export function generateHevcHeif(
   }
   const sample = concat(...sampleParts);
   const ispe = fullbox("ispe", 0, 0, concat(be32(width), be32(height)));
-  const ipco = box("ipco", concat(ispe, hvccBox(params)));
+  const ipco = box(
+    "ipco",
+    concat(ispe, hvccBox(params, bitDepthLuma, bitDepthChroma)),
+  );
   const ipma = fullbox("ipma", 0, 0, concat(
     be32(1),
     be16(1),

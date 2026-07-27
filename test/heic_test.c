@@ -168,6 +168,28 @@ static int annexb_first_slice(const annexb_nal *nal)
         && (nal->data[2] & 0x80) != 0;
 }
 
+static int update_hvcc_param(uint8_t **params, size_t *param_lens,
+                             int *n_params, const annexb_nal *nal)
+{
+    int i;
+    if (!params || !param_lens || !n_params || !nal ||
+        nal->type < 32 || nal->type > 34)
+        return 0;
+    for (i = 0; i < *n_params; i++) {
+        uint8_t type = (uint8_t)((params[i][0] >> 1) & 0x3f);
+        if (type == nal->type) {
+            params[i] = (uint8_t *)nal->data;
+            param_lens[i] = nal->len;
+            return 0;
+        }
+    }
+    if (*n_params >= 16) return -1;
+    params[*n_params] = (uint8_t *)nal->data;
+    param_lens[*n_params] = nal->len;
+    (*n_params)++;
+    return 0;
+}
+
 static uint64_t hash_plane(uint64_t h, const uint16_t *p,
                            int stride, int w, int height)
 {
@@ -210,10 +232,10 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
         free(nals);
         return 1;
     }
-    for (i = 0; i < n_nals && n_params < 16; i++)
-        if (nals[i].type >= 32 && nals[i].type <= 34) {
-            params[n_params] = (uint8_t *)nals[i].data;
-            param_lens[n_params++] = nals[i].len;
+    for (i = 0; i < n_nals && nals[i].type > 31; i++)
+        if (update_hvcc_param(params, param_lens, &n_params, &nals[i]) != 0) {
+            free(nals);
+            return 1;
         }
     if (n_params < 2) {
         fprintf(stderr, "hevc-sequence: missing parameter sets\n");
@@ -271,6 +293,7 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
         }
         int n_refs = decoded < HEIC_MAX_REF_PICS
             ? decoded : HEIC_MAX_REF_PICS;
+        cfg.n_nal_units = n_params;
         for (j = 0; j < n_refs; j++) refs[j] = &frames[decoded - 1 - j];
         memset(&out, 0, sizeof(out));
         if (heic_hevc_decode_refs(ctx, &cfg, sample, sample_len,
@@ -283,6 +306,12 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
         }
         free(sample);
         frames[decoded++] = out;
+        for (k = au_start + 1; k < au_end; k++)
+            if (update_hvcc_param(params, param_lens, &n_params, &nals[k]) != 0) {
+                complete = 0;
+                break;
+            }
+        if (!complete) break;
     }
     j = complete && (i >= n_nals || decoded == max_frames);
     for (i = 0; i < decoded; i++) order[i] = i;
@@ -314,13 +343,24 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
             int strides[3] = {fr->y_stride, fr->c_stride, fr->c_stride};
             int widths[3] = {fr->width, fr->c_width, fr->c_width};
             int heights[3] = {fr->height, fr->c_height, fr->c_height};
+            int depths[3] = {
+                fr->bit_depth, fr->chroma_bit_depth, fr->chroma_bit_depth
+            };
             int n_planes = fr->chroma_format ? 3 : 1;
             for (plane = 0; plane < n_planes; plane++)
                 for (y = 0; y < heights[plane]; y++)
                     for (x = 0; x < widths[plane]; x++) {
-                        uint8_t v = (uint8_t)planes[plane][
+                        uint16_t v = planes[plane][
                             (size_t)y * strides[plane] + x];
-                        if (fwrite(&v, 1, 1, f) != 1) j = 0;
+                        if (depths[plane] > 8) {
+                            uint8_t bytes[2] = {
+                                (uint8_t)v, (uint8_t)(v >> 8)
+                            };
+                            if (fwrite(bytes, 1, 2, f) != 2) j = 0;
+                        } else {
+                            uint8_t byte = (uint8_t)v;
+                            if (fwrite(&byte, 1, 1, f) != 1) j = 0;
+                        }
                     }
         }
         if (f) fclose(f);

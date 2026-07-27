@@ -491,7 +491,8 @@ int  heic_container_find_thumbs(const heic_container *c, uint32_t target_id,
 typedef struct {
     int width, height;           /* coded */
     int crop_left, crop_right, crop_top, crop_bottom;
-    int bit_depth;
+    int bit_depth;               /* luma (and alpha) */
+    int chroma_bit_depth;        /* 0 for mono, otherwise chroma */
     int chroma_format;           /* 0=mono, 1=420, 2=422, 3=444 */
     int full_range;
     uint8_t matrix_coeffs;

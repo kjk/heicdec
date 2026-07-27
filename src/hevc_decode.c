@@ -201,6 +201,8 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
         heic_pps_free(ctx, &pps);
         return -1;
     }
+    out->chroma_bit_depth = sps.chroma_format_idc
+        ? 8 + sps.bit_depth_chroma_minus8 : 0;
     out->full_range = sps.video_full_range_flag;
     /* matrix_coeffs: 0 = GBR identity (only when colour_description present).
      * When colour description is absent or matrix is unspecified (2), match
