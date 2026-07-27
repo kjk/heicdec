@@ -235,6 +235,10 @@
       every luma/chroma edge, while applying only the PPS chroma QP offsets
       required by the deblocking process. The first `DBLK_A_SONY_3` frame,
       which varies filter offsets by slice, matches libde265 exactly.
+- [x] HEVC intra references across non-rectangular slice boundaries: evaluate
+      top/left extensions and the top-left corner per sample before normative
+      substitution. Official `SAO_H_Parabola_1` (four frames, diagonal SAO at
+      slice corners) matches its published reconstruction MD5 exactly.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

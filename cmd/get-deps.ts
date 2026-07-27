@@ -76,11 +76,16 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v24-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock";
+  "v25-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
+const HEVC_V1_BASE =
+  "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
+  "bitstream_exchange/draft_conformance/HEVC_v1";
 const HEVC_REXT_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
   "bitstream_exchange/draft_conformance/RExt";
+const HEVC_SAO_DIAGONAL = "SAO_H_Parabola_1.bit";
+const HEVC_SAO_DIAGONAL_ZIP = "SAO_H_Parabola_1.zip";
 const HEVC_REXT_TSCTX = "TSCTX_8bit_I_RExt_SHARP_1.bin";
 const HEVC_REXT_TSCTX_ZIP = "TSCTX_8bit_I_RExt_SHARP_1.zip";
 const HEVC_REXT_GENERAL = "GENERAL_8b_444_RExt_Sony_2.bit";
@@ -255,6 +260,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE1)) &&
     existsSync(join(hevcSequenceDir, HEVC_HIGH_PRECISION_WEIGHTING)) &&
     existsSync(join(hevcSequenceDir, HEVC_SAO_OFFSET_SCALE)) &&
+    existsSync(join(hevcSequenceDir, HEVC_SAO_DIAGONAL)) &&
     existsSync(join(hevcSequenceDir, HEVC_CONSTRAINED_INTRA)) &&
     HEVC_REXT_GENERAL_SEQUENCES.every((index) =>
       existsSync(join(
@@ -314,6 +320,15 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     const dest = join(hevcSequenceDir, name);
     if (!existsSync(dest) || opts.force)
       await download(`${HEVC_SEQUENCE_BASE}/${name}`, dest);
+  }
+  {
+    const dest = join(hevcSequenceDir, HEVC_SAO_DIAGONAL);
+    const zip = join(hevcSequenceDir, HEVC_SAO_DIAGONAL_ZIP);
+    if (!existsSync(dest) || opts.force) {
+      await download(`${HEVC_V1_BASE}/${HEVC_SAO_DIAGONAL_ZIP}`, zip);
+      extractZipEntry(zip, HEVC_SAO_DIAGONAL, dest);
+      console.log(`deps/testimages: extracted ${dest}`);
+    }
   }
   {
     const dest = join(hevcSequenceDir, HEVC_REXT_TSCTX);

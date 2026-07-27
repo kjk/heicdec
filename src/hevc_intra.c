@@ -151,7 +151,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
 {
     uint16_t *plane;
     int stride, plane_n, frame_w, frame_h;
-    int has_left, has_top, avail_left, avail_top, avail_tl;
+    int avail_tl;
     int avail[HEIC_BORDER_N];
     uint32_t avail_count = 0, total = 4 * size + 1;
     int32_t def;
@@ -192,31 +192,13 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
             (x * sub_x / ctb_size);
         current_filter = &filter_map[current_addr];
     }
-    has_left = x > 0
-        && sample_in_slice(frame, c_idx, x - 1, y, slice_address,
+    avail_tl = x > 0 && y > 0
+        && sample_in_slice(frame, c_idx, x - 1, y - 1, slice_address,
                            pic_width_in_ctbs, ctb_size,
-                           filter_map, current_filter);
-    has_top = y > 0
-        && sample_in_slice(frame, c_idx, x, y - 1, slice_address,
-                           pic_width_in_ctbs, ctb_size,
-                           filter_map, current_filter);
-    avail_left = has_left
-        && sample_is_intra(frame, c_idx, x - 1, y, pred_mode_map,
-                           pred_mode_stride, pred_mode_n, pred_mode_min_pu);
-    avail_top = has_top
-        && sample_is_intra(frame, c_idx, x, y - 1, pred_mode_map,
-                           pred_mode_stride, pred_mode_n, pred_mode_min_pu);
-    if (pred_mode_map) {
-        avail_tl = x > 0 && y > 0
-            && sample_in_slice(frame, c_idx, x - 1, y - 1, slice_address,
-                               pic_width_in_ctbs, ctb_size,
-                               filter_map, current_filter)
-            && sample_is_intra(frame, c_idx, x - 1, y - 1, pred_mode_map,
-                               pred_mode_stride, pred_mode_n,
-                               pred_mode_min_pu);
-    } else {
-        avail_tl = has_left && has_top;
-    }
+                           filter_map, current_filter)
+        && sample_is_intra(frame, c_idx, x - 1, y - 1, pred_mode_map,
+                           pred_mode_stride, pred_mode_n,
+                           pred_mode_min_pu);
 
     /* Only clear the slots we may write (4*size+1 around center). */
     {
@@ -235,36 +217,55 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
             avail_count++;
         }
     }
-    if (!corner_ok && avail_top) {
-        uint16_t raw = plane[(size_t)(y - 1) * (size_t)stride + (size_t)x];
-        if (raw != HEIC_UNINIT_SAMPLE) {
-            border[center] = raw;
-            corner_ok = 1;
-            avail_count++;
-        }
-    }
-    if (!corner_ok && avail_left) {
-        uint16_t raw = plane[(size_t)y * (size_t)stride + (size_t)(x - 1)];
-        if (raw != HEIC_UNINIT_SAMPLE) {
-            border[center] = raw;
-            corner_ok = 1;
-            avail_count++;
-        }
-    }
     if (!corner_ok) border[center] = def;
     avail[center] = corner_ok;
 
-    if (has_top) {
+    if (y > 0) {
         uint32_t top_count = 2 * size;
-        uint32_t n_avail = size; /* first N top samples always reconstructed */
         const uint16_t *top_row;
         if (top_count > (uint32_t)frame_w - x) top_count = (uint32_t)frame_w - x;
-        if (n_avail > top_count) n_avail = top_count;
         top_row = plane + (size_t)(y - 1) * (size_t)stride + (size_t)x;
-        if (pred_mode_map) {
+        if (!pred_mode_map && top_count
+            && sample_in_slice(frame, c_idx, x, y - 1, slice_address,
+                               pic_width_in_ctbs, ctb_size,
+                               filter_map, current_filter)
+            && sample_in_slice(frame, c_idx, x + top_count - 1, y - 1,
+                               slice_address, pic_width_in_ctbs, ctb_size,
+                               filter_map, current_filter)) {
+            uint32_t guaranteed = size < top_count ? size : top_count;
+            if (!heic_simd_u16_to_i32_avail(
+                    top_row, &border[center + 1], &avail[center + 1],
+                    (int)guaranteed)) {
+                for (i = 0; i < guaranteed; i++) {
+                    border[center + 1 + (int)i] = top_row[i];
+                    avail[center + 1 + (int)i] = 1;
+                }
+            }
+            avail_count += guaranteed;
+            if (top_count > guaranteed) {
+                if (!heic_simd_border_top_ext(
+                        top_row + guaranteed,
+                        &border[center + 1 + (int)guaranteed],
+                        &avail[center + 1 + (int)guaranteed],
+                        (int)(top_count - guaranteed))) {
+                    for (i = guaranteed; i < top_count; i++) {
+                        uint16_t raw = top_row[i];
+                        if (raw != HEIC_UNINIT_SAMPLE) {
+                            border[center + 1 + (int)i] = raw;
+                            avail[center + 1 + (int)i] = 1;
+                        }
+                    }
+                }
+                for (i = guaranteed; i < top_count; i++)
+                    if (avail[center + 1 + (int)i]) avail_count++;
+            }
+        } else {
             for (i = 0; i < top_count; i++) {
                 uint16_t raw = top_row[i];
                 if (raw != HEIC_UNINIT_SAMPLE
+                    && sample_in_slice(frame, c_idx, x + i, y - 1,
+                                       slice_address, pic_width_in_ctbs,
+                                       ctb_size, filter_map, current_filter)
                     && sample_is_intra(
                         frame, c_idx, x + i, y - 1, pred_mode_map,
                         pred_mode_stride, pred_mode_n, pred_mode_min_pu)) {
@@ -274,69 +275,45 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
                     avail_count++;
                 }
             }
-        } else {
-            if (!heic_simd_u16_to_i32_avail(top_row, &border[center + 1],
-                                            &avail[center + 1], (int)n_avail)) {
-                for (i = 0; i < n_avail; i++) {
-                    border[center + 1 + (int)i] = top_row[i];
-                    avail[center + 1 + (int)i] = 1;
-                }
-            }
-            avail_count += n_avail;
-            /* Extension N..2N may land on not-yet-decoded CUs (UNINIT). */
-            if (top_count > n_avail) {
-                if (!heic_simd_border_top_ext(
-                        top_row + n_avail,
-                        &border[center + 1 + (int)n_avail],
-                        &avail[center + 1 + (int)n_avail],
-                        (int)(top_count - n_avail))) {
-                    for (i = n_avail; i < top_count; i++) {
-                        uint16_t raw = top_row[i];
-                        if (raw != HEIC_UNINIT_SAMPLE) {
-                            int idx = center + 1 + (int)i;
-                            border[idx] = raw;
-                            avail[idx] = 1;
-                            avail_count++;
-                        }
-                    }
-                } else {
-                    /* Count valids for avail_count bookkeeping */
-                    for (i = n_avail; i < top_count; i++)
-                        if (avail[center + 1 + (int)i]) avail_count++;
-                }
-            }
         }
     }
-    if (has_left) {
+    if (x > 0) {
         uint32_t left_count = 2 * size;
-        uint32_t n_avail = size; /* first N left samples always reconstructed */
         const uint16_t *left_p;
         if (left_count > (uint32_t)frame_h - y) left_count = (uint32_t)frame_h - y;
-        if (n_avail > left_count) n_avail = left_count;
         left_p = plane + (size_t)y * (size_t)stride + (size_t)(x - 1);
-        if (pred_mode_map) {
-            for (i = 0; i < left_count; i++) {
+        if (!pred_mode_map && left_count
+            && sample_in_slice(frame, c_idx, x - 1, y, slice_address,
+                               pic_width_in_ctbs, ctb_size,
+                               filter_map, current_filter)
+            && sample_in_slice(frame, c_idx, x - 1, y + left_count - 1,
+                               slice_address, pic_width_in_ctbs, ctb_size,
+                               filter_map, current_filter)) {
+            uint32_t guaranteed = size < left_count ? size : left_count;
+            for (i = 0; i < guaranteed; i++) {
+                border[center - 1 - (int)i] =
+                    left_p[(size_t)i * (size_t)stride];
+                avail[center - 1 - (int)i] = 1;
+            }
+            avail_count += guaranteed;
+            for (i = guaranteed; i < left_count; i++) {
                 uint16_t raw = left_p[(size_t)i * (size_t)stride];
-                if (raw != HEIC_UNINIT_SAMPLE
-                    && sample_is_intra(
-                        frame, c_idx, x - 1, y + i, pred_mode_map,
-                        pred_mode_stride, pred_mode_n, pred_mode_min_pu)) {
-                    int idx = center - 1 - (int)i;
-                    border[idx] = raw;
-                    avail[idx] = 1;
+                if (raw != HEIC_UNINIT_SAMPLE) {
+                    border[center - 1 - (int)i] = raw;
+                    avail[center - 1 - (int)i] = 1;
                     avail_count++;
                 }
             }
         } else {
-            for (i = 0; i < n_avail; i++) {
-                border[center - 1 - (int)i] =
-                    left_p[(size_t)i * (size_t)stride];
-                avail[center - 1 - (int)i] = 1;
-                avail_count++;
-            }
-            for (i = n_avail; i < left_count; i++) {
+            for (i = 0; i < left_count; i++) {
                 uint16_t raw = left_p[(size_t)i * (size_t)stride];
-                if (raw != HEIC_UNINIT_SAMPLE) {
+                if (raw != HEIC_UNINIT_SAMPLE
+                    && sample_in_slice(frame, c_idx, x - 1, y + i,
+                                       slice_address, pic_width_in_ctbs,
+                                       ctb_size, filter_map, current_filter)
+                    && sample_is_intra(
+                        frame, c_idx, x - 1, y + i, pred_mode_map,
+                        pred_mode_stride, pred_mode_n, pred_mode_min_pu)) {
                     int idx = center - 1 - (int)i;
                     border[idx] = raw;
                     avail[idx] = 1;

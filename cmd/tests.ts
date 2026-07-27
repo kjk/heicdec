@@ -274,6 +274,12 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "2a92f69d0d3571fdde7bdeaf9361846f",
   },
   {
+    name: "SAO_H_Parabola_1.bit",
+    frames: 4,
+    mse: 0,
+    md5: "7e23c16898b14831b25d7857b69a9a9a",
+  },
+  {
     name: "constrained-intra-main.bit",
     frames: 2,
     mse: 0,
