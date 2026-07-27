@@ -239,6 +239,10 @@
       strength of a transform edge; chroma-only residuals do not. All 30
       frames of official `DBLK_B_SONY_3` and `DBLK_C_SONY_3` match their
       reconstruction MD5s byte-for-byte.
+- [x] HEVC prediction-block availability excludes not-yet-decoded NxN
+      partitions inside the current coding unit for both merge and AMVP
+      candidates. All eight 10-bit frames of official
+      `DBLK_A_MAIN10_VIXS_3` match the reconstruction MD5 byte-for-byte.
 - [x] HEVC deblocking QP propagation: when a CU QP delta is decoded after
       earlier transform units, retroactively update the whole coding unit's
       deblock QP map. All eight frames of official `DBLK_F_VIXS_1` and

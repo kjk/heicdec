@@ -231,6 +231,13 @@ const HEVC_SEQUENCE_TESTS: readonly {
   { name: "MERGE_A_TI_3.bit", frames: 8, mse: 8 },
   { name: "DBLK_A_SONY_3.bit", frames: 1, mse: 0 },
   {
+    name: "DBLK_A_MAIN10_VIXS_3.bit",
+    frames: 8,
+    mse: 0,
+    bitDepth: 10,
+    md5: "c4594956bb9e8303f1662f9eb1bcdf50",
+  },
+  {
     name: "DBLK_B_SONY_3.bit",
     frames: 30,
     mse: 0,
