@@ -48,7 +48,7 @@ int heic_mc_luma(const heic_frame *ref, heic_frame *dst, heic_mv mv,
     int_y = (int)y + ((int)mv.y >> 2);
     frac_x = (int)mv.x & 3;
     frac_y = (int)mv.y & 3;
-    shift1 = ref->bit_depth - 8 + 6;
+    shift1 = 6; /* filter taps sum to 64; preserve native sample depth */
     max_val = (1 << ref->bit_depth) - 1;
 
     if (frac_x == 0 && frac_y == 0) {
@@ -206,7 +206,7 @@ static int mc_chroma_plane(const heic_frame *ref, heic_frame *dst,
     int int_x = (int)cx + (cmv_x >> 3);
     int int_y = (int)cy + (cmv_y >> 3);
     int frac_x = cmv_x & 7, frac_y = cmv_y & 7;
-    int shift1 = ref->chroma_bit_depth - 8 + 6;
+    int shift1 = 6; /* filter taps sum to 64; preserve native sample depth */
     int max_val = (1 << ref->chroma_bit_depth) - 1;
     uint32_t i, j;
     if (!cw || !ch || cx >= (uint32_t)dst->c_width ||

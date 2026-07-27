@@ -236,8 +236,8 @@ const HEVC_SEQUENCE_TESTS: readonly {
   { name: "TSKIP_A_MS_3.bit", frames: 17, mse: 0.01 },
   {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
-    frames: 1,
-    mse: 0,
+    frames: 8,
+    mse: 0.05,
     bitDepth: 10,
   },
 ];

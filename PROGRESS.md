@@ -186,8 +186,9 @@
 - [x] Raw Annex B HEVC sequence regression path with `dec265` pixel oracle;
       FATE fixtures cover long-term RPS, RPLM, TMVP, weighted P/B, and B merge
 - [x] HEVC transform-skip conformance: all 17 frames of `TSKIP_A_MS_3` match
-      libde265 at mse 0.002; `TSUNEQBD_A_MAIN10_Technicolor_2` frame 0 is exact,
-      including independent 10-bit luma / 9-bit chroma reconstruction and RGB
+      libde265 at mse 0.002; all 8 `TSUNEQBD_A_MAIN10_Technicolor_2` frames
+      match at mse 0.009, including independent 10-bit luma / 9-bit chroma
+      reconstruction, inter prediction, and RGB
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order
