@@ -99,8 +99,24 @@ static void ref_subst(int32_t *border, const int *avail, int center, int size,
     }
 }
 
+static int sample_in_slice(const heic_frame *frame, uint8_t c_idx,
+                           uint32_t x, uint32_t y, uint32_t slice_address,
+                           uint32_t pic_width_in_ctbs, uint32_t ctb_size)
+{
+    uint32_t sub_x = 1, sub_y = 1;
+    if (c_idx != 0) {
+        if (frame->chroma_format == 1 || frame->chroma_format == 2) sub_x = 2;
+        if (frame->chroma_format == 1) sub_y = 2;
+    }
+    return ((y * sub_y) / ctb_size) * pic_width_in_ctbs
+             + (x * sub_x) / ctb_size
+           >= slice_address;
+}
+
 static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size,
-                        uint8_t c_idx, int32_t *border, int center)
+                        uint8_t c_idx, int32_t *border, int center,
+                        uint32_t slice_address, uint32_t pic_width_in_ctbs,
+                        uint32_t ctb_size)
 {
     uint16_t *plane;
     int stride, plane_n, frame_w, frame_h, avail_left, avail_top, avail_tl;
@@ -129,8 +145,12 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
         return;
     }
     def = 1 << (frame->bit_depth - 1);
-    avail_left = x > 0;
-    avail_top = y > 0;
+    avail_left = x > 0
+        && sample_in_slice(frame, c_idx, x - 1, y, slice_address,
+                           pic_width_in_ctbs, ctb_size);
+    avail_top = y > 0
+        && sample_in_slice(frame, c_idx, x, y - 1, slice_address,
+                           pic_width_in_ctbs, ctb_size);
     avail_tl = avail_left && avail_top;
 
     /* Only clear the slots we may write (4*size+1 around center). */
@@ -465,7 +485,8 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
 
 int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint8_t log2_size, uint8_t mode, uint8_t c_idx,
-                       int strong_intra_smoothing)
+                       int strong_intra_smoothing, uint32_t slice_address,
+                       uint32_t pic_width_in_ctbs, uint32_t ctb_size)
 {
     uint32_t size;
     int32_t border[HEIC_BORDER_N];
@@ -473,9 +494,11 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
     uint16_t *plane;
     int stride, plane_n, max_val;
 
-    if (!frame || log2_size > 5) return -1;
+    if (!frame || log2_size > 5 || !pic_width_in_ctbs || !ctb_size)
+        return -1;
     size = 1u << log2_size;
-    fill_border(frame, x, y, size, c_idx, border, center);
+    fill_border(frame, x, y, size, c_idx, border, center, slice_address,
+                pic_width_in_ctbs, ctb_size);
 
     if (c_idx == 0 || frame->chroma_format == 3)
         sample_filter(border, center, (int)size, c_idx, mode,

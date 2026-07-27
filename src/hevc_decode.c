@@ -228,67 +228,93 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
     }
 
     {
+        heic_hevc_picture *picture = NULL;
+        heic_slice_header independent;
+        int have_independent = 0;
         int has_slice = 0;
+        int failed = 0;
+        memset(&independent, 0, sizeof(independent));
         for (i = 0; i < n_nals; i++) {
             heic_slice_header sh;
             const uint8_t *slice_data;
+            const heic_frame *l0[HEIC_MAX_REF_PICS] = {0};
+            const heic_frame *l1[HEIC_MAX_REF_PICS] = {0};
+            uint32_t *eps = NULL;
             size_t slice_len;
-            if (!heic_nal_is_slice(nals[i].type) || nals[i].nuh_layer_id != 0) continue;
+            int n_l0 = 0, n_l1 = 0;
+            int ne = 0, e;
+            int ep_in_hdr = 0;
+            size_t off;
+            if (!heic_nal_is_slice(nals[i].type)
+                || nals[i].nuh_layer_id != 0)
+                continue;
             has_slice = 1;
             if (!have_pps) {
                 heic_error(ctx, HEIC_SEVERITY_ERROR, "missing PPS");
+                failed = 1;
                 break;
             }
-            if (heic_parse_slice_header(ctx, &nals[i], &sps, &pps, &sh) != 0) break;
-            heic_error(ctx, HEIC_SEVERITY_INFO,
-                       "slice hdr OK type=%d qp_y=%d data_off=%u CTUs=%u entries=%u",
-                       sh.slice_type, sh.slice_qp_y, (unsigned)sh.data_offset,
-                       (unsigned)sps.pic_size_in_ctbs,
-                       (unsigned)sh.num_entry_point_offsets);
+            if (heic_parse_slice_header(
+                    ctx, &nals[i], &sps, &pps,
+                    have_independent ? &independent : NULL, &sh) != 0) {
+                failed = 1;
+                break;
+            }
+            if (sh.first_slice_segment_in_pic_flag && picture) {
+                heic_error(ctx, HEIC_SEVERITY_ERROR,
+                           "sample contains more than one HEVC picture");
+                heic_slice_header_free(ctx, &sh);
+                failed = 1;
+                break;
+            }
+            if (!sh.dependent_slice_segment_flag) {
+                independent = sh;
+                independent.entry_point_offsets = NULL;
+                independent.num_entry_point_offsets = 0;
+                have_independent = 1;
+            }
+            heic_error(
+                ctx, HEIC_SEVERITY_INFO,
+                "slice hdr OK type=%d dependent=%d address=%u qp_y=%d "
+                "data_off=%u CTUs=%u entries=%u",
+                sh.slice_type, sh.dependent_slice_segment_flag,
+                (unsigned)sh.slice_segment_address, sh.slice_qp_y,
+                (unsigned)sh.data_offset, (unsigned)sps.pic_size_in_ctbs,
+                (unsigned)sh.num_entry_point_offsets);
             if (sh.data_offset >= nals[i].payload_len) {
                 heic_error(ctx, HEIC_SEVERITY_ERROR, "empty slice data");
                 heic_slice_header_free(ctx, &sh);
+                failed = 1;
                 break;
             }
             slice_data = nals[i].payload + sh.data_offset;
             slice_len = nals[i].payload_len - sh.data_offset;
-            /* Convert payload-relative EP positions to slice_data EBSP space */
-            {
-                uint32_t *eps = NULL;
-                int ne = 0, e;
-                size_t off = sh.data_offset;
-                /* Count EPs in header region of RBSP (payload index < data_offset) */
-                int ep_in_hdr = 0;
-                for (e = 0; e < nals[i].n_ep_positions; e++) {
-                    /* EP at EBSP pos p maps to RBSP pos p - e_index_before */
-                    uint32_t p = nals[i].ep_positions[e];
-                    uint32_t rbsp_pos = p - (uint32_t)e; /* e EPs before this one */
-                    if (rbsp_pos < off) ep_in_hdr++;
+            off = sh.data_offset;
+            for (e = 0; e < nals[i].n_ep_positions; e++) {
+                uint32_t rbsp_pos =
+                    nals[i].ep_positions[e] - (uint32_t)e;
+                if (rbsp_pos < off) ep_in_hdr++;
+            }
+            for (e = 0; e < nals[i].n_ep_positions; e++) {
+                uint32_t p = nals[i].ep_positions[e];
+                uint32_t rbsp_pos = p - (uint32_t)e;
+                uint32_t slice_ebsp_start =
+                    (uint32_t)off + (uint32_t)ep_in_hdr;
+                uint32_t *np;
+                if (rbsp_pos < off || p < slice_ebsp_start) continue;
+                np = (uint32_t *)heic_realloc_buf(
+                    ctx, eps, (size_t)ne * sizeof(uint32_t),
+                    (size_t)(ne + 1) * sizeof(uint32_t));
+                if (!np) {
+                    failed = 1;
+                    break;
                 }
-                for (e = 0; e < nals[i].n_ep_positions; e++) {
-                    uint32_t p = nals[i].ep_positions[e];
-                    uint32_t rbsp_pos = p - (uint32_t)e;
-                    if (rbsp_pos < off) continue;
-                    /* slice_data EBSP start = data_offset + ep_in_hdr */
-                    /* EP relative to slice_data EBSP: p - (data_offset + ep_in_hdr) */
-                    {
-                        uint32_t slice_ebsp_start = (uint32_t)off + (uint32_t)ep_in_hdr;
-                        uint32_t rel;
-                        uint32_t *np;
-                        if (p < slice_ebsp_start) continue;
-                        rel = p - slice_ebsp_start;
-                        np = (uint32_t *)heic_realloc_buf(
-                            ctx, eps, (size_t)ne * sizeof(uint32_t),
-                            (size_t)(ne + 1) * sizeof(uint32_t));
-                        if (!np) break;
-                        eps = np;
-                        eps[ne++] = rel;
-                    }
-                }
-                const heic_frame *l0[HEIC_MAX_REF_PICS] = {0};
-                const heic_frame *l1[HEIC_MAX_REF_PICS] = {0};
-                int n_l0 = 0, n_l1 = 0;
-                int poc_bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
+                eps = np;
+                eps[ne++] = p - slice_ebsp_start;
+            }
+            if (!failed && !picture) {
+                int poc_bits =
+                    sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
                 uint32_t max_poc_lsb = 1u << poc_bits;
                 int is_irap = nals[i].type >= HEIC_NAL_BLA_W_LP
                            && nals[i].type <= HEIC_NAL_CRA;
@@ -309,27 +335,31 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                         out->poc += prev_msb;
                 }
                 out->poc_valid = 1;
-                if (sh.slice_type != HEIC_SLICE_I) {
-                    if (build_ref_lists(ctx, &sps, &sh, out->poc,
-                                        refs, n_refs, l0, &n_l0,
-                                        l1, &n_l1) != 0) {
-                        heic_free_buf(ctx, eps);
-                        heic_slice_header_free(ctx, &sh);
-                        break;
-                    }
-                }
-                if (heic_hevc_decode_slice(ctx, &sps, &pps, &sh, slice_data,
-                                           slice_len, eps, ne, l0, n_l0,
-                                           l1, n_l1,
-                                           out, ab) == 0)
-                    decode_ok = 1;
-                heic_free_buf(ctx, eps);
             }
+            if (!failed && sh.slice_type != HEIC_SLICE_I
+                && build_ref_lists(ctx, &sps, &sh, out->poc,
+                                   refs, n_refs, l0, &n_l0,
+                                   l1, &n_l1) != 0)
+                failed = 1;
+            if (!failed && !picture) {
+                picture = heic_hevc_picture_new(
+                    ctx, &sps, &pps, &sh, l0, n_l0, l1, n_l1, out);
+                if (!picture) failed = 1;
+            }
+            if (!failed
+                && heic_hevc_picture_decode_segment(
+                       picture, &sh, slice_data, slice_len, eps, ne,
+                       l0, n_l0, l1, n_l1, ab) != 0)
+                failed = 1;
+            heic_free_buf(ctx, eps);
             heic_slice_header_free(ctx, &sh);
-            break;
+            if (failed) break;
         }
         if (!has_slice)
             heic_error(ctx, HEIC_SEVERITY_ERROR, "no VCL slice NAL");
+        if (!failed && picture && heic_hevc_picture_finish(picture) == 0)
+            decode_ok = 1;
+        heic_hevc_picture_destroy(picture);
     }
 
     heic_nals_free(ctx, nals, n_nals);

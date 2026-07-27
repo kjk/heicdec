@@ -95,38 +95,61 @@ static int parse_pred_weight_table(heic_bs *bs, const heic_sps *sps,
 
 int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                             const heic_sps *sps, const heic_pps *pps,
+                            const heic_slice_header *independent,
                             heic_slice_header *out)
 {
     heic_bs bs;
     uint32_t st;
+    uint32_t segment_address = 0;
+    uint8_t pps_id;
+    int first, dependent = 0, no_output = 0;
     int i;
 
     if (!nal || !sps || !pps || !out) return -1;
     memset(out, 0, sizeof(*out));
     heic_bs_init(&bs, nal->payload, nal->payload_len);
 
-    out->first_slice_segment_in_pic_flag = heic_bs_bit(&bs);
+    first = heic_bs_bit(&bs);
     if (nal_is_irap(nal->type))
-        out->no_output_of_prior_pics_flag = heic_bs_bit(&bs);
+        no_output = heic_bs_bit(&bs);
 
-    out->pps_id = (uint8_t)heic_bs_ue(&bs);
-    if (out->pps_id != pps->pps_pic_parameter_set_id) {
+    pps_id = (uint8_t)heic_bs_ue(&bs);
+    if (pps_id != pps->pps_pic_parameter_set_id) {
         heic_error(ctx, HEIC_SEVERITY_ERROR, "slice PPS id mismatch");
         return -1;
     }
 
-    if (!out->first_slice_segment_in_pic_flag) {
+    if (!first) {
         if (pps->dependent_slice_segments_enabled_flag)
-            out->dependent_slice_segment_flag = heic_bs_bit(&bs);
+            dependent = heic_bs_bit(&bs);
         {
             int bits = ceil_log2(sps->pic_size_in_ctbs);
-            out->slice_segment_address = heic_bs_bits(&bs, bits);
+            segment_address = heic_bs_bits(&bs, bits);
         }
     }
-    if (out->dependent_slice_segment_flag) {
-        heic_error(ctx, HEIC_SEVERITY_ERROR, "dependent slice segments not supported");
+    if (segment_address >= sps->pic_size_in_ctbs
+        || (dependent && (!segment_address || !independent))) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   dependent ? "dependent slice has no owning slice"
+                             : "slice segment address out of range");
         return -1;
     }
+    if (dependent) {
+        *out = *independent;
+        out->entry_point_offsets = NULL;
+        out->num_entry_point_offsets = 0;
+        out->first_slice_segment_in_pic_flag = 0;
+        out->no_output_of_prior_pics_flag = no_output;
+        out->pps_id = pps_id;
+        out->dependent_slice_segment_flag = 1;
+        out->slice_segment_address = segment_address;
+        goto finish_header;
+    }
+    out->first_slice_segment_in_pic_flag = first;
+    out->no_output_of_prior_pics_flag = no_output;
+    out->pps_id = pps_id;
+    out->slice_segment_address = segment_address;
+    out->slice_address = segment_address;
 
     for (i = 0; i < pps->num_extra_slice_header_bits; i++)
         (void)heic_bs_bit(&bs);
@@ -384,6 +407,7 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
             (void)heic_bs_bits(&bs, 8);
     }
 
+finish_header:
     /* Slice header ends with byte_alignment (imazen/heic slice.rs): always
        consume alignment_bit_equal_to_one, then discard any remaining bits in the
        current byte.  When the header is already byte-aligned, the old

@@ -53,6 +53,11 @@ static void on_error_quiet(void *user, heic_severity sev, const char *msg)
     (void)msg;
 }
 
+static void on_error_only(void *user, heic_severity sev, const char *msg)
+{
+    if (sev >= HEIC_SEVERITY_ERROR) on_error(user, sev, msg);
+}
+
 static double bench_now_ms(void)
 {
 #ifdef HEIC_HAVE_LIBHEIF
@@ -155,6 +160,12 @@ static int split_annexb(const uint8_t *data, size_t len,
     return n;
 }
 
+static int annexb_first_slice(const annexb_nal *nal)
+{
+    return nal && nal->type <= 31 && nal->len > 2
+        && (nal->data[2] & 0x80) != 0;
+}
+
 static uint64_t hash_plane(uint64_t h, const uint16_t *p,
                            int stride, int w, int height)
 {
@@ -180,6 +191,7 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
     heic_ctx *ctx;
     int order[512];
     int n_nals, n_params = 0, decoded = 0, i, j;
+    int complete = 1;
     uint64_t hash = UINT64_C(1469598103934665603);
 
     memset(&cfg, 0, sizeof(cfg));
@@ -202,26 +214,50 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
     cfg.nal_units = params;
     cfg.nal_unit_lens = param_lens;
     cfg.n_nal_units = n_params;
-    ctx = heic_ctx_new(NULL, NULL, on_error_quiet, NULL);
+    ctx = heic_ctx_new(NULL, NULL, on_error_only, NULL);
     if (!ctx) return 1;
 
-    for (i = 0; i < n_nals; i++) {
+    i = 0;
+    while (i < n_nals && decoded < max_frames) {
         uint8_t *sample;
-        size_t sample_len;
+        size_t sample_len = 0, pos = 0;
         heic_frame out;
-        if (nals[i].type > 31) continue;
-        if (decoded >= max_frames) break;
-        sample_len = nals[i].len + 4;
+        int au_start, au_end, k;
+        while (i < n_nals && nals[i].type > 31) i++;
+        if (i >= n_nals) break;
+        au_start = i++;
+        while (i < n_nals && !annexb_first_slice(&nals[i])) i++;
+        au_end = i;
+        for (k = au_start; k < au_end; k++) {
+            if (nals[k].type > 31) continue;
+            if (nals[k].len > SIZE_MAX - sample_len - 4) {
+                complete = 0;
+                break;
+            }
+            sample_len += nals[k].len + 4;
+        }
+        if (!complete || decoded >= 512) {
+            complete = 0;
+            break;
+        }
         sample = (uint8_t *)malloc(sample_len);
-        if (!sample) break;
-        sample[0] = (uint8_t)(nals[i].len >> 24);
-        sample[1] = (uint8_t)(nals[i].len >> 16);
-        sample[2] = (uint8_t)(nals[i].len >> 8);
-        sample[3] = (uint8_t)nals[i].len;
-        memcpy(sample + 4, nals[i].data, nals[i].len);
+        if (!sample) {
+            complete = 0;
+            break;
+        }
+        for (k = au_start; k < au_end; k++) {
+            size_t nal_len;
+            if (nals[k].type > 31) continue;
+            nal_len = nals[k].len;
+            sample[pos++] = (uint8_t)(nal_len >> 24);
+            sample[pos++] = (uint8_t)(nal_len >> 16);
+            sample[pos++] = (uint8_t)(nal_len >> 8);
+            sample[pos++] = (uint8_t)nal_len;
+            memcpy(sample + pos, nals[k].data, nal_len);
+            pos += nal_len;
+        }
         int n_refs = decoded < HEIC_MAX_REF_PICS
             ? decoded : HEIC_MAX_REF_PICS;
-        if (decoded >= 512) break;
         for (j = 0; j < n_refs; j++) refs[j] = &frames[decoded - 1 - j];
         memset(&out, 0, sizeof(out));
         if (heic_hevc_decode_refs(ctx, &cfg, sample, sample_len,
@@ -229,12 +265,13 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
             fprintf(stderr, "hevc-sequence: frame %d decode failed\n",
                     decoded);
             free(sample);
+            complete = 0;
             break;
         }
         free(sample);
         frames[decoded++] = out;
     }
-    j = i == n_nals || decoded == max_frames;
+    j = complete && (i >= n_nals || decoded == max_frames);
     for (i = 0; i < decoded; i++) order[i] = i;
     for (i = 1; i < decoded; i++) {
         int oi = order[i], k = i;

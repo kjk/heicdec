@@ -847,6 +847,7 @@ typedef struct {
     uint8_t  pps_id;
     int      dependent_slice_segment_flag;
     uint32_t slice_segment_address;
+    uint32_t slice_address; /* address of the owning independent slice */
     int      slice_type; /* HEIC_SLICE_* */
     int      pic_output_flag;
     uint8_t  colour_plane_id;
@@ -900,6 +901,7 @@ void heic_slice_header_free(heic_ctx *ctx, heic_slice_header *sh);
 
 int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                             const heic_sps *sps, const heic_pps *pps,
+                            const heic_slice_header *independent,
                             heic_slice_header *out);
 
 /* ---- residual (hevc_residual.c) ---- */
@@ -1001,7 +1003,8 @@ void heic_fill_mpm(uint8_t cand_a, uint8_t cand_b, uint8_t mpm[3]);
 /* mode: 0=Planar, 1=DC, 2-34=angular. c_idx: 0=Y,1=Cb,2=Cr. */
 int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint8_t log2_size, uint8_t mode, uint8_t c_idx,
-                       int strong_intra_smoothing);
+                       int strong_intra_smoothing, uint32_t slice_address,
+                       uint32_t pic_width_in_ctbs, uint32_t ctb_size);
 
 /* ---- SAO filter (hevc_sao.c) ---- */
 
@@ -1053,14 +1056,22 @@ int heic_mc_chroma_internal(const heic_frame *ref, heic_mv mv,
                             uint32_t out_stride,
                             int32_t *scratch, size_t scratch_n);
 
-int heic_hevc_decode_slice(heic_ctx *ctx, const heic_sps *sps,
-                           const heic_pps *pps, const heic_slice_header *sh,
-                           const uint8_t *data, size_t len,
-                           const uint32_t *ep_positions, int n_ep,
-                           const heic_frame *const *l0, int n_l0,
-                           const heic_frame *const *l1, int n_l1,
-                           heic_frame *out,
-                           const heic_abort *ab);
+typedef struct heic_hevc_picture heic_hevc_picture;
+
+heic_hevc_picture *heic_hevc_picture_new(
+    heic_ctx *ctx, const heic_sps *sps, const heic_pps *pps,
+    const heic_slice_header *sh,
+    const heic_frame *const *l0, int n_l0,
+    const heic_frame *const *l1, int n_l1, heic_frame *out);
+int heic_hevc_picture_decode_segment(
+    heic_hevc_picture *picture, const heic_slice_header *sh,
+    const uint8_t *data, size_t len,
+    const uint32_t *ep_positions, int n_ep,
+    const heic_frame *const *l0, int n_l0,
+    const heic_frame *const *l1, int n_l1,
+    const heic_abort *ab);
+int heic_hevc_picture_finish(heic_hevc_picture *picture);
+void heic_hevc_picture_destroy(heic_hevc_picture *picture);
 
 /* ---- decode orchestration (decode.c) ---- */
 int heic_decode_primary(heic_doc *doc, heic_format format,

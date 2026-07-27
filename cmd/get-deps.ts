@@ -9,6 +9,7 @@ import { $ } from "bun";
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { generateAvifFixtures } from "./gen_avif_fixtures";
+import { generateDependentSliceHeif } from "./gen_hevc_fixtures";
 import { generateUnciBlockFixtures } from "./gen_unci_block_fixtures";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
@@ -61,7 +62,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v8-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm";
+  "v9-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
@@ -70,6 +71,7 @@ const HEVC_SEQUENCE_SAMPLES = [
   "WP_A_Toshiba_3.bit",
   "WP_B_Toshiba_3.bit",
   "MERGE_A_TI_3.bit",
+  "DSLICE_A_HHI_5.bit",
   "ipcm_A_NEC_3.bit",
   "ipcm_B_NEC_3.bit",
   "ipcm_C_NEC_3.bit",
@@ -101,6 +103,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(unciDir, "rgb8_block_pixel_le.heif")) &&
     existsSync(join(miniDir, "hevc32-mini.heif")) &&
     existsSync(join(miniDir, "avif32-mini.heif")) &&
+    existsSync(join(miniDir, "dependent-slices.heic")) &&
     HEVC_SEQUENCE_SAMPLES.every((name) =>
       existsSync(join(hevcSequenceDir, name)),
     )
@@ -154,6 +157,11 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     if (!existsSync(dest) || opts.force)
       await download(`${HEVC_SEQUENCE_BASE}/${name}`, dest);
   }
+  console.log("deps/testimages: generating dependent-slice HEIC fixture…");
+  generateDependentSliceHeif(
+    join(hevcSequenceDir, "DSLICE_A_HHI_5.bit"),
+    join(miniDir, "dependent-slices.heic"),
+  );
   writeFileSync(stampPath, STAMP_WANT);
   console.log(`deps/testimages: ready (${STAMP_WANT})`);
 }

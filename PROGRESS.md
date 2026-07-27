@@ -222,6 +222,12 @@
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)
 - [x] HEVC PCM: raw luma/chroma samples, CABAC restart, bit-depth scaling,
       and PCM loop-filter exclusion; official `ipcm_A/B/C_NEC_3` oracles mse=0
+- [x] HEVC dependent slice segments: inherit the owning independent header and
+      CABAC models while restarting arithmetic state; retain picture maps across
+      segments, enforce independent-slice neighbor boundaries, and delay
+      deblock/SAO until the picture is complete. Official `DSLICE_A_HHI_5`
+      first-frame raw YUV is byte-exact against libde265; a generated HEIC
+      wrapper is also covered by the normal libheif pixel corpus.
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
 
 ## Investigation notes
