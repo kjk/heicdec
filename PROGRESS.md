@@ -225,9 +225,9 @@
 - [x] HEVC dependent slice segments: inherit the owning independent header and
       CABAC models while restarting arithmetic state; retain picture maps across
       segments, enforce independent-slice neighbor boundaries, and delay
-      deblock/SAO until the picture is complete. Official `DSLICE_A_HHI_5`
-      first-frame raw YUV is byte-exact against libde265; a generated HEIC
-      wrapper is also covered by the normal libheif pixel corpus.
+      deblock/SAO until the picture is complete. All 50 reordered I/B pictures
+      in official `DSLICE_A_HHI_5` match libde265 at mse=0.000082, maxdiff=3;
+      a generated HEIC wrapper is also covered by the normal libheif corpus.
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
 
 ## Investigation notes
