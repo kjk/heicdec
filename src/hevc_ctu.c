@@ -304,6 +304,44 @@ static int get_qpy_at(const heic_slice_ctx *sc, uint32_t x, uint32_t y)
     return sc->qp_map[idx];
 }
 
+static int tile_axis_starts_at(uint32_t pos, uint32_t size, uint32_t count,
+                               int uniform, const uint16_t *width_minus1)
+{
+    uint32_t i, boundary = 0;
+    if (pos == 0) return 1;
+    for (i = 1; i < count; i++) {
+        if (uniform)
+            boundary = (i * size) / count;
+        else if (width_minus1)
+            boundary += (uint32_t)width_minus1[i - 1] + 1;
+        if (pos == boundary) return 1;
+        if (pos < boundary) break;
+    }
+    return 0;
+}
+
+static int first_qg_in_tile(const heic_slice_ctx *sc, int x_qg, int y_qg)
+{
+    uint32_t ctb_mask = (1u << sc->sps->log2_ctb_size) - 1;
+    uint32_t x, y, cols, rows;
+    if (!sc->pps->tiles_enabled_flag
+        || ((uint32_t)x_qg & ctb_mask) != 0
+        || ((uint32_t)y_qg & ctb_mask) != 0)
+        return 0;
+    x = (uint32_t)x_qg >> sc->sps->log2_ctb_size;
+    y = (uint32_t)y_qg >> sc->sps->log2_ctb_size;
+    cols = (uint32_t)sc->pps->num_tile_columns_minus1 + 1;
+    rows = (uint32_t)sc->pps->num_tile_rows_minus1 + 1;
+    return tile_axis_starts_at(
+               x, sc->sps->pic_width_in_ctbs, cols,
+               sc->pps->uniform_spacing_flag,
+               sc->pps->column_width_minus1)
+        && tile_axis_starts_at(
+               y, sc->sps->pic_height_in_ctbs, rows,
+               sc->pps->uniform_spacing_flag,
+               sc->pps->row_height_minus1);
+}
+
 static void decode_quant_params(heic_slice_ctx *sc, uint32_t x0,
                                 uint32_t x_cu, uint32_t y_cu)
 {
@@ -333,7 +371,7 @@ static void decode_quant_params(heic_slice_ctx *sc, uint32_t x0,
                * ctb_size_px(sc->sps);
     first_qg_in_slice = ((int)slice_sx == x_qg && (int)slice_sy == y_qg);
 
-    if (first_qg_in_slice
+    if (first_qg_in_slice || first_qg_in_tile(sc, x_qg, y_qg)
         || (first_in_ctb_row && sc->pps->entropy_coding_sync_enabled_flag))
         qp_y_pred = sc->sh->slice_qp_y;
     else

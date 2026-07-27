@@ -239,6 +239,10 @@
       earlier transform units, retroactively update the whole coding unit's
       deblock QP map. All eight frames of official `DBLK_F_VIXS_1` and
       `DBLK_F_VIXS_2` match their reconstruction MD5s byte-for-byte.
+- [x] HEVC tile QP prediction: reset the QP predictor at each tile's first
+      quantization group, including tiles that begin with a dependent slice
+      segment. All eight frames of official `DBLK_D/E/G_VIXS_2` match their
+      reconstruction MD5s byte-for-byte.
 - [x] HEVC intra references across non-rectangular slice boundaries: evaluate
       top/left extensions and the top-left corner per sample before normative
       substitution. Official `SAO_H_Parabola_1` (four frames, diagonal SAO at

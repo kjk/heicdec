@@ -76,7 +76,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v26-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock";
+  "v27-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -116,8 +116,11 @@ const HEVC_SEQUENCE_SAMPLES = [
   "WP_B_Toshiba_3.bit",
   "MERGE_A_TI_3.bit",
   "DBLK_A_SONY_3.bit",
+  "DBLK_D_VIXS_2.bit",
+  "DBLK_E_VIXS_2.bit",
   "DBLK_F_VIXS_1.bit",
   "DBLK_F_VIXS_2.bit",
+  "DBLK_G_VIXS_2.bit",
   "DSLICE_A_HHI_5.bit",
   "DSLICE_B_HHI_5.bit",
   "LS_A_Orange_2.bit",
