@@ -101,16 +101,24 @@ static void ref_subst(int32_t *border, const int *avail, int center, int size,
 
 static int sample_in_slice(const heic_frame *frame, uint8_t c_idx,
                            uint32_t x, uint32_t y, uint32_t slice_address,
-                           uint32_t pic_width_in_ctbs, uint32_t ctb_size)
+                           uint32_t pic_width_in_ctbs, uint32_t ctb_size,
+                           const heic_ctb_filter_info *filter_map,
+                           const heic_ctb_filter_info *current_filter)
 {
     uint32_t sub_x = 1, sub_y = 1;
+    uint32_t addr;
     if (c_idx != 0) {
         if (frame->chroma_format == 1 || frame->chroma_format == 2) sub_x = 2;
         if (frame->chroma_format == 1) sub_y = 2;
     }
-    return ((y * sub_y) / ctb_size) * pic_width_in_ctbs
-             + (x * sub_x) / ctb_size
-           >= slice_address;
+    addr = ((y * sub_y) / ctb_size) * pic_width_in_ctbs
+         + (x * sub_x) / ctb_size;
+    if (filter_map && current_filter) {
+        const heic_ctb_filter_info *sample_filter = &filter_map[addr];
+        return sample_filter->slice_address == current_filter->slice_address &&
+               sample_filter->tile_id == current_filter->tile_id;
+    }
+    return addr >= slice_address;
 }
 
 static int sample_is_intra(const heic_frame *frame, uint8_t c_idx,
@@ -135,7 +143,9 @@ static int sample_is_intra(const heic_frame *frame, uint8_t c_idx,
 static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size,
                         uint8_t c_idx, int32_t *border, int center,
                         uint32_t slice_address, uint32_t pic_width_in_ctbs,
-                        uint32_t ctb_size, const uint8_t *pred_mode_map,
+                        uint32_t ctb_size,
+                        const heic_ctb_filter_info *filter_map,
+                        const uint8_t *pred_mode_map,
                         uint32_t pred_mode_stride, size_t pred_mode_n,
                         uint32_t pred_mode_min_pu)
 {
@@ -147,6 +157,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
     int32_t def;
     int corner_ok = 0;
     uint32_t i;
+    const heic_ctb_filter_info *current_filter = NULL;
 
     if (c_idx == 0) {
         plane = frame->y;
@@ -168,12 +179,27 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
         return;
     }
     def = 1 << ((c_idx == 0 ? frame->bit_depth : frame->chroma_bit_depth) - 1);
+    if (filter_map) {
+        uint32_t sub_x = 1, sub_y = 1;
+        uint32_t current_addr;
+        if (c_idx != 0) {
+            if (frame->chroma_format == 1 || frame->chroma_format == 2)
+                sub_x = 2;
+            if (frame->chroma_format == 1) sub_y = 2;
+        }
+        current_addr =
+            (y * sub_y / ctb_size) * pic_width_in_ctbs +
+            (x * sub_x / ctb_size);
+        current_filter = &filter_map[current_addr];
+    }
     has_left = x > 0
         && sample_in_slice(frame, c_idx, x - 1, y, slice_address,
-                           pic_width_in_ctbs, ctb_size);
+                           pic_width_in_ctbs, ctb_size,
+                           filter_map, current_filter);
     has_top = y > 0
         && sample_in_slice(frame, c_idx, x, y - 1, slice_address,
-                           pic_width_in_ctbs, ctb_size);
+                           pic_width_in_ctbs, ctb_size,
+                           filter_map, current_filter);
     avail_left = has_left
         && sample_is_intra(frame, c_idx, x - 1, y, pred_mode_map,
                            pred_mode_stride, pred_mode_n, pred_mode_min_pu);
@@ -183,7 +209,8 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
     if (pred_mode_map) {
         avail_tl = x > 0 && y > 0
             && sample_in_slice(frame, c_idx, x - 1, y - 1, slice_address,
-                               pic_width_in_ctbs, ctb_size)
+                               pic_width_in_ctbs, ctb_size,
+                               filter_map, current_filter)
             && sample_is_intra(frame, c_idx, x - 1, y - 1, pred_mode_map,
                                pred_mode_stride, pred_mode_n,
                                pred_mode_min_pu);
@@ -558,6 +585,7 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint8_t log2_size, uint8_t mode, uint8_t c_idx,
                        int strong_intra_smoothing, uint32_t slice_address,
                        uint32_t pic_width_in_ctbs, uint32_t ctb_size,
+                       const heic_ctb_filter_info *filter_map,
                        const uint8_t *pred_mode_map, uint32_t pred_mode_stride,
                        size_t pred_mode_n, uint32_t pred_mode_min_pu)
 {
@@ -571,8 +599,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
         return -1;
     size = 1u << log2_size;
     fill_border(frame, x, y, size, c_idx, border, center, slice_address,
-                pic_width_in_ctbs, ctb_size, pred_mode_map, pred_mode_stride,
-                pred_mode_n, pred_mode_min_pu);
+                pic_width_in_ctbs, ctb_size, filter_map, pred_mode_map,
+                pred_mode_stride, pred_mode_n, pred_mode_min_pu);
 
     if (strong_intra_smoothing >= 0
         && (c_idx == 0 || frame->chroma_format == 3))

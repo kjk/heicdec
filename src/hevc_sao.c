@@ -27,6 +27,44 @@ static int heic_sao_clampi(int v, int lo, int hi)
     return v;
 }
 
+typedef struct {
+    const heic_ctb_filter_info *map;
+    uint32_t width_ctbs;
+    uint32_t height_ctbs;
+    uint32_t ctb_width;
+    uint32_t ctb_height;
+    uint32_t current_x;
+    uint32_t current_y;
+    int loop_filter_across_tiles;
+} heic_sao_boundary;
+
+static int sao_neighbor_available(
+    const heic_sao_boundary *boundary, int x, int y)
+{
+    uint32_t nx, ny;
+    const heic_ctb_filter_info *current, *neighbor, *later;
+    if (!boundary || !boundary->map ||
+        !boundary->ctb_width || !boundary->ctb_height)
+        return 1;
+    nx = (uint32_t)x / boundary->ctb_width;
+    ny = (uint32_t)y / boundary->ctb_height;
+    if (nx == boundary->current_x && ny == boundary->current_y) return 1;
+    if (nx >= boundary->width_ctbs || ny >= boundary->height_ctbs) return 0;
+    current = &boundary->map[
+        (size_t)boundary->current_y * boundary->width_ctbs +
+        boundary->current_x];
+    neighbor = &boundary->map[(size_t)ny * boundary->width_ctbs + nx];
+    if (current->slice_address != neighbor->slice_address) {
+        later = current->slice_address > neighbor->slice_address
+                    ? current : neighbor;
+        if (!later->loop_filter_across_slices) return 0;
+    }
+    if (current->tile_id != neighbor->tile_id &&
+        !boundary->loop_filter_across_tiles)
+        return 0;
+    return 1;
+}
+
 static void apply_sao_band(uint16_t *plane, int stride, int x0, int y0, int x1,
                            int y1, uint8_t band_pos, const int16_t offs[4],
                            int bit_depth)
@@ -61,7 +99,8 @@ static void apply_sao_band(uint16_t *plane, int stride, int x0, int y0, int x1,
 static void apply_sao_edge_pixel(const uint16_t *src, uint16_t *dst, int stride,
                                  int x, int y, int dx0, int dy0, int dx1, int dy1,
                                  int plane_w, int plane_h, int max_val,
-                                 const int offset_table[5])
+                                 const int offset_table[5],
+                                 const heic_sao_boundary *boundary)
 {
     int nx0 = x + dx0, ny0 = y + dy0, nx1 = x + dx1, ny1 = y + dy1;
     int sample, n0, n1, edge_idx, offset;
@@ -69,6 +108,9 @@ static void apply_sao_edge_pixel(const uint16_t *src, uint16_t *dst, int stride,
 
     if (nx0 < 0 || nx0 >= plane_w || ny0 < 0 || ny0 >= plane_h || nx1 < 0 ||
         nx1 >= plane_w || ny1 < 0 || ny1 >= plane_h)
+        return;
+    if (!sao_neighbor_available(boundary, nx0, ny0) ||
+        !sao_neighbor_available(boundary, nx1, ny1))
         return;
 
     idx = (size_t)y * (size_t)stride + (size_t)x;
@@ -85,7 +127,8 @@ static void apply_sao_edge_pixel(const uint16_t *src, uint16_t *dst, int stride,
 static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
                            int plane_w, int plane_h, int x0, int y0, int x1,
                            int y1, uint8_t eo_class, const int16_t offs[4],
-                           int bit_depth)
+                           int bit_depth,
+                           const heic_sao_boundary *boundary)
 {
     int max_val = (1 << bit_depth) - 1;
     int dx0, dy0, dx1, dy1;
@@ -132,6 +175,16 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
         if (my < 0) my = 0;
         if (plane_h - my < safe_y1) safe_y1 = plane_h - my;
     }
+    if (dx0 < 0 || dx1 < 0)
+        if (x0 + 1 > safe_x0) safe_x0 = x0 + 1;
+    if (dx0 > 0 || dx1 > 0)
+        if (x1 - 1 < safe_x1) safe_x1 = x1 - 1;
+    if (dy0 < 0 || dy1 < 0)
+        if (y0 + 1 > safe_y0) safe_y0 = y0 + 1;
+    if (dy0 > 0 || dy1 > 0)
+        if (y1 - 1 < safe_y1) safe_y1 = y1 - 1;
+    if (safe_x1 < safe_x0) safe_x1 = safe_x0;
+    if (safe_y1 < safe_y0) safe_y1 = safe_y0;
 
     /* Interior: no bounds checks (SIMD for pure H/V classes). */
     for (y = safe_y0; y < safe_y1; y++) {
@@ -160,20 +213,25 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
         if (y >= safe_y0 && y < safe_y1) {
             for (x = x0; x < safe_x0 && x < x1; x++)
                 apply_sao_edge_pixel(src, dst, stride, x, y, dx0, dy0, dx1, dy1,
-                                     plane_w, plane_h, max_val, offset_table);
+                                     plane_w, plane_h, max_val, offset_table,
+                                     boundary);
             for (x = safe_x1 > x0 ? safe_x1 : x0; x < x1; x++)
                 apply_sao_edge_pixel(src, dst, stride, x, y, dx0, dy0, dx1, dy1,
-                                     plane_w, plane_h, max_val, offset_table);
+                                     plane_w, plane_h, max_val, offset_table,
+                                     boundary);
         } else {
             for (x = x0; x < x1; x++)
                 apply_sao_edge_pixel(src, dst, stride, x, y, dx0, dy0, dx1, dy1,
-                                     plane_w, plane_h, max_val, offset_table);
+                                     plane_w, plane_h, max_val, offset_table,
+                                     boundary);
         }
     }
 }
 
 void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                     uint32_t width_ctbs, uint32_t height_ctbs, uint32_t ctb_size,
+                    const heic_ctb_filter_info *filter_map,
+                    int loop_filter_across_tiles,
                     const uint8_t *pcm_map, uint32_t pcm_stride)
 {
     uint32_t ctb_x, ctb_y;
@@ -236,12 +294,26 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
     for (ctb_y = 0; ctb_y < height_ctbs; ctb_y++) {
         for (ctb_x = 0; ctb_x < width_ctbs; ctb_x++) {
             const heic_sao_info *sao = &map[ctb_y * width_ctbs + ctb_x];
+            heic_sao_boundary luma_boundary;
+            heic_sao_boundary chroma_boundary;
             int x_px = (int)(ctb_x * ctb_size);
             int y_px = (int)(ctb_y * ctb_size);
             int x_end = x_px + (int)ctb_size;
             int y_end = y_px + (int)ctb_size;
             if (x_end > w) x_end = w;
             if (y_end > h) y_end = h;
+            luma_boundary.map = filter_map;
+            luma_boundary.width_ctbs = width_ctbs;
+            luma_boundary.height_ctbs = height_ctbs;
+            luma_boundary.ctb_width = ctb_size;
+            luma_boundary.ctb_height = ctb_size;
+            luma_boundary.current_x = ctb_x;
+            luma_boundary.current_y = ctb_y;
+            luma_boundary.loop_filter_across_tiles =
+                loop_filter_across_tiles;
+            chroma_boundary = luma_boundary;
+            chroma_boundary.ctb_width = ctb_size / (uint32_t)sub_x;
+            chroma_boundary.ctb_height = ctb_size / (uint32_t)sub_y;
 
             if (sao->sao_type_idx[0] == 1 && frame->y &&
                 (!pcm_map || orig_y)) {
@@ -251,7 +323,8 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
             } else if (sao->sao_type_idx[0] == 2 && frame->y && orig_y) {
                 apply_sao_edge(orig_y, frame->y, frame->y_stride, w, h, x_px, y_px,
                                x_end, y_end, sao->sao_eo_class[0],
-                               sao->sao_offset_val[0], frame->bit_depth);
+                               sao->sao_offset_val[0], frame->bit_depth,
+                               &luma_boundary);
             }
 
             if (frame->chroma_format > 0 && frame->cb && frame->cr && cw > 0 &&
@@ -271,7 +344,8 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                 } else if (sao->sao_type_idx[1] == 2 && orig_cb) {
                     apply_sao_edge(orig_cb, frame->cb, frame->c_stride, cw, ch, cx0,
                                    cy0, cx1, cy1, sao->sao_eo_class[1],
-                                   sao->sao_offset_val[1], frame->chroma_bit_depth);
+                                   sao->sao_offset_val[1], frame->chroma_bit_depth,
+                                   &chroma_boundary);
                 }
                 if (sao->sao_type_idx[2] == 1 &&
                     (!pcm_map || orig_cr)) {
@@ -281,7 +355,8 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                 } else if (sao->sao_type_idx[2] == 2 && orig_cr) {
                     apply_sao_edge(orig_cr, frame->cr, frame->c_stride, cw, ch, cx0,
                                    cy0, cx1, cy1, sao->sao_eo_class[2],
-                                   sao->sao_offset_val[2], frame->chroma_bit_depth);
+                                   sao->sao_offset_val[2], frame->chroma_bit_depth,
+                                   &chroma_boundary);
                 }
             }
         }

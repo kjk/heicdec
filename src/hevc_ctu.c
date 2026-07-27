@@ -41,6 +41,7 @@ typedef struct {
 
     heic_sao_info *sao_map;
     uint32_t sao_stride; /* pic_width_in_ctbs */
+    heic_ctb_filter_info *filter_map;
 
     /* Deblock maps at 4x4 luma granularity */
     uint8_t *deblock_flags;
@@ -94,7 +95,8 @@ static int predict_intra_block(heic_slice_ctx *sc, uint32_t x, uint32_t y,
     return heic_predict_intra(
         sc->frame, x, y, log2_size, mode, c_idx, strong_intra_smoothing,
         sc->sh->slice_address, sc->sps->pic_width_in_ctbs,
-        ctb_size_px(sc->sps), pred_mode_map, sc->intra_mode_stride,
+        ctb_size_px(sc->sps), sc->filter_map,
+        pred_mode_map, sc->intra_mode_stride,
         sc->intra_mode_n, min_pu_size(sc->sps));
 }
 
@@ -115,14 +117,20 @@ static int chroma_qp_from_luma(int qpi, int chroma_array_type)
 
 static int neighbor_avail(const heic_slice_ctx *sc, int32_t x, int32_t y)
 {
-    uint32_t ctb, addr;
+    uint32_t ctb, addr, current;
+    const heic_ctb_filter_info *neighbor_info, *current_info;
     if (x < 0 || y < 0) return 0;
     if ((uint32_t)x >= sc->sps->pic_width_in_luma_samples) return 0;
     if ((uint32_t)y >= sc->sps->pic_height_in_luma_samples) return 0;
     ctb = ctb_size_px(sc->sps);
     addr = ((uint32_t)y / ctb) * sc->sps->pic_width_in_ctbs
          + (uint32_t)x / ctb;
-    if (addr < sc->sh->slice_address) return 0;
+    current = sc->ctb_y * sc->sps->pic_width_in_ctbs + sc->ctb_x;
+    current_info = &sc->filter_map[current];
+    neighbor_info = &sc->filter_map[addr];
+    if (neighbor_info->slice_address != current_info->slice_address ||
+        neighbor_info->tile_id != current_info->tile_id)
+        return 0;
     return 1;
 }
 
@@ -2431,20 +2439,22 @@ static int decode_sao(heic_slice_ctx *sc, uint32_t x_ctb_px, uint32_t y_ctb_px)
     heic_sao_info info;
     uint32_t pic_w = sc->sps->pic_width_in_ctbs;
     uint32_t addr_rs = y_ctb * pic_w + x_ctb;
-    uint32_t slice_rs = sc->sh->slice_address;
+    const heic_ctb_filter_info *current = &sc->filter_map[addr_rs];
 
     memset(&info, 0, sizeof(info));
 
     if (x_ctb > 0) {
-        int left_in_slice = addr_rs > slice_rs;
-        if (left_in_slice)
+        const heic_ctb_filter_info *left = &sc->filter_map[addr_rs - 1];
+        if (left->slice_address == current->slice_address &&
+            left->tile_id == current->tile_id)
             merge_left =
                 heic_cabac_decode_bin(&sc->cabac, &sc->models[HEIC_CTX_SAO_MERGE_FLAG])
                 != 0;
     }
     if (y_ctb > 0 && !merge_left) {
-        int up_in_slice = addr_rs >= pic_w + slice_rs;
-        if (up_in_slice)
+        const heic_ctb_filter_info *up = &sc->filter_map[addr_rs - pic_w];
+        if (up->slice_address == current->slice_address &&
+            up->tile_id == current->tile_id)
             merge_up =
                 heic_cabac_decode_bin(&sc->cabac, &sc->models[HEIC_CTX_SAO_MERGE_FLAG])
                 != 0;
@@ -2603,7 +2613,14 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     sc->sao_stride = sps->pic_width_in_ctbs;
     sao_n = (size_t)sps->pic_width_in_ctbs * sps->pic_height_in_ctbs;
     sc->sao_map = (heic_sao_info *)heic_zalloc(ctx, sao_n * sizeof(heic_sao_info));
-    if (!sc->sao_map) return -1;
+    sc->filter_map = (heic_ctb_filter_info *)heic_zalloc(
+        ctx, sao_n * sizeof(heic_ctb_filter_info));
+    if (!sc->sao_map || !sc->filter_map) return -1;
+    {
+        size_t i;
+        for (i = 0; i < sao_n; i++)
+            sc->filter_map[i].slice_address = UINT32_MAX;
+    }
 
     sc->deblock_stride = (sps->pic_width_in_luma_samples + 3) / 4;
     {
@@ -2649,6 +2666,7 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->mv_info);
     heic_free_buf(sc->hctx, sc->qp_map);
     heic_free_buf(sc->hctx, sc->sao_map);
+    heic_free_buf(sc->hctx, sc->filter_map);
     heic_free_buf(sc->hctx, sc->deblock_flags);
     heic_free_buf(sc->hctx, sc->cbf_map);
     heic_free_buf(sc->hctx, sc->pcm_map);
@@ -2896,7 +2914,7 @@ int heic_hevc_picture_decode_segment(
     }
     if (work->ctb_decoded[start]) {
         heic_error(ctx, HEIC_SEVERITY_ERROR,
-                   "overlapping slice segment address");
+                   "overlapping slice segment address %u", (unsigned)start);
         return -1;
     }
 
@@ -2988,6 +3006,7 @@ int heic_hevc_picture_decode_segment(
         int end_flag;
         uint32_t prev_x = sc->ctb_x, prev_y = sc->ctb_y;
         uint32_t addr_rs = sc->ctb_y * pic_w + sc->ctb_x;
+        heic_ctb_filter_info *filter;
 
         if (heic_abort_check(ab)) return -1;
         if (heic_cabac_overread(&sc->cabac)) {
@@ -2999,6 +3018,17 @@ int heic_hevc_picture_decode_segment(
                        "slice segment overlaps decoded CTU");
             return -1;
         }
+        filter = &sc->filter_map[addr_rs];
+        filter->slice_address = sh->slice_address;
+        filter->tile_id = (uint16_t)(
+            tiles ? get_tile_id(work->col_bd, work->n_cols,
+                                work->row_bd, work->n_rows,
+                                sc->ctb_x, sc->ctb_y)
+                  : 0);
+        filter->loop_filter_across_slices =
+            (uint8_t)sh->slice_loop_filter_across_slices_enabled_flag;
+        filter->deblocking_disabled =
+            (uint8_t)sh->slice_deblocking_filter_disabled_flag;
         if (decode_ctu(sc, x, y) != 0 || sc->cabac.error) {
             heic_error(ctx, HEIC_SEVERITY_ERROR, "CTU decode failed at (%u,%u) ctu=%u",
                        sc->ctb_x, sc->ctb_y, ctb);
@@ -3135,8 +3165,7 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
     }
 
     ctb_sz = ctb_size_px(sps);
-    if (!sh->slice_deblocking_filter_disabled_flag && sc->deblock_flags
-        && sc->deblock_qp) {
+    if (sc->deblock_flags && sc->deblock_qp) {
         int beta = (int)sh->slice_beta_offset_div2 * 2;
         int tc = (int)sh->slice_tc_offset_div2 * 2;
         int cb_off =
@@ -3146,6 +3175,8 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
         heic_apply_deblock(
             out, sc->deblock_flags, sc->deblock_qp, sc->deblock_stride,
             beta, tc, cb_off, cr_off,
+            sc->filter_map, sps->pic_width_in_ctbs, ctb_sz,
+            pps->loop_filter_across_tiles_enabled_flag,
             sh->slice_type == HEIC_SLICE_I ? NULL : sc->pred_mode_map,
             sh->slice_type == HEIC_SLICE_I ? NULL : sc->mv_info,
             sc->intra_mode_stride, min_pu_size(sps),
@@ -3157,6 +3188,7 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
         heic_apply_sao(
             ctx, out, sc->sao_map, sps->pic_width_in_ctbs,
             sps->pic_height_in_ctbs, ctb_sz,
+            sc->filter_map, pps->loop_filter_across_tiles_enabled_flag,
             sc->has_filter_exclusions ? sc->pcm_map : NULL,
             sc->deblock_stride);
     }

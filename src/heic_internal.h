@@ -1045,6 +1045,13 @@ int  heic_simd_sao_edge_v_row(const uint16_t *src, uint16_t *dst, int stride, in
 
 /* ---- intra prediction (hevc_intra.c) ---- */
 
+typedef struct {
+    uint32_t slice_address;
+    uint16_t tile_id;
+    uint8_t loop_filter_across_slices;
+    uint8_t deblocking_disabled;
+} heic_ctb_filter_info;
+
 enum {
     HEIC_PRED_UNAVAILABLE = 0,
     HEIC_PRED_INTRA = 1,
@@ -1058,6 +1065,7 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint8_t log2_size, uint8_t mode, uint8_t c_idx,
                        int strong_intra_smoothing, uint32_t slice_address,
                        uint32_t pic_width_in_ctbs, uint32_t ctb_size,
+                       const heic_ctb_filter_info *filter_map,
                        const uint8_t *pred_mode_map, uint32_t pred_mode_stride,
                        size_t pred_mode_n, uint32_t pred_mode_min_pu);
 
@@ -1072,6 +1080,8 @@ typedef struct {
 
 void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                     uint32_t width_ctbs, uint32_t height_ctbs, uint32_t ctb_size,
+                    const heic_ctb_filter_info *filter_map,
+                    int loop_filter_across_tiles,
                     const uint8_t *pcm_map, uint32_t pcm_stride);
 
 /* ---- deblock filter (hevc_deblock.c) ---- */
@@ -1087,6 +1097,9 @@ void heic_mark_pb_boundary(uint8_t *flags, uint32_t deblock_stride, uint32_t map
 void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *qp_map,
                         uint32_t deblock_stride, int beta_offset, int tc_offset,
                         int cb_qp_offset, int cr_qp_offset,
+                        const heic_ctb_filter_info *filter_map,
+                        uint32_t width_ctbs, uint32_t ctb_size,
+                        int loop_filter_across_tiles,
                         const uint8_t *pred_mode, const heic_pb_motion *mv_info,
                         uint32_t pu_stride, uint32_t min_pu,
                         const uint8_t *cbf_map,

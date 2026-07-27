@@ -226,6 +226,11 @@
       neighboring min-PU regions from luma/chroma intra reference samples. A
       compact two-frame HM P sequence with mixed prediction modes matches the
       HM reconstruction MD5 byte-for-byte.
+- [x] HEVC tile/slice boundaries: keep CABAC, intra prediction, SAO merge and
+      SAO/deblocking samples within their independently coded region, and
+      honor the PPS/slice loop-filter boundary controls. Compact HM tile and
+      x265 slice streams with cross-boundary filtering disabled match HM
+      reconstruction MD5s byte-for-byte.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

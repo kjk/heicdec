@@ -69,6 +69,19 @@ const CONSTRAINED_INTRA_HEVC =
   "DAmV8GYZLqJhyAl3dWtvQjRCMh8iOSZWtx2/XPYULFH8rZiK6+905LkUZy15RWLF" +
   "+UtEwgjDZEO4pFTj06Aexbq0vGDSOPsoJbYDbO6k9qHaJWGK85cxjznF0ojA";
 
+const LOOP_FILTER_TILES_HEVC =
+  "AAAAAUABDAH//wFgAAADAAADAAADAAADAADwJAAAAAFCAQEBYAAAAwAAAwAAAwAAAwAAoAQC" +
+  "BB/l+SRtHtkAAAABRAHBkJGEtEgAAAEmAaxFFnA1bd/4Wj+3nBRybzYJfmvTZFyvSh1bv+/x" +
+  "f284KNnPVwCLx84tg1a4";
+
+const LOOP_FILTER_SLICES_HEVC =
+  "AAAAAUABDAH//wQIAAADAJ+oAAADAAA/ugJAAAAAAUIBAQQIAAADAJ+oAAADAAA/oAgIAgFl" +
+  "ukpMLmgIAAADAAgAAAMACEAAAAABRAHAcYISAAABKAGtCC3cxakpgBTlst/kX79SU/QfzemK" +
+  "+E8N+nZGkeqjaCtS6+jYpRWkltkUnnNwgDTAIUktsik85ca9ZCA3QHlJ5y416iAHUEBAk0Ma" +
+  "9RADf+BT0EbGJeBv/Aeqf2JN1j/gPVPmF48gUaeDH5hdh4OzAAABKAEwGhBbuYtSUxTlst/h" +
+  "mL9SU/QfzemK+E8N+nZGkeqjaCtS6+jYpRWkltkUnnNwgDTAIUktsik85ca9ZCA3QHlJ5y41" +
+  "6iAHUEBAk0Ma9RADf+BT0EbGJeBv/Aeqf2JN1j/gPVPmF48gUaeDH5hdh4Oz";
+
 function writeEmbeddedHevc(outputPath: string, encoded: string): void {
   const data = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
   mkdirSync(dirname(outputPath), { recursive: true });
@@ -89,6 +102,16 @@ export function generateSaoOffsetScaleHevc(outputPath: string): void {
 /** Install a 64x64 two-frame HM stream with constrained intra prediction. */
 export function generateConstrainedIntraHevc(outputPath: string): void {
   writeEmbeddedHevc(outputPath, CONSTRAINED_INTRA_HEVC);
+}
+
+/** Install a 512x64 HM stream with filtering disabled across two tiles. */
+export function generateLoopFilterTilesHevc(outputPath: string): void {
+  writeEmbeddedHevc(outputPath, LOOP_FILTER_TILES_HEVC);
+}
+
+/** Install a 256x512 x265 stream with filtering disabled across two slices. */
+export function generateLoopFilterSlicesHevc(outputPath: string): void {
+  writeEmbeddedHevc(outputPath, LOOP_FILTER_SLICES_HEVC);
 }
 
 function be16(n: number): Uint8Array {

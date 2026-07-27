@@ -20,6 +20,8 @@ import {
   generateConstrainedIntraHevc,
   generateHevcHeif,
   generateHighPrecisionWeightingHevc,
+  generateLoopFilterSlicesHevc,
+  generateLoopFilterTilesHevc,
   generateSaoOffsetScaleHevc,
 } from "./gen_hevc_fixtures";
 import { generateUnciBlockFixtures } from "./gen_unci_block_fixtures";
@@ -74,7 +76,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v22-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra";
+  "v23-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_REXT_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -99,6 +101,8 @@ const HEVC_HIGH_PRECISION_WEIGHTING =
   "high-precision-weighting-main10.bit";
 const HEVC_SAO_OFFSET_SCALE = "sao-offset-scale-main12.bit";
 const HEVC_CONSTRAINED_INTRA = "constrained-intra-main.bit";
+const HEVC_LOOP_FILTER_TILES = "loop-filter-tiles-main.bit";
+const HEVC_LOOP_FILTER_SLICES = "loop-filter-slices-main.bit";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
   "RPLM_A_qualcomm_4.bit",
@@ -371,6 +375,12 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   );
   generateConstrainedIntraHevc(
     join(hevcSequenceDir, HEVC_CONSTRAINED_INTRA),
+  );
+  generateLoopFilterTilesHevc(
+    join(hevcSequenceDir, HEVC_LOOP_FILTER_TILES),
+  );
+  generateLoopFilterSlicesHevc(
+    join(hevcSequenceDir, HEVC_LOOP_FILTER_SLICES),
   );
   console.log("deps/testimages: generating HEVC fixtures…");
   generateHevcHeif(

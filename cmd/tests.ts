@@ -279,6 +279,18 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "cf055ca1e548a3893b2c724fc3d558d3",
   },
   {
+    name: "loop-filter-tiles-main.bit",
+    frames: 1,
+    mse: 0,
+    md5: "3d627f6422b8b5fa71c375543f714509",
+  },
+  {
+    name: "loop-filter-slices-main.bit",
+    frames: 1,
+    mse: 0,
+    md5: "2a2df0986f2eaff7fde2a30d131177e8",
+  },
+  {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
     frames: 8,
     mse: 0.05,
