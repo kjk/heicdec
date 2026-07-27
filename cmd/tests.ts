@@ -388,6 +388,12 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0.05,
     bitDepth: 10,
   },
+  {
+    name: "WPP_HIGH_TP_444_8BIT_RExt_Apple_2.bit",
+    frames: 3,
+    mse: 0,
+    md5: "3c94b5ebc0aed0abae4e619b9dcca9cc",
+  },
 ];
 
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {

@@ -252,6 +252,10 @@
       of official `MVDL1ZERO_A_docomo_3`, including a midstream CRA and its
       leading RASL pictures across an LSB wrap, match the reconstruction MD5
       byte-for-byte.
+- [x] HEVC transform-skip rotation and implicit RDPCM are covered by official
+      `WPP_HIGH_TP_444_8BIT_RExt_Apple_2`. All three frames match HM and
+      FFmpeg byte-for-byte; the test uses the reconstruction MD5 because
+      libde265 incorrectly suppresses rotation for subsampled chroma.
 - [x] HEVC deblocking QP propagation: when a CU QP delta is decoded after
       earlier transform units, retroactively update the whole coding unit's
       deblock QP map. All eight frames of official `DBLK_F_VIXS_1` and
