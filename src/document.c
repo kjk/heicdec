@@ -256,7 +256,8 @@ int heic_doc_info(const heic_doc *doc, heic_image_info *info)
                                 "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
                                 aux, 4) > 0 ||
         heic_container_find_aux(&doc->container, item.id,
-                                "urn:mpeg:hevc:2015:auxid:1", aux, 4) > 0)
+                                "urn:mpeg:hevc:2015:auxid:1", aux, 4) > 0 ||
+        (doc->container.sequence && doc->container.sequence->alpha))
         info->has_alpha = 1;
 
     if (heic_container_find_aux(&doc->container, item.id,

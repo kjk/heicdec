@@ -188,6 +188,17 @@ static void free_item_infos(heic_ctx *ctx, heic_container *c)
     c->n_item_infos = 0;
 }
 
+static void free_sequence(heic_ctx *ctx, heic_sequence *seq)
+{
+    if (!seq) return;
+    free_sequence(ctx, seq->alpha);
+    heic_free_buf(ctx, seq->samples);
+    heic_free_buf(ctx, seq->frame_samples);
+    heic_free_buf(ctx, seq->frame_times);
+    heic_free_buf(ctx, seq->frame_durations);
+    heic_free_buf(ctx, seq);
+}
+
 void heic_container_free(heic_container *c)
 {
     int i;
@@ -203,13 +214,7 @@ void heic_container_free(heic_container *c)
     for (i = 0; i < c->n_item_references; i++)
         heic_free_buf(ctx, c->item_references[i].to_item_ids);
     heic_free_buf(ctx, c->item_references);
-    if (c->sequence) {
-        heic_free_buf(ctx, c->sequence->samples);
-        heic_free_buf(ctx, c->sequence->frame_samples);
-        heic_free_buf(ctx, c->sequence->frame_times);
-        heic_free_buf(ctx, c->sequence->frame_durations);
-        heic_free_buf(ctx, c->sequence);
-    }
+    free_sequence(ctx, c->sequence);
     memset(c, 0, sizeof(*c));
 }
 
@@ -1463,6 +1468,7 @@ typedef struct {
 
 typedef struct {
     uint32_t track_id;
+    uint32_t aux_for_track_id;
     uint32_t width, height;
     heic_fourcc handler_type;
     uint32_t media_timescale;
@@ -1473,6 +1479,7 @@ typedef struct {
     int has_hvcc;
     int has_av1c;
     int has_colr;
+    int is_alpha;
     uint32_t uniform_sample_size;
     uint32_t sample_count;
     uint32_t *sample_sizes;
@@ -1490,6 +1497,21 @@ typedef struct {
     uint32_t n_edits;
     int edit_repeat;
 } heic_seq_track;
+
+static int seq_is_alpha_urn(const uint8_t *s, size_t len)
+{
+    static const char *const urns[] = {
+        "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
+        "urn:mpeg:hevc:2015:auxid:1",
+        "urn:mpeg:avc:2015:auxid:1"
+    };
+    size_t i;
+    for (i = 0; i < sizeof(urns) / sizeof(urns[0]); i++) {
+        size_t n = strlen(urns[i]);
+        if (len == n && memcmp(s, urns[i], n) == 0) return 1;
+    }
+    return 0;
+}
 
 static void seq_free_track(heic_ctx *ctx, heic_seq_track *t)
 {
@@ -1630,6 +1652,16 @@ static int seq_parse_visual_entry(heic_ctx *ctx, const uint8_t *data,
         } else if (child.type == HEIC_BOX_COLR && !t->has_colr) {
             if (parse_colr(ctx, &child, &t->colr) == 0)
                 t->has_colr = 1;
+        } else if (child.type == HEIC_BOX_AUXI) {
+            const uint8_t *nul;
+            size_t aux_len;
+            if (child.content_len < 5 || child.content[0] != 0) return -1;
+            nul = (const uint8_t *)memchr(
+                child.content + 4, 0, child.content_len - 4);
+            if (!nul) return -1;
+            aux_len = (size_t)(nul - (child.content + 4));
+            if (seq_is_alpha_urn(child.content + 4, aux_len))
+                t->is_alpha = 1;
         }
     }
     return 0;
@@ -1874,6 +1906,18 @@ static int seq_parse_trak(heic_ctx *ctx, const heic_box *b,
             if (seq_parse_tkhd(&child, t) != 0) return -1;
         } else if (child.type == HEIC_BOX_EDTS) {
             if (seq_parse_edts(ctx, &child, t) != 0) return -1;
+        } else if (child.type == HEIC_BOX_TREF) {
+            heic_box_iter refs;
+            heic_box ref;
+            box_iter_init(&refs, child.content, child.content_len);
+            while (box_iter_next(&refs, &ref)) {
+                if (ref.type != HEIC_REF_AUXL) continue;
+                if (ref.content_len < 4 || ref.content_len % 4 != 0
+                    || t->aux_for_track_id)
+                    return -1;
+                t->aux_for_track_id = heic_rb32(ref.content);
+                if (!t->aux_for_track_id) return -1;
+            }
         } else if (child.type == HEIC_BOX_MDIA) {
             if (seq_parse_mdia(ctx, &child, t, ab) != 0) return -1;
         }
@@ -2090,13 +2134,15 @@ static int seq_build_timeline(heic_ctx *ctx, heic_container *c,
                               uint32_t coded_item_id,
                               uint32_t movie_timescale,
                               uint64_t movie_duration,
+                              heic_sequence **out_seq,
                               const heic_abort *ab)
 {
     heic_sequence *seq = NULL;
     uint32_t *order = NULL;
     uint32_t capacity, i;
     int rc = -1;
-    if (!t->sample_count || !t->media_timescale || !movie_timescale)
+    if (!out_seq || *out_seq || !t->sample_count
+        || !t->media_timescale || !movie_timescale)
         return -1;
     for (i = 0; i < t->n_sync_samples; i++)
         if (!t->sync_samples[i] || t->sync_samples[i] > t->sample_count
@@ -2196,7 +2242,7 @@ static int seq_build_timeline(heic_ctx *ctx, heic_container *c,
         }
     }
     if (!seq->frame_count) goto done;
-    c->sequence = seq;
+    *out_seq = seq;
     seq = NULL;
     rc = 0;
 done:
@@ -2221,16 +2267,34 @@ static int seq_item_id_used(const heic_container *c, uint32_t item_id)
 }
 
 static uint32_t seq_unused_item_id(const heic_container *c,
-                                   uint32_t preferred, uint32_t avoid)
+                                   uint32_t preferred, uint32_t avoid,
+                                   uint32_t avoid2)
 {
     uint32_t item_id = preferred;
     uint32_t tries = 0;
     while (item_id && tries++ <= HEIC_MAX_ITEMS) {
-        if (item_id != avoid && !seq_item_id_used(c, item_id))
+        if (item_id != avoid && item_id != avoid2
+            && !seq_item_id_used(c, item_id))
             return item_id;
         item_id--;
     }
     return 0;
+}
+
+static int seq_timelines_match(const heic_sequence *a,
+                               const heic_sequence *b)
+{
+    uint32_t i;
+    if (!a || !b || a->timescale != b->timescale
+        || a->duration != b->duration
+        || a->repetition_count != b->repetition_count
+        || a->frame_count != b->frame_count)
+        return 0;
+    for (i = 0; i < a->frame_count; i++)
+        if (a->frame_times[i] != b->frame_times[i]
+            || a->frame_durations[i] != b->frame_durations[i])
+            return 0;
+    return 1;
 }
 
 static int seq_reserve_items(heic_ctx *ctx, heic_container *c,
@@ -2378,12 +2442,12 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     heic_seq_track tracks[HEIC_SEQ_MAX_TRACKS];
     heic_box_iter it;
     heic_box child;
-    int n_tracks = 0, primary = -1, thumb = -1, i, rc = -1;
-    uint64_t primary_off, thumb_off = 0;
-    uint32_t primary_size, thumb_size = 0;
+    int n_tracks = 0, primary = -1, alpha = -1, thumb = -1, i, rc = -1;
+    uint64_t primary_off, alpha_off = 0, thumb_off = 0;
+    uint32_t primary_size, alpha_size = 0, thumb_size = 0;
     uint32_t movie_timescale = 0;
     uint64_t movie_duration = 0;
-    uint32_t primary_item_id, thumb_item_id = 0;
+    uint32_t primary_item_id, alpha_item_id = 0, thumb_item_id = 0;
     int n_items, n_props, info_base, loc_base, assoc_base;
     int had_meta = c->has_meta;
 
@@ -2438,6 +2502,33 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
     }
 
     for (i = 0; i < n_tracks; i++) {
+        if (i == primary
+            || tracks[i].handler_type != HEIC_FCC('a', 'u', 'x', 'v')
+            || !tracks[i].is_alpha
+            || tracks[i].aux_for_track_id != tracks[primary].track_id
+            || (!tracks[i].has_hvcc && !tracks[i].has_av1c))
+            continue;
+        if (alpha >= 0) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "sequence has multiple alpha tracks");
+            goto done;
+        }
+        alpha = i;
+    }
+    if (alpha >= 0
+        && (!tracks[alpha].width || !tracks[alpha].height
+            || tracks[alpha].width > ctx->limits.max_width
+            || tracks[alpha].height > ctx->limits.max_height
+            || (uint64_t)tracks[alpha].width * tracks[alpha].height
+                > ctx->limits.max_pixels
+            || seq_first_sample(&tracks[alpha], c->len, &alpha_off,
+                                &alpha_size, ab) != 0)) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "invalid sequence alpha track");
+        goto done;
+    }
+
+    for (i = 0; i < n_tracks; i++) {
         if (i == primary || (!tracks[i].has_hvcc && !tracks[i].has_av1c)
             || tracks[i].handler_type != HEIC_FCC('p', 'i', 'c', 't'))
             continue;
@@ -2451,15 +2542,23 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
         }
     }
 
-    n_items = thumb >= 0 ? 2 : 1;
+    n_items = 1 + (alpha >= 0) + (thumb >= 0);
     n_props = 2 + tracks[primary].has_colr;
+    if (alpha >= 0) n_props += 2 + tracks[alpha].has_colr;
     if (thumb >= 0) n_props += 2 + tracks[thumb].has_colr;
     primary_item_id = seq_unused_item_id(
-        c, had_meta ? UINT32_MAX : 1u, 0);
+        c, had_meta ? UINT32_MAX : 1u, 0, 0);
     if (!primary_item_id) goto done;
+    if (alpha >= 0) {
+        alpha_item_id = seq_unused_item_id(
+            c, had_meta ? UINT32_MAX - 1u : 2u, primary_item_id, 0);
+        if (!alpha_item_id) goto done;
+    }
     if (thumb >= 0) {
         thumb_item_id = seq_unused_item_id(
-            c, had_meta ? UINT32_MAX - 1u : 2u, primary_item_id);
+            c, had_meta ? UINT32_MAX - 1u - (alpha >= 0)
+                        : 2u + (alpha >= 0),
+            primary_item_id, alpha_item_id);
         if (!thumb_item_id) goto done;
     }
     if (!movie_timescale) movie_timescale = tracks[primary].media_timescale;
@@ -2468,8 +2567,19 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
                                      tracks[primary].media_timescale,
                                      movie_timescale);
     if (seq_build_timeline(ctx, c, &tracks[primary], primary_item_id,
-                           movie_timescale, movie_duration, ab) != 0) {
+                           movie_timescale, movie_duration, &c->sequence,
+                           ab) != 0) {
         goto done;
+    }
+    if (alpha >= 0) {
+        if (seq_build_timeline(ctx, c, &tracks[alpha], alpha_item_id,
+                               movie_timescale, movie_duration,
+                               &c->sequence->alpha, ab) != 0
+            || !seq_timelines_match(c->sequence, c->sequence->alpha)) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "sequence alpha timeline does not match color track");
+            goto done;
+        }
     }
     if (seq_reserve_items(ctx, c, n_items, n_props,
                           &info_base, &loc_base, &assoc_base) != 0)
@@ -2480,9 +2590,17 @@ static int parse_moov(heic_ctx *ctx, const heic_box *moov,
                       primary_off, primary_size) != 0)
         goto done;
 
-    if (thumb >= 0) {
-        if (seq_make_item(ctx, c, &tracks[thumb],
+    if (alpha >= 0) {
+        if (seq_make_item(ctx, c, &tracks[alpha],
                           info_base + 1, loc_base + 1, assoc_base + 1,
+                          alpha_item_id, alpha_off, alpha_size) != 0)
+            goto done;
+    }
+    if (thumb >= 0) {
+        int item_offset = 1 + (alpha >= 0);
+        if (seq_make_item(ctx, c, &tracks[thumb],
+                          info_base + item_offset, loc_base + item_offset,
+                          assoc_base + item_offset,
                           thumb_item_id,
                           thumb_off, thumb_size) != 0)
             goto done;

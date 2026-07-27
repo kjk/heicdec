@@ -34,11 +34,12 @@ int heic_libheif_decode_rgb(const uint8_t *data, size_t len,
                             uint8_t **out_rgb, int *out_w, int *out_h, int *out_stride);
 
 /* Decode one unedited media pass of the first visual sequence track to
-   concatenated tightly packed RGB8 frames. Caller free()s *out_rgb. */
-int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
-                                     uint8_t **out_rgb, uint32_t *out_frames,
-                                     int *out_w, int *out_h, int *out_stride,
-                                     char *error, size_t error_cap);
+   concatenated tightly packed RGBA8 frames. Caller free()s *out_rgba. */
+int heic_libheif_decode_sequence_rgba(const uint8_t *data, size_t len,
+                                      uint8_t **out_rgba,
+                                      uint32_t *out_frames,
+                                      int *out_w, int *out_h, int *out_stride,
+                                      char *error, size_t error_cap);
 
 /* Decode the Apple HDR gain-map auxiliary to tightly packed RGB8. */
 int heic_libheif_decode_gain_map_rgb(const uint8_t *data, size_t len,

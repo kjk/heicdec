@@ -283,10 +283,11 @@ done:
     return rc;
 }
 
-int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
-                                     uint8_t **out_rgb, uint32_t *out_frames,
-                                     int *out_w, int *out_h, int *out_stride,
-                                     char *error, size_t error_cap)
+int heic_libheif_decode_sequence_rgba(const uint8_t *data, size_t len,
+                                      uint8_t **out_rgba,
+                                      uint32_t *out_frames,
+                                      int *out_w, int *out_h, int *out_stride,
+                                      char *error, size_t error_cap)
 {
     heif_context *ctx = NULL;
     heif_track *track = NULL;
@@ -297,8 +298,8 @@ int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
     int width = 0, height = 0, rc = -1;
     heif_error err;
 
-    if (!data || !len || !out_rgb || !out_frames) return -1;
-    *out_rgb = NULL;
+    if (!data || !len || !out_rgba || !out_frames) return -1;
+    *out_rgba = NULL;
     *out_frames = 0;
     if (error && error_cap) error[0] = '\0';
     ctx = heif_context_alloc();
@@ -322,7 +323,7 @@ int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
         int stride, w, h, y;
         err = heif_track_decode_next_image(
             track, &image, heif_colorspace_RGB,
-            heif_chroma_interleaved_RGB, opts);
+            heif_chroma_interleaved_RGBA, opts);
         if (err.code == heif_error_End_of_sequence) break;
         if (err.code != heif_error_Ok || !image) {
             if (image) heif_image_release(image);
@@ -332,22 +333,22 @@ int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
             image, heif_channel_interleaved, &stride);
         w = heif_image_get_width(image, heif_channel_interleaved);
         h = heif_image_get_height(image, heif_channel_interleaved);
-        if (!plane || w <= 0 || h <= 0 || stride < w * 3
+        if (!plane || w <= 0 || h <= 0 || stride < w * 4
             || (frames && (w != width || h != height))) {
             heif_image_release(image);
             if (error && error_cap)
-                snprintf(error, error_cap, "invalid sequence RGB plane");
+                snprintf(error, error_cap, "invalid sequence RGBA plane");
             goto done;
         }
         if (!frames) {
             width = w;
             height = h;
-            if ((size_t)w > SIZE_MAX / 3
-                || (size_t)w * 3 > SIZE_MAX / (size_t)h) {
+            if ((size_t)w > SIZE_MAX / 4
+                || (size_t)w * 4 > SIZE_MAX / (size_t)h) {
                 heif_image_release(image);
                 goto done;
             }
-            frame_size = (size_t)w * (size_t)h * 3;
+            frame_size = (size_t)w * (size_t)h * 4;
         }
         if (frames == UINT32_MAX
             || (size_t)(frames + 1) > SIZE_MAX / frame_size) {
@@ -371,17 +372,17 @@ int heic_libheif_decode_sequence_rgb(const uint8_t *data, size_t len,
         }
         for (y = 0; y < h; y++)
             memcpy(rgb + (size_t)frames * frame_size
-                       + (size_t)y * (size_t)w * 3,
-                   plane + (size_t)y * (size_t)stride, (size_t)w * 3);
+                       + (size_t)y * (size_t)w * 4,
+                   plane + (size_t)y * (size_t)stride, (size_t)w * 4);
         frames++;
         heif_image_release(image);
     }
     if (!frames) goto done;
-    *out_rgb = rgb;
+    *out_rgba = rgb;
     *out_frames = frames;
     if (out_w) *out_w = width;
     if (out_h) *out_h = height;
-    if (out_stride) *out_stride = width * 3;
+    if (out_stride) *out_stride = width * 4;
     rgb = NULL;
     rc = 0;
     goto done;

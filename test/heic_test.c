@@ -811,7 +811,7 @@ static int compare_sequence_frame(
         const uint8_t *b =
             ref + (size_t)rank * (size_t)rstride * (size_t)rh
                 + (size_t)y * (size_t)rstride;
-        for (x = 0; x < rw * 3; x++) {
+        for (x = 0; x < rw * 4; x++) {
             int d = (int)a[x] - (int)b[x];
             if (d < 0) d = -d;
             if (d) {
@@ -821,7 +821,7 @@ static int compare_sequence_frame(
             }
         }
     }
-    *compared += (uint64_t)rw * (uint64_t)rh * 3u;
+    *compared += (uint64_t)rw * (uint64_t)rh * 4u;
     heic_image_destroy(ctx, img);
     return 0;
 }
@@ -836,13 +836,15 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     uint32_t ref_frames = 0, frame;
     int dependent = 0;
     int separate_primary = 0;
+    int alpha = 0;
+    int alpha_nonopaque = 0;
     int rw = 0, rh = 0, rstride = 0;
     double sse = 0.0;
     uint64_t compared = 0, ndiff = 0;
     int maxd = 0, rc = 1;
     char error[256];
 
-    if (heic_libheif_decode_sequence_rgb(
+    if (heic_libheif_decode_sequence_rgba(
             data, len, &ref, &ref_frames, &rw, &rh, &rstride,
             error, sizeof error) != 0) {
         printf("sequence oracle failed: %s\n", error);
@@ -857,7 +859,8 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     separate_primary =
         doc->container.sequence->coded_item_id
             != doc->container.primary_item_id;
-    decoder = heic_sequence_decoder_new(doc, HEIC_FORMAT_RGB);
+    alpha = doc->container.sequence->alpha != NULL;
+    decoder = heic_sequence_decoder_new(doc, HEIC_FORMAT_RGBA);
     if (!decoder) goto done;
     for (frame = 0; frame < info.frame_count; frame++) {
         const heic_sequence *seq = doc->container.sequence;
@@ -865,6 +868,14 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
                 ctx, decoder, seq, frame, ref, ref_frames,
                 rw, rh, rstride, &sse, &compared, &ndiff, &maxd) != 0)
             goto done;
+    }
+    if (alpha) {
+        size_t i, n = (size_t)rw * (size_t)rh * 4;
+        for (i = 3; i < n; i += 4)
+            if (ref[i] != 255) {
+                alpha_nonopaque = 1;
+                break;
+            }
     }
     {
         const heic_sequence *seq = doc->container.sequence;
@@ -907,9 +918,11 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
     }
     if (!compared) goto done;
     printf("sequence %u frames %dx%d mse=%.4f maxdiff=%d n_diff=%llu"
-           " dependent=%d separate_primary=%d\n",
+           " dependent=%d separate_primary=%d alpha=%d"
+           " alpha_nonopaque=%d\n",
            (unsigned)info.frame_count, rw, rh, sse / (double)compared,
-           maxd, (unsigned long long)ndiff, dependent, separate_primary);
+           maxd, (unsigned long long)ndiff, dependent, separate_primary,
+           alpha, alpha_nonopaque);
     rc = 0;
 done:
     heic_sequence_decoder_destroy(decoder);

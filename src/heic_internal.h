@@ -111,6 +111,7 @@ typedef uint32_t heic_fourcc;
 #define HEIC_BOX_HEV1 HEIC_FCC('h', 'e', 'v', '1')
 #define HEIC_BOX_AV01 HEIC_FCC('a', 'v', '0', '1')
 #define HEIC_BOX_TREF HEIC_FCC('t', 'r', 'e', 'f')
+#define HEIC_BOX_AUXI HEIC_FCC('a', 'u', 'x', 'i')
 
 /* Item type fourccs */
 #define HEIC_TYPE_HVC1 HEIC_FCC('h', 'v', 'c', '1')
@@ -399,7 +400,7 @@ typedef struct {
     uint8_t  is_sync;
 } heic_sequence_sample;
 
-typedef struct {
+typedef struct heic_sequence {
     uint32_t timescale;
     uint64_t duration;
     uint32_t repetition_count;
@@ -410,6 +411,7 @@ typedef struct {
     uint64_t *frame_times;
     uint32_t *frame_durations;
     uint32_t frame_count;
+    struct heic_sequence *alpha;
 } heic_sequence;
 
 typedef struct {

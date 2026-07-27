@@ -434,6 +434,15 @@ export function generateAvifFixtures(outDir: string = DEFAULT_OUT): void {
   if (!existsSync(sequenceSource))
     throw new Error(`missing ${sequenceSource} (download via get-deps first)`);
   writeInterSequence(sequenceSource, join(outDir, "sequence_inter.avif"));
+  const alphaSequenceSource = join(
+    outDir, "_src", "colors-animated-8bpc-alpha-exif-xmp.avif",
+  );
+  if (!existsSync(alphaSequenceSource))
+    throw new Error(`missing ${alphaSequenceSource} (download via get-deps first)`);
+  writeFileSync(
+    join(outDir, "sequence_alpha.avif"),
+    readFileSync(alphaSequenceSource),
+  );
   if (existsSync(monoPath)) {
     const mono = extractAv01(monoPath);
     writeAlpha(color, mono, join(outDir, "alpha.avif"));

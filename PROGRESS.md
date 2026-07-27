@@ -198,7 +198,7 @@
 - [x] Public HEVC sequence API: `stts`/`ctts` timing, `elst` presentation
       edits, finite/infinite repetition counts, and arbitrary frame decode
       from the preceding sync sample; all 11 Nokia sequence fixtures covered
-- [x] Every public HEVC sequence frame is compared in RGB against libheif's
+- [x] Every public HEVC sequence frame is compared in RGBA against libheif's
       sequence API/libde265, including edit-list duplicates and hidden preroll
 - [x] Stateful HEVC sequence playback retains reconstructed pictures from the
       active sync sample, avoiding repeated preroll decode and supporting
@@ -213,6 +213,10 @@
 - [x] Combined `meta` + `moov` image sequences preserve the still primary item
       and its metadata while exposing the movie track through sequence APIs;
       the original libavif fixture is tested unchanged
+- [x] Animated AVIF alpha tracks: parse `auxv` sample entries with alpha
+      `auxi` and `tref/auxl`, retain independent color/alpha dav1d state,
+      synchronize presentation timelines, and compare every RGBA frame against
+      libheif using libavif's alpha + EXIF/XMP sequence fixture
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
 - [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
 - [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)

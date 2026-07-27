@@ -939,6 +939,48 @@ static uint16_t scale_alpha_sample(uint16_t v, int src_bd, int dst_bd)
     return (uint16_t)(v >> (src_bd - dst_bd));
 }
 
+static int attach_decoded_alpha(heic_ctx *ctx, heic_frame *frame,
+                                const heic_frame *alpha)
+{
+    int pw, ph, aw, ah, y, x;
+    int abd, pbd;
+    if (frame->a) return 0;
+    pw = frame->width - frame->crop_left - frame->crop_right;
+    ph = frame->height - frame->crop_top - frame->crop_bottom;
+    aw = alpha->width - alpha->crop_left - alpha->crop_right;
+    ah = alpha->height - alpha->crop_top - alpha->crop_bottom;
+    if (pw <= 0 || ph <= 0 || aw <= 0 || ah <= 0 || !alpha->y)
+        return -1;
+    frame->a = (uint16_t *)heic_zalloc(
+        ctx, (size_t)frame->width * (size_t)frame->height * sizeof(uint16_t));
+    if (!frame->a) return -1;
+    frame->a_stride = frame->width;
+    pbd = frame->bit_depth > 0 ? frame->bit_depth : 8;
+    abd = alpha->bit_depth > 0 ? alpha->bit_depth : 8;
+    {
+        size_t i, n = (size_t)frame->width * (size_t)frame->height;
+        uint16_t opaque = (uint16_t)((1u << pbd) - 1);
+        for (i = 0; i < n; i++) frame->a[i] = opaque;
+    }
+    for (y = 0; y < ph; y++) {
+        int sy = ah == ph ? y : (int)((int64_t)y * ah / ph);
+        if (sy >= ah) sy = ah - 1;
+        for (x = 0; x < pw; x++) {
+            int sx = aw == pw ? x : (int)((int64_t)x * aw / pw);
+            uint16_t v;
+            if (sx >= aw) sx = aw - 1;
+            v = alpha->y[
+                (size_t)(alpha->crop_top + sy) * (size_t)alpha->y_stride
+                + (size_t)(alpha->crop_left + sx)];
+            frame->a[
+                (size_t)(frame->crop_top + y) * (size_t)frame->a_stride
+                + (size_t)(frame->crop_left + x)] =
+                    scale_alpha_sample(v, abd, pbd);
+        }
+    }
+    return 0;
+}
+
 /* Attach auxiliary alpha plane (auxl) sized to primary cropped dims.
  * Alpha item may be hvc1, av01, or a derived grid/iden (full decode_item). */
 static void attach_alpha(heic_doc *doc, uint32_t primary_id, heic_frame *frame,
@@ -948,8 +990,6 @@ static void attach_alpha(heic_doc *doc, uint32_t primary_id, heic_frame *frame,
     int n;
     heic_item alpha_item;
     heic_frame alpha;
-    int pw, ph, aw, ah, y, x;
-    int abd, pbd;
 
     /* Prefer CICP alpha URN (AVIF); fall back to HEVC auxid:1. */
     n = heic_container_find_aux(&doc->container, primary_id,
@@ -966,58 +1006,7 @@ static void attach_alpha(heic_doc *doc, uint32_t primary_id, heic_frame *frame,
         heic_frame_free(doc->ctx, &alpha);
         return;
     }
-    pw = frame->width - frame->crop_left - frame->crop_right;
-    ph = frame->height - frame->crop_top - frame->crop_bottom;
-    aw = alpha.width - alpha.crop_left - alpha.crop_right;
-    ah = alpha.height - alpha.crop_top - alpha.crop_bottom;
-    if (pw <= 0 || ph <= 0 || !alpha.y) {
-        heic_frame_free(doc->ctx, &alpha);
-        return;
-    }
-    /* Alpha plane is full coded size so frame_to_rgb can index with sy/sx. */
-    frame->a = (uint16_t *)heic_zalloc(
-        doc->ctx, (size_t)frame->width * (size_t)frame->height * sizeof(uint16_t));
-    if (!frame->a) {
-        heic_frame_free(doc->ctx, &alpha);
-        return;
-    }
-    frame->a_stride = frame->width;
-    pbd = frame->bit_depth > 0 ? frame->bit_depth : 8;
-    abd = alpha.bit_depth > 0 ? alpha.bit_depth : 8;
-    /* Default opaque */
-    {
-        size_t i, N = (size_t)frame->width * (size_t)frame->height;
-        uint16_t opaque = (uint16_t)((1u << pbd) - 1);
-        for (i = 0; i < N; i++) frame->a[i] = opaque;
-    }
-
-    if (aw == pw && ah == ph) {
-        for (y = 0; y < ph; y++) {
-            for (x = 0; x < pw; x++) {
-                uint16_t v = alpha.y[(size_t)(alpha.crop_top + y) * (size_t)alpha.y_stride +
-                                     (size_t)(alpha.crop_left + x)];
-                v = scale_alpha_sample(v, abd, pbd);
-                frame->a[(size_t)(frame->crop_top + y) * (size_t)frame->a_stride +
-                         (size_t)(frame->crop_left + x)] = v;
-            }
-        }
-    } else if (aw > 0 && ah > 0) {
-        /* Nearest-neighbor resize into crop rect */
-        for (y = 0; y < ph; y++) {
-            for (x = 0; x < pw; x++) {
-                int sx = (int)((int64_t)x * aw / pw);
-                int sy = (int)((int64_t)y * ah / ph);
-                uint16_t v;
-                if (sx >= aw) sx = aw - 1;
-                if (sy >= ah) sy = ah - 1;
-                v = alpha.y[(size_t)(alpha.crop_top + sy) * (size_t)alpha.y_stride +
-                            (size_t)(alpha.crop_left + sx)];
-                v = scale_alpha_sample(v, abd, pbd);
-                frame->a[(size_t)(frame->crop_top + y) * (size_t)frame->a_stride +
-                         (size_t)(frame->crop_left + x)] = v;
-            }
-        }
-    }
+    (void)attach_decoded_alpha(doc->ctx, frame, &alpha);
     heic_frame_free(doc->ctx, &alpha);
 }
 
@@ -1147,9 +1136,7 @@ static heic_image *sequence_frame_to_image(heic_ctx *ctx, heic_frame *frame,
     return img;
 }
 
-struct heic_sequence_decoder {
-    heic_doc *doc;
-    heic_format format;
+typedef struct {
     heic_frame *pictures;
     uint8_t *picture_ready;
     const heic_frame **refs;
@@ -1158,24 +1145,64 @@ struct heic_sequence_decoder {
     uint32_t cache_start;
     uint32_t next_sample;
     int initialized;
+} heic_sequence_cache;
+
+struct heic_sequence_decoder {
+    heic_doc *doc;
+    heic_format format;
+    heic_sequence_cache color;
+    heic_sequence_cache alpha;
 };
 
-static void sequence_decoder_clear(heic_sequence_decoder *decoder)
+static void sequence_cache_clear(heic_sequence_decoder *decoder,
+                                 heic_sequence_cache *cache)
 {
     uint32_t i;
-    if (!decoder || !decoder->pictures) return;
-    if (decoder->picture_ready) {
-        for (i = 0; i < decoder->sample_count; i++) {
-            if (!decoder->picture_ready[i]) continue;
-            heic_frame_free(decoder->doc->ctx, &decoder->pictures[i]);
-            decoder->picture_ready[i] = 0;
+    if (!decoder || !cache) return;
+    if (cache->pictures && cache->picture_ready) {
+        for (i = 0; i < cache->sample_count; i++) {
+            if (!cache->picture_ready[i]) continue;
+            heic_frame_free(decoder->doc->ctx, &cache->pictures[i]);
+            cache->picture_ready[i] = 0;
         }
     }
-    decoder->cache_start = 0;
-    decoder->next_sample = 0;
-    decoder->initialized = 0;
-    heic_av1_sequence_destroy(decoder->av1);
-    decoder->av1 = NULL;
+    cache->cache_start = 0;
+    cache->next_sample = 0;
+    cache->initialized = 0;
+    heic_av1_sequence_destroy(cache->av1);
+    cache->av1 = NULL;
+}
+
+static int sequence_cache_init(heic_sequence_decoder *decoder,
+                               heic_sequence_cache *cache,
+                               const heic_sequence *seq)
+{
+    heic_ctx *ctx = decoder->doc->ctx;
+    size_t pictures_size, refs_size;
+    if (!seq || !seq->sample_count
+        || (size_t)seq->sample_count > SIZE_MAX / sizeof(heic_frame)
+        || (size_t)seq->sample_count > SIZE_MAX / sizeof(heic_frame *))
+        return -1;
+    pictures_size = (size_t)seq->sample_count * sizeof(heic_frame);
+    refs_size = (size_t)seq->sample_count * sizeof(heic_frame *);
+    cache->sample_count = seq->sample_count;
+    cache->pictures = (heic_frame *)heic_zalloc(ctx, pictures_size);
+    cache->picture_ready =
+        (uint8_t *)heic_zalloc(ctx, seq->sample_count);
+    cache->refs =
+        (const heic_frame **)heic_zalloc(ctx, refs_size);
+    return cache->pictures && cache->picture_ready && cache->refs ? 0 : -1;
+}
+
+static void sequence_cache_destroy(heic_sequence_decoder *decoder,
+                                   heic_sequence_cache *cache)
+{
+    heic_ctx *ctx = decoder->doc->ctx;
+    sequence_cache_clear(decoder, cache);
+    heic_free_buf(ctx, cache->refs);
+    heic_free_buf(ctx, cache->picture_ready);
+    heic_free_buf(ctx, cache->pictures);
+    memset(cache, 0, sizeof(*cache));
 }
 
 heic_sequence_decoder *heic_sequence_decoder_new(heic_doc *doc,
@@ -1183,27 +1210,19 @@ heic_sequence_decoder *heic_sequence_decoder_new(heic_doc *doc,
 {
     const heic_sequence *seq;
     heic_sequence_decoder *decoder;
-    size_t pictures_size, refs_size;
     if (!doc || !(seq = doc->container.sequence) || !seq->sample_count)
         return NULL;
     if (format < HEIC_FORMAT_RGB || format > HEIC_FORMAT_BGRA)
         return NULL;
-    if ((size_t)seq->sample_count > SIZE_MAX / sizeof(heic_frame)
-        || (size_t)seq->sample_count > SIZE_MAX / sizeof(heic_frame *))
-        return NULL;
-    pictures_size = (size_t)seq->sample_count * sizeof(heic_frame);
-    refs_size = (size_t)seq->sample_count * sizeof(heic_frame *);
     decoder = (heic_sequence_decoder *)heic_zalloc(doc->ctx, sizeof(*decoder));
     if (!decoder) return NULL;
     decoder->doc = doc;
     decoder->format = format;
-    decoder->sample_count = seq->sample_count;
-    decoder->pictures = (heic_frame *)heic_zalloc(doc->ctx, pictures_size);
-    decoder->picture_ready = (uint8_t *)heic_zalloc(
-        doc->ctx, seq->sample_count);
-    decoder->refs =
-        (const heic_frame **)heic_zalloc(doc->ctx, refs_size);
-    if (!decoder->pictures || !decoder->picture_ready || !decoder->refs) {
+    if (sequence_cache_init(decoder, &decoder->color, seq) != 0
+        || (seq->alpha
+            && (format == HEIC_FORMAT_RGBA || format == HEIC_FORMAT_BGRA)
+            && sequence_cache_init(
+                   decoder, &decoder->alpha, seq->alpha) != 0)) {
         heic_sequence_decoder_destroy(decoder);
         return NULL;
     }
@@ -1212,7 +1231,8 @@ heic_sequence_decoder *heic_sequence_decoder_new(heic_doc *doc,
 
 void heic_sequence_decoder_reset(heic_sequence_decoder *decoder)
 {
-    sequence_decoder_clear(decoder);
+    sequence_cache_clear(decoder, &decoder->color);
+    sequence_cache_clear(decoder, &decoder->alpha);
 }
 
 void heic_sequence_decoder_destroy(heic_sequence_decoder *decoder)
@@ -1220,10 +1240,8 @@ void heic_sequence_decoder_destroy(heic_sequence_decoder *decoder)
     heic_ctx *ctx;
     if (!decoder) return;
     ctx = decoder->doc->ctx;
-    sequence_decoder_clear(decoder);
-    heic_free_buf(ctx, decoder->refs);
-    heic_free_buf(ctx, decoder->picture_ready);
-    heic_free_buf(ctx, decoder->pictures);
+    sequence_cache_destroy(decoder, &decoder->alpha);
+    sequence_cache_destroy(decoder, &decoder->color);
     heic_free_buf(ctx, decoder);
 }
 
@@ -1238,13 +1256,14 @@ static void sequence_apply_color(const heic_item *item, heic_frame *decoded)
 }
 
 static int sequence_store_av1_picture(heic_sequence_decoder *decoder,
+                                      heic_sequence_cache *cache,
                                       const heic_item *item,
                                       heic_frame *picture,
                                       uint32_t sample)
 {
-    if (sample < decoder->cache_start || sample >= decoder->next_sample
-        || sample >= decoder->sample_count
-        || decoder->picture_ready[sample]) {
+    if (sample < cache->cache_start || sample >= cache->next_sample
+        || sample >= cache->sample_count
+        || cache->picture_ready[sample]) {
         heic_frame_free(decoder->doc->ctx, picture);
         heic_error(decoder->doc->ctx, HEIC_SEVERITY_ERROR,
                    "dav1d returned unexpected sequence sample %u",
@@ -1252,22 +1271,20 @@ static int sequence_store_av1_picture(heic_sequence_decoder *decoder,
         return -1;
     }
     sequence_apply_color(item, picture);
-    decoder->pictures[sample] = *picture;
+    cache->pictures[sample] = *picture;
     memset(picture, 0, sizeof(*picture));
-    decoder->picture_ready[sample] = 1;
+    cache->picture_ready[sample] = 1;
     return 0;
 }
 
-heic_image *heic_sequence_decoder_decode_frame_abortable(
-    heic_sequence_decoder *decoder, uint32_t frame_index, heic_abort *ab)
+static heic_frame *sequence_decode_track(
+    heic_sequence_decoder *decoder, heic_sequence_cache *cache,
+    const heic_sequence *seq, uint32_t frame_index, heic_abort *ab)
 {
-    heic_doc *doc;
-    const heic_sequence *seq;
+    heic_doc *doc = decoder->doc;
     heic_item item;
     uint32_t target, start, i, j;
-    if (!decoder || !(doc = decoder->doc)
-        || !(seq = doc->container.sequence)
-        || seq->sample_count != decoder->sample_count
+    if (!cache || seq->sample_count != cache->sample_count
         || frame_index >= seq->frame_count
         || heic_container_get_item(&doc->container,
                                    seq->coded_item_id, &item) != 0
@@ -1276,69 +1293,70 @@ heic_image *heic_sequence_decoder_decode_frame_abortable(
     target = seq->frame_samples[frame_index];
     if (target >= seq->sample_count) return NULL;
 
-    if (!decoder->initialized || target < decoder->cache_start) {
-        sequence_decoder_clear(decoder);
+    if (!cache->initialized || target < cache->cache_start) {
+        sequence_cache_clear(decoder, cache);
         start = target;
         while (start > 0 && !seq->samples[start].is_sync) start--;
         if (!seq->samples[start].is_sync) return NULL;
-        decoder->cache_start = start;
-        decoder->next_sample = start;
-        decoder->initialized = 1;
+        cache->cache_start = start;
+        cache->next_sample = start;
+        cache->initialized = 1;
     }
-    while (!decoder->picture_ready[target]) {
-        if (decoder->next_sample < decoder->sample_count) {
+    while (!cache->picture_ready[target]) {
+        if (cache->next_sample < cache->sample_count) {
             const heic_sequence_sample *sample;
             heic_frame *decoded;
-            i = decoder->next_sample;
+            i = cache->next_sample;
             sample = &seq->samples[i];
             if (heic_abort_check(ab)) return NULL;
-            if (i > decoder->cache_start && sample->is_sync) {
-                sequence_decoder_clear(decoder);
-                decoder->cache_start = i;
-                decoder->next_sample = i;
-                decoder->initialized = 1;
+            if (i > cache->cache_start && sample->is_sync) {
+                sequence_cache_clear(decoder, cache);
+                cache->cache_start = i;
+                cache->next_sample = i;
+                cache->initialized = 1;
             }
-            decoded = &decoder->pictures[i];
+            decoded = &cache->pictures[i];
             memset(decoded, 0, sizeof(*decoded));
             if (item.hvcc) {
-                uint32_t n_refs = i - decoder->cache_start;
+                uint32_t n_refs = i - cache->cache_start;
                 for (j = 0; j < n_refs; j++) {
-                    if (!decoder->picture_ready[i - 1 - j]) return NULL;
-                    decoder->refs[j] = &decoder->pictures[i - 1 - j];
+                    if (!cache->picture_ready[i - 1 - j]) return NULL;
+                    cache->refs[j] = &cache->pictures[i - 1 - j];
                 }
                 if (heic_hevc_decode_refs(
                         doc->ctx, item.hvcc,
                         doc->data + sample->offset, sample->size,
-                        decoder->refs, (int)n_refs, decoded, ab) != 0) {
+                        cache->refs, (int)n_refs, decoded, ab) != 0) {
                     heic_frame_free(doc->ctx, decoded);
-                    decoder->next_sample = i;
+                    cache->next_sample = i;
                     return NULL;
                 }
                 sequence_apply_color(&item, decoded);
-                decoder->picture_ready[i] = 1;
-                decoder->next_sample = i + 1;
+                cache->picture_ready[i] = 1;
+                cache->next_sample = i + 1;
             } else {
                 heic_frame picture;
                 uint32_t output_sample = 0;
                 int got;
-                if (!decoder->av1)
-                    decoder->av1 = heic_av1_sequence_new(doc->ctx);
-                if (!decoder->av1) return NULL;
+                if (!cache->av1)
+                    cache->av1 = heic_av1_sequence_new(doc->ctx);
+                if (!cache->av1) return NULL;
                 memset(&picture, 0, sizeof(picture));
                 got = heic_av1_sequence_submit(
-                    decoder->av1, item.av1c,
+                    cache->av1, item.av1c,
                     doc->data + sample->offset, sample->size, i,
                     &picture, &output_sample, ab);
                 if (got < 0) {
-                    heic_av1_sequence_destroy(decoder->av1);
-                    decoder->av1 = NULL;
-                    decoder->next_sample = i;
+                    heic_av1_sequence_destroy(cache->av1);
+                    cache->av1 = NULL;
+                    cache->next_sample = i;
                     return NULL;
                 }
-                decoder->next_sample = i + 1;
+                cache->next_sample = i + 1;
                 if (got > 0
                     && sequence_store_av1_picture(
-                           decoder, &item, &picture, output_sample) != 0)
+                           decoder, cache, &item, &picture,
+                           output_sample) != 0)
                     return NULL;
             }
         } else if (item.av1c) {
@@ -1347,7 +1365,7 @@ heic_image *heic_sequence_decoder_decode_frame_abortable(
             int got;
             memset(&picture, 0, sizeof(picture));
             got = heic_av1_sequence_receive(
-                decoder->av1, &picture, &output_sample, ab);
+                cache->av1, &picture, &output_sample, ab);
             if (got <= 0) {
                 if (!heic_abort_check(ab))
                     heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
@@ -1356,14 +1374,38 @@ heic_image *heic_sequence_decoder_decode_frame_abortable(
                 return NULL;
             }
             if (sequence_store_av1_picture(
-                    decoder, &item, &picture, output_sample) != 0)
+                    decoder, cache, &item, &picture, output_sample) != 0)
                 return NULL;
         } else {
             return NULL;
         }
     }
-    return sequence_frame_to_image(doc->ctx, &decoder->pictures[target],
-                                   decoder->format);
+    return &cache->pictures[target];
+}
+
+heic_image *heic_sequence_decoder_decode_frame_abortable(
+    heic_sequence_decoder *decoder, uint32_t frame_index, heic_abort *ab)
+{
+    const heic_sequence *seq;
+    heic_frame *color;
+    if (!decoder || !decoder->doc
+        || !(seq = decoder->doc->container.sequence))
+        return NULL;
+    color = sequence_decode_track(
+        decoder, &decoder->color, seq, frame_index, ab);
+    if (!color) return NULL;
+    if (seq->alpha
+        && (decoder->format == HEIC_FORMAT_RGBA
+            || decoder->format == HEIC_FORMAT_BGRA)
+        && !color->a) {
+        heic_frame *alpha = sequence_decode_track(
+            decoder, &decoder->alpha, seq->alpha, frame_index, ab);
+        if (!alpha
+            || attach_decoded_alpha(decoder->doc->ctx, color, alpha) != 0)
+            return NULL;
+    }
+    return sequence_frame_to_image(
+        decoder->doc->ctx, color, decoder->format);
 }
 
 heic_image *heic_sequence_decoder_decode_frame(

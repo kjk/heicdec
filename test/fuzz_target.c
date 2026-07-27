@@ -108,9 +108,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         heic_sequence_decoder *decoder;
         (void)heic_doc_sequence_frame_info(doc, 0, &frame_info);
         (void)heic_doc_sequence_frame_info(doc, frame, &frame_info);
-        img = heic_doc_decode_sequence_frame(doc, frame, HEIC_FORMAT_RGB);
+        img = heic_doc_decode_sequence_frame(doc, frame, HEIC_FORMAT_RGBA);
         if (img) heic_image_destroy(ctx, img);
-        decoder = heic_sequence_decoder_new(doc, HEIC_FORMAT_RGB);
+        decoder = heic_sequence_decoder_new(doc, HEIC_FORMAT_RGBA);
         if (decoder) {
             img = heic_sequence_decoder_decode_frame(decoder, 0);
             if (img) heic_image_destroy(ctx, img);

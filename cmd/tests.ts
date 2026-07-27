@@ -55,6 +55,7 @@ const MUST_DECODE = new Set([
   "C038.heic",
   "C041.heic",
   "sequence_inter.avif",
+  "sequence_alpha.avif",
 ]);
 
 /** Parse `30x20 mse=0.0000 maxdiff=0 n_diff=0` from -verify stdout. */
@@ -162,7 +163,7 @@ async function compareAltOracle(
   file: string,
   name: string,
 ): Promise<{ ok: boolean; detail: string } | null> {
-  if (name === "sequence_inter.avif") {
+  if (name === "sequence_inter.avif" || name === "sequence_alpha.avif") {
     const p = await Bun.$`${exe} -verify-sequence ${file}`.nothrow().quiet();
     const out = (p.stdout.toString() + p.stderr.toString()).trim();
     const mse = parseVerifyMse(out);
@@ -346,7 +347,13 @@ const HEIF_SEQUENCE_TESTS = [
   },
   {
     name: "sequence_inter.avif", frames: 5, timescale: 30, duration: 5,
-    repetitions: 0, first: 0, last: 4,
+    repetitions: 0, first: 0, last: 4, dependent: true,
+    separatePrimary: true,
+  },
+  {
+    name: "sequence_alpha.avif", frames: 5, timescale: 30,
+    duration: "18446744073709551615", repetitions: 4294967295,
+    first: 0, last: 20, dependent: true, separatePrimary: true, alpha: true,
   },
 ] as const;
 
@@ -356,7 +363,7 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
   let ok = 0;
   let fail = 0;
   for (const t of HEIF_SEQUENCE_TESTS) {
-    const input = t.name === "sequence_inter.avif"
+    const input = t.name.endsWith(".avif")
       ? join(TESTIMAGES_DIR, "avif", t.name)
       : join(corpus, t.name);
     const infoProc = await Bun.$`${exe} -sequence-info ${input}`.nothrow().quiet();
@@ -371,7 +378,7 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
       summary !== null &&
       Number(summary[1]) === t.frames &&
       Number(summary[2]) === ("timescale" in t ? t.timescale : 1000) &&
-      Number(summary[3]) === t.duration &&
+      summary[3] === String(t.duration) &&
       Number(summary[4]) === t.repetitions &&
       frames.length === t.frames &&
       Number(frames[0]![1]) === t.first &&
@@ -387,9 +394,13 @@ async function runHeifSequenceApiTests(exe: string): Promise<[number, number]> {
       oracleProc.exitCode === 0 &&
       oracleMse !== null &&
       oracleMse <= 8 &&
-      (t.name !== "sequence_inter.avif" ||
-        (oracleOut.includes("dependent=1") &&
-          oracleOut.includes("separate_primary=1")))
+      (!("dependent" in t) || !t.dependent ||
+        oracleOut.includes("dependent=1")) &&
+      (!("separatePrimary" in t) || !t.separatePrimary ||
+        oracleOut.includes("separate_primary=1")) &&
+      (!("alpha" in t) || !t.alpha ||
+        (oracleOut.includes("alpha=1") &&
+          oracleOut.includes("alpha_nonopaque=1")))
     ) {
       ok++;
       console.log(
