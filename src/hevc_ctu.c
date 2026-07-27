@@ -2807,6 +2807,11 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     return 0;
 }
 
+static void slice_ctx_set_refs(
+    heic_slice_ctx *sc,
+    const heic_frame *const *l0, int n_l0,
+    const heic_frame *const *l1, int n_l1);
+
 /* Late-bind inter maps when a predictive slice follows an I first-slice. */
 static int slice_ctx_ensure_inter(heic_slice_ctx *sc)
 {
@@ -2828,6 +2833,112 @@ static int slice_ctx_ensure_inter(heic_slice_ctx *sc)
         sc->mc_internal =
             (int16_t *)heic_zalloc(ctx, 6u * 64u * 64u * sizeof(int16_t));
         if (!sc->mc_internal) return -1;
+    }
+    return 0;
+}
+
+static int slice_ctx_geometry_match(const heic_slice_ctx *sc, const heic_sps *sps)
+{
+    uint32_t min_cb, min_pu, min_tb, ct_w, ct_h, pu_w, pu_h, qp_w, qp_h, db_h;
+    size_t ct_n, pu_n, qp_n, db_n, sao_n;
+    if (!sc || !sps || !sc->ct_depth_map || !sc->intra_mode_map
+        || !sc->residual_buf || !sc->coeff || !sc->mc_scratch)
+        return 0;
+    min_cb = 1u << sps->log2_min_cb_size;
+    min_pu = min_pu_size(sps);
+    min_tb = 1u << sps->log2_min_tb_size;
+    ct_w = (sps->pic_width_in_luma_samples + min_cb - 1) / min_cb;
+    ct_h = (sps->pic_height_in_luma_samples + min_cb - 1) / min_cb;
+    ct_n = (size_t)ct_w * ct_h;
+    pu_w = (sps->pic_width_in_luma_samples + min_pu - 1) / min_pu;
+    pu_h = (sps->pic_height_in_luma_samples + min_pu - 1) / min_pu;
+    pu_n = (size_t)pu_w * pu_h;
+    qp_w = (sps->pic_width_in_luma_samples + min_tb - 1) / min_tb;
+    qp_h = (sps->pic_height_in_luma_samples + min_tb - 1) / min_tb;
+    qp_n = (size_t)qp_w * qp_h;
+    db_h = (sps->pic_height_in_luma_samples + 3) / 4;
+    db_n = (size_t)((sps->pic_width_in_luma_samples + 3) / 4) * db_h;
+    sao_n = (size_t)sps->pic_width_in_ctbs * sps->pic_height_in_ctbs;
+    return sc->ct_depth_n == ct_n && sc->ct_depth_stride == ct_w
+        && sc->intra_mode_n == pu_n && sc->intra_mode_stride == pu_w
+        && sc->qp_map_n == qp_n && sc->qp_map_stride == qp_w
+        && sc->deblock_n == (uint32_t)db_n
+        && sc->deblock_stride == (sps->pic_width_in_luma_samples + 3) / 4
+        && sc->sao_stride == sps->pic_width_in_ctbs
+        && sc->sao_map && sc->filter_map
+        && sc->deblock_flags && sc->cbf_map && sc->pcm_map && sc->deblock_qp
+        && sc->intra_chroma_mode_map
+        && (!sps->pic_width_in_ctbs
+            || (size_t)sc->sao_stride * sps->pic_height_in_ctbs == sao_n);
+}
+
+/* Re-init maps in-place for the next equal-size tile (grid stills). */
+static int slice_ctx_reset(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps,
+                           const heic_pps *pps, const heic_slice_header *sh,
+                           const heic_frame *const *l0, int n_l0,
+                           const heic_frame *const *l1, int n_l1,
+                           heic_frame *frame)
+{
+    size_t i, pu_n, ct_n, qp_n, db_n, sao_n;
+    if (!slice_ctx_geometry_match(sc, sps)) return -1;
+    sc->hctx = ctx;
+    sc->sps = sps;
+    sc->pps = pps;
+    sc->sh = sh;
+    sc->frame = frame;
+    slice_ctx_set_refs(sc, l0, n_l0, l1, n_l1);
+    sc->current_qg_x = -1;
+    sc->current_qg_y = -1;
+    sc->current_qpy = sh->slice_qp_y;
+    sc->last_qpy_in_prev_qg = sh->slice_qp_y;
+    sc->qp_y = sh->slice_qp_y;
+    sc->qp_cb = sc->qp_cr = 0;
+    sc->is_cu_qp_delta_coded = 0;
+    sc->cu_qp_delta = 0;
+    sc->is_cu_chroma_qp_offset_coded = 0;
+    sc->cu_qp_offset_cb = sc->cu_qp_offset_cr = 0;
+    sc->cu_transquant_bypass = 0;
+    sc->cu_base_x = sc->cu_base_y = 0;
+    sc->cu_log2_size = 0;
+    sc->ctb_x = sc->ctb_y = 0;
+    sc->has_filter_exclusions = 0;
+    memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
+
+    ct_n = sc->ct_depth_n;
+    pu_n = sc->intra_mode_n;
+    qp_n = sc->qp_map_n;
+    db_n = sc->deblock_n;
+    sao_n = (size_t)sps->pic_width_in_ctbs * sps->pic_height_in_ctbs;
+
+    memset(sc->ct_depth_map, 0xFF, ct_n);
+    memset(sc->intra_mode_map, 1, pu_n);
+    memset(sc->intra_chroma_mode_map, 1, pu_n);
+    if (sh->slice_type != HEIC_SLICE_I || pps->constrained_intra_pred_flag) {
+        if (!sc->pred_mode_map) {
+            sc->pred_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
+            if (!sc->pred_mode_map) return -1;
+        } else {
+            memset(sc->pred_mode_map, 0, pu_n);
+        }
+    }
+    if (sh->slice_type != HEIC_SLICE_I) {
+        if (slice_ctx_ensure_inter(sc) != 0) return -1;
+        memset(sc->mv_info, 0, pu_n * sizeof(heic_pb_motion));
+    }
+    memset(sc->qp_map, (int)(int8_t)sh->slice_qp_y, qp_n);
+    memset(sc->sao_map, 0, sao_n * sizeof(heic_sao_info));
+    memset(sc->filter_map, 0, sao_n * sizeof(heic_ctb_filter_info));
+    for (i = 0; i < sao_n; i++)
+        sc->filter_map[i].slice_address = UINT32_MAX;
+    memset(sc->deblock_flags, 0, db_n);
+    memset(sc->cbf_map, 0, db_n);
+    memset(sc->pcm_map, 0, db_n);
+    memset(sc->deblock_qp, (int)(int8_t)sh->slice_qp_y, db_n);
+
+    if (pps->cross_component_prediction_enabled_flag && !sc->luma_residual) {
+        sc->luma_residual =
+            (int32_t *)heic_zalloc(ctx, (size_t)HEIC_MAX_COEFF * sizeof(int32_t));
+        if (!sc->luma_residual) return -1;
     }
     return 0;
 }
@@ -3005,27 +3116,70 @@ heic_hevc_picture *heic_hevc_picture_new(
     const heic_frame *const *l0, int n_l0,
     const heic_frame *const *l1, int n_l1, heic_frame *out)
 {
-    heic_hevc_picture *picture;
-    heic_slice_work *work;
+    heic_hevc_picture *picture = NULL;
+    heic_slice_work *work = NULL;
     uint32_t total;
+    int reused = 0;
     if (!ctx || !sps || !pps || !sh || !out
         || !(total = sps->pic_size_in_ctbs))
         return NULL;
-    picture = (heic_hevc_picture *)heic_zalloc(ctx, sizeof(*picture));
-    if (!picture) return NULL;
-    work = &picture->work;
-    work->ctx = ctx;
-    work->sh = *sh;
-    work->sh.entry_point_offsets = NULL;
-    work->sh.num_entry_point_offsets = 0;
-    work->filter_sh = work->sh;
-    if (slice_ctx_init(&work->sc, ctx, sps, pps, &work->sh,
-                       l0, n_l0, l1, n_l1, out) != 0)
-        goto fail;
-    work->ctb_decoded = (uint8_t *)heic_zalloc(ctx, total);
-    if (!work->ctb_decoded) goto fail;
-    work->n_cols = 1;
-    work->n_rows = 1;
+
+    /* Reuse cached I-slice scratch from a previous equal-size tile. */
+    if (ctx->hevc_picture_cache) {
+        heic_hevc_picture *cached =
+            (heic_hevc_picture *)ctx->hevc_picture_cache;
+        heic_slice_work *cw = &cached->work;
+        ctx->hevc_picture_cache = NULL;
+        if (cw->ctx == ctx && slice_ctx_geometry_match(&cw->sc, sps)
+            && cw->ctb_decoded) {
+            cw->sh = *sh;
+            cw->sh.entry_point_offsets = NULL;
+            cw->sh.num_entry_point_offsets = 0;
+            cw->filter_sh = cw->sh;
+            if (slice_ctx_reset(&cw->sc, ctx, sps, pps, &cw->sh,
+                                l0, n_l0, l1, n_l1, out) == 0) {
+                memset(cw->ctb_decoded, 0, total);
+                cw->decoded_ctbs = 0;
+                cw->have_segment = 0;
+                cw->finished = 0;
+                cw->wpp_have_saved = 0;
+                cw->n_cols = 1;
+                cw->n_rows = 1;
+                heic_free_buf(ctx, cw->tile_scan);
+                cw->tile_scan = NULL;
+                cw->tile_scan_n = 0;
+                picture = cached;
+                work = cw;
+                reused = 1;
+            }
+        }
+        if (!reused) {
+            /* Geometry mismatch or reset failed — hard-free and fall through. */
+            heic_free_buf(ctx, cw->tile_scan);
+            heic_free_buf(ctx, cw->ctb_decoded);
+            slice_ctx_free(&cw->sc);
+            heic_free_buf(ctx, cached);
+        }
+    }
+
+    if (!reused) {
+        picture = (heic_hevc_picture *)heic_zalloc(ctx, sizeof(*picture));
+        if (!picture) return NULL;
+        work = &picture->work;
+        work->ctx = ctx;
+        work->sh = *sh;
+        work->sh.entry_point_offsets = NULL;
+        work->sh.num_entry_point_offsets = 0;
+        work->filter_sh = work->sh;
+        if (slice_ctx_init(&work->sc, ctx, sps, pps, &work->sh,
+                           l0, n_l0, l1, n_l1, out) != 0)
+            goto fail;
+        work->ctb_decoded = (uint8_t *)heic_zalloc(ctx, total);
+        if (!work->ctb_decoded) goto fail;
+        work->n_cols = 1;
+        work->n_rows = 1;
+    }
+
     if (pps->tiles_enabled_flag) {
         if (compute_tile_bd(pps, sps->pic_width_in_ctbs,
                             sps->pic_height_in_ctbs,
@@ -3393,6 +3547,45 @@ void heic_hevc_picture_destroy(heic_hevc_picture *picture)
     work = &picture->work;
     ctx = work->ctx;
     if (!ctx) return;
+
+    /* Cache finished I-slice scratch for the next equal-size tile. Inter
+     * finish may have stolen motion maps — only recycle when maps remain. */
+    if (!ctx->hevc_picture_cache
+        && work->finished
+        && work->filter_sh.slice_type == HEIC_SLICE_I
+        && work->sc.ct_depth_map
+        && work->sc.intra_mode_map
+        && work->sc.mv_info == NULL
+        && work->ctb_decoded) {
+        heic_free_buf(ctx, work->tile_scan);
+        work->tile_scan = NULL;
+        work->tile_scan_n = 0;
+        work->sc.frame = NULL;
+        work->sc.sps = NULL;
+        work->sc.pps = NULL;
+        work->sc.sh = NULL;
+        work->have_segment = 0;
+        work->finished = 0;
+        work->decoded_ctbs = 0;
+        ctx->hevc_picture_cache = picture;
+        return;
+    }
+
+    heic_free_buf(ctx, work->tile_scan);
+    heic_free_buf(ctx, work->ctb_decoded);
+    slice_ctx_free(&work->sc);
+    heic_free_buf(ctx, picture);
+}
+
+void heic_hevc_picture_cache_free(heic_ctx *ctx)
+{
+    heic_hevc_picture *picture;
+    heic_slice_work *work;
+    if (!ctx || !ctx->hevc_picture_cache) return;
+    picture = (heic_hevc_picture *)ctx->hevc_picture_cache;
+    ctx->hevc_picture_cache = NULL;
+    work = &picture->work;
+    work->ctx = ctx;
     heic_free_buf(ctx, work->tile_scan);
     heic_free_buf(ctx, work->ctb_decoded);
     slice_ctx_free(&work->sc);

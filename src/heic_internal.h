@@ -170,9 +170,12 @@ struct heic_ctx {
     void         *dav1d_ctx;
     /* Cached HEVC param sets from hvcC (opaque; owned by hevc_decode.c). */
     void         *hevc_param_cache;
+    /* Cached I-slice picture scratch (maps) for equal-size grid tiles. */
+    void         *hevc_picture_cache;
 };
 
 void heic_hevc_param_cache_free(heic_ctx *ctx);
+void heic_hevc_picture_cache_free(heic_ctx *ctx);
 
 /* Tracked allocators: every library-owned buffer goes through these so
  * limits.max_memory_bytes is enforced. Returned pointers must be freed with

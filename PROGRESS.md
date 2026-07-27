@@ -217,6 +217,10 @@
       - Cache SPS/PPS parsed from hvcC on `heic_ctx` so grid tiles skip reparse;
         sample-stream param NALs invalidate the cache.
       - HDR often ~+2–4% vs libheif; `example` still faster; oracle OK.
+- [x] I-slice picture scratch reuse (single-thread, no tiles parallel):
+      - Cache finished I-slice `heic_hevc_picture` maps on `heic_ctx`; next
+        equal-size tile resets maps in place instead of free/realloc.
+      - HDR ~+2–4% vs libheif; MVCLIP/AMVP MD5s unchanged.
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported
