@@ -129,9 +129,11 @@ function iloc(offset: number, length: number): Uint8Array {
   ));
 }
 
-export function generateDependentSliceHeif(
+export function generateHevcHeif(
   sourcePath: string,
   outputPath: string,
+  width: number,
+  height: number,
 ): void {
   const nals = splitAnnexB(new Uint8Array(readFileSync(sourcePath)));
   const params = [32, 33, 34].map((type) => {
@@ -155,7 +157,7 @@ export function generateDependentSliceHeif(
     if (nal.type <= 31) sampleParts.push(be32(nal.data.length), nal.data);
   }
   const sample = concat(...sampleParts);
-  const ispe = fullbox("ispe", 0, 0, concat(be32(1920), be32(1080)));
+  const ispe = fullbox("ispe", 0, 0, concat(be32(width), be32(height)));
   const ipco = box("ipco", concat(ispe, hvccBox(params)));
   const ipma = fullbox("ipma", 0, 0, concat(
     be32(1),

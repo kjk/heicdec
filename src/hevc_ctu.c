@@ -44,6 +44,7 @@ typedef struct {
     uint8_t *deblock_flags;
     uint8_t *cbf_map;
     uint8_t *pcm_map;
+    int has_filter_exclusions;
     int8_t  *deblock_qp;
     uint32_t deblock_stride;
     uint32_t deblock_n;
@@ -1812,6 +1813,23 @@ static int decode_pcm_plane(heic_slice_ctx *sc, uint16_t *plane, int stride,
     return 0;
 }
 
+static void mark_filter_exclusion(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
+                                  uint32_t size)
+{
+    uint32_t bx = x0 / 4;
+    uint32_t by = y0 / 4;
+    uint32_t n4 = size / 4;
+    uint32_t dx, dy;
+    sc->has_filter_exclusions = 1;
+    for (dy = 0; dy < n4; dy++) {
+        for (dx = 0; dx < n4; dx++) {
+            size_t idx =
+                (size_t)(by + dy) * sc->deblock_stride + bx + dx;
+            if (idx < sc->deblock_n) sc->pcm_map[idx] = 1;
+        }
+    }
+}
+
 static int decode_pcm_cu(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                          uint8_t log2_cb)
 {
@@ -1821,7 +1839,6 @@ static int decode_pcm_cu(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     int pcm_c_depth = (int)sc->sps->pcm_sample_bit_depth_chroma_minus1 + 1;
     int sub_x = 1, sub_y = 1;
     size_t bit_pos;
-    uint32_t bx, by, dx, dy, n4;
 
     if (pcm_y_depth < 1 || pcm_y_depth > 16 ||
         pcm_c_depth < 1 || pcm_c_depth > 16 ||
@@ -1860,16 +1877,8 @@ static int decode_pcm_cu(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     heic_store_deblock_qp(sc->deblock_qp, sc->deblock_stride,
                           sc->deblock_n, x0, y0, cb_size,
                           (int8_t)sc->current_qpy);
-    bx = x0 / 4;
-    by = y0 / 4;
-    n4 = cb_size / 4;
-    for (dy = 0; dy < n4; dy++) {
-        for (dx = 0; dx < n4; dx++) {
-            size_t idx =
-                (size_t)(by + dy) * sc->deblock_stride + bx + dx;
-            if (idx < sc->deblock_n) sc->pcm_map[idx] = 1;
-        }
-    }
+    if (sc->sps->pcm_loop_filter_disabled_flag)
+        mark_filter_exclusion(sc, x0, y0, cb_size);
     return 0;
 
 truncated:
@@ -1894,6 +1903,15 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     store_qpy(sc, x0, y0, log2_cb, sc->current_qpy);
     set_ct_depth(sc, x0, y0, log2_cb, ct_depth);
 
+    sc->cu_transquant_bypass = 0;
+    if (sc->pps->transquant_bypass_enabled_flag)
+        sc->cu_transquant_bypass =
+            heic_cabac_decode_bin(&sc->cabac,
+                                  &sc->models[HEIC_CTX_CU_TRANSQUANT_BYPASS_FLAG])
+            != 0;
+    if (sc->cu_transquant_bypass)
+        mark_filter_exclusion(sc, x0, y0, cb_size);
+
     if (!is_intra_slice) cu_skip = decode_cu_skip(sc, x0, y0);
     if (cu_skip) {
         heic_pu pu = {x0, y0, cb_size, cb_size};
@@ -1912,13 +1930,6 @@ static int decode_coding_unit(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                               (int8_t)sc->current_qpy);
         return 0;
     }
-
-    sc->cu_transquant_bypass = 0;
-    if (sc->pps->transquant_bypass_enabled_flag)
-        sc->cu_transquant_bypass =
-            heic_cabac_decode_bin(&sc->cabac,
-                                  &sc->models[HEIC_CTX_CU_TRANSQUANT_BYPASS_FLAG])
-            != 0;
 
     if (!is_intra_slice) {
         sc->cu_pred_mode =
@@ -2810,13 +2821,13 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
             sc->intra_mode_stride, min_pu_size(sps),
             sh->slice_type == HEIC_SLICE_I ? NULL : sc->cbf_map,
             sh->slice_type == HEIC_SLICE_I ? NULL : out->ref_poc,
-            sps->pcm_loop_filter_disabled_flag ? sc->pcm_map : NULL);
+            sc->has_filter_exclusions ? sc->pcm_map : NULL);
     }
     if (sps->sample_adaptive_offset_enabled_flag && sc->sao_map) {
         heic_apply_sao(
             ctx, out, sc->sao_map, sps->pic_width_in_ctbs,
             sps->pic_height_in_ctbs, ctb_sz,
-            sps->pcm_loop_filter_disabled_flag ? sc->pcm_map : NULL,
+            sc->has_filter_exclusions ? sc->pcm_map : NULL,
             sc->deblock_stride);
     }
 

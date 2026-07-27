@@ -232,6 +232,10 @@
       the 1,700-segment official `DSLICE_B_HHI_5` stream; all 50 reordered I/B
       pictures match libde265 at mse=0.000142, maxdiff=3, with a generated HEIC
       wrapper also covered by the normal corpus.
+- [x] HEVC transquant bypass: decode the CU flag before `cu_skip_flag` and
+      exclude bypassed samples from deblock/SAO. All nine pictures in official
+      `LS_A_Orange_2` match libde265 byte-for-byte, with a generated HEIC
+      wrapper covered by the normal corpus.
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
 
 ## Investigation notes
