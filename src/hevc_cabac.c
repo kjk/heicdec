@@ -196,30 +196,7 @@ int heic_cabac_decode_bypass(heic_cabac *c)
 
 uint32_t heic_cabac_decode_bypass_bits(heic_cabac *c, int n)
 {
-    uint32_t result = 0;
-    if (c->error || n <= 0) return 0;
-    while (n > 0) {
-        uint32_t scaled_range, bits, max_bits;
-        int chunk = n > 8 ? 8 : n;
-        c->value <<= chunk;
-        c->bits_needed += chunk;
-        if (c->bits_needed >= 0) {
-            if (c->byte_pos < c->len) {
-                c->value |= (uint32_t)c->data[c->byte_pos++] << c->bits_needed;
-            } else {
-                c->overread_bytes++;
-            }
-            c->bits_needed -= 8;
-        }
-        scaled_range = c->range << 7;
-        bits = c->value / scaled_range;
-        max_bits = (1u << chunk) - 1u;
-        if (bits > max_bits) bits = max_bits;
-        c->value -= bits * scaled_range;
-        result = (result << chunk) | bits;
-        n -= chunk;
-    }
-    return result;
+    return heic_cabac_decode_bypass_bits_i(c, n);
 }
 
 int heic_cabac_decode_terminate(heic_cabac *c)

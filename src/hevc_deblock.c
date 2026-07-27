@@ -611,13 +611,15 @@ void heic_mark_tu_boundary(uint8_t *flags, uint32_t deblock_stride, uint32_t map
 void heic_store_deblock_qp(int8_t *qp_map, uint32_t deblock_stride, uint32_t map_n,
                            uint32_t x, uint32_t y, uint32_t size, int8_t qp)
 {
-    uint32_t bx = x / 4, by = y / 4, bs = size / 4, j, i;
-    if (!qp_map || deblock_stride == 0 || size < 4) return;
+    uint32_t bx = x / 4, by = y / 4, bs = size / 4, j;
+    if (!qp_map || deblock_stride == 0 || size < 4 || bs == 0) return;
+    /* Interior rows are contiguous in the 4x4 map — fill with memset. */
     for (j = 0; j < bs; j++) {
-        for (i = 0; i < bs; i++) {
-            size_t idx = (size_t)(by + j) * deblock_stride + bx + i;
-            if (idx < map_n) qp_map[idx] = qp;
-        }
+        size_t row = (size_t)(by + j) * deblock_stride + bx;
+        uint32_t n = bs;
+        if (row >= map_n) break;
+        if (row + n > map_n) n = (uint32_t)(map_n - row);
+        memset(qp_map + row, (int)qp, n);
     }
 }
 

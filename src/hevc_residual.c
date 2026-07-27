@@ -3,8 +3,9 @@
 #include "hevc_cabac_inline.h"
 
 /* Hot residual path: force-inlined CABAC (avoids call overhead per bin). */
-#define heic_cabac_decode_bin    heic_cabac_decode_bin_i
-#define heic_cabac_decode_bypass heic_cabac_decode_bypass_i
+#define heic_cabac_decode_bin         heic_cabac_decode_bin_i
+#define heic_cabac_decode_bypass      heic_cabac_decode_bypass_i
+#define heic_cabac_decode_bypass_bits heic_cabac_decode_bypass_bits_i
 
 /* 4x4 scan tables (H.265 Table 6-7 etc.) */
 static const uint8_t HEIC_SCAN_4X4_DIAG[16][2] = {

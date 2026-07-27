@@ -68,6 +68,9 @@ void heic_ctx_free(heic_ctx *ctx)
     heic_dav1d_ctx_close(ctx);
     heic_hevc_param_cache_free(ctx);
     heic_hevc_picture_cache_free(ctx);
+    heic_free_buf(ctx, ctx->sao_orig_y);
+    heic_free_buf(ctx, ctx->sao_orig_cb);
+    heic_free_buf(ctx, ctx->sao_orig_cr);
     {
         heic_free_cb f = ctx->free_cb;
         void *user = ctx->user;

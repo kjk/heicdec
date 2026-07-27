@@ -228,6 +228,19 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
     }
 }
 
+/* Grow-or-reuse plane buffer for edge SAO (shared across grid tiles). */
+static uint16_t *sao_plane_scratch(heic_ctx *ctx, uint16_t **slot, size_t *cap,
+                                   size_t need)
+{
+    if (!need) return NULL;
+    if (*cap < need || !*slot) {
+        heic_free_buf(ctx, *slot);
+        *slot = (uint16_t *)heic_alloc(ctx, need);
+        *cap = *slot ? need : 0;
+    }
+    return *slot;
+}
+
 void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                     uint32_t width_ctbs, uint32_t height_ctbs, uint32_t ctb_size,
                     const heic_ctb_filter_info *filter_map,
@@ -236,6 +249,7 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
 {
     uint32_t ctb_x, ctb_y;
     int need_y = 0, need_cb = 0, need_cr = 0;
+    int any_sao = 0;
     uint16_t *orig_y = NULL, *orig_cb = NULL, *orig_cr = NULL;
     size_t y_n, c_n;
     int w, h, cw, ch, sub_x, sub_y;
@@ -250,6 +264,9 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
     {
         uint32_t i;
         for (i = 0; i < n_ctb; i++) {
+            if (map[i].sao_type_idx[0]) any_sao = 1;
+            if (map[i].sao_type_idx[1]) any_sao = 1;
+            if (map[i].sao_type_idx[2]) any_sao = 1;
             if (map[i].sao_type_idx[0] == 2 ||
                 (pcm_map && map[i].sao_type_idx[0] != 0))
                 need_y = 1;
@@ -261,10 +278,11 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
                 need_cr = 1;
         }
     }
+    if (!any_sao) return;
 
     y_n = (size_t)frame->y_stride * (size_t)h * sizeof(uint16_t);
     if (need_y && frame->y) {
-        orig_y = (uint16_t *)heic_zalloc(ctx, y_n);
+        orig_y = sao_plane_scratch(ctx, &ctx->sao_orig_y, &ctx->sao_orig_y_n, y_n);
         if (orig_y) memcpy(orig_y, frame->y, y_n);
         else need_y = 0;
     }
@@ -274,12 +292,12 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
               ? (size_t)frame->c_stride * (size_t)ch * sizeof(uint16_t)
               : 0;
     if (need_cb && frame->cb && c_n) {
-        orig_cb = (uint16_t *)heic_zalloc(ctx, c_n);
+        orig_cb = sao_plane_scratch(ctx, &ctx->sao_orig_cb, &ctx->sao_orig_cb_n, c_n);
         if (orig_cb) memcpy(orig_cb, frame->cb, c_n);
         else need_cb = 0;
     }
     if (need_cr && frame->cr && c_n) {
-        orig_cr = (uint16_t *)heic_zalloc(ctx, c_n);
+        orig_cr = sao_plane_scratch(ctx, &ctx->sao_orig_cr, &ctx->sao_orig_cr_n, c_n);
         if (orig_cr) memcpy(orig_cr, frame->cr, c_n);
         else need_cr = 0;
     }
@@ -388,7 +406,8 @@ void heic_apply_sao(heic_ctx *ctx, heic_frame *frame, const heic_sao_info *map,
         }
     }
 
-    heic_free_buf(ctx, orig_y);
-    heic_free_buf(ctx, orig_cb);
-    heic_free_buf(ctx, orig_cr);
+    /* Plane copies stay on ctx for the next tile; no free here. */
+    (void)orig_y;
+    (void)orig_cb;
+    (void)orig_cr;
 }

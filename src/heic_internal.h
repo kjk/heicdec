@@ -172,6 +172,13 @@ struct heic_ctx {
     void         *hevc_param_cache;
     /* Cached I-slice picture scratch (maps) for equal-size grid tiles. */
     void         *hevc_picture_cache;
+    /* Reused SAO edge-filter plane copies (hevc_sao.c). */
+    uint16_t     *sao_orig_y;
+    uint16_t     *sao_orig_cb;
+    uint16_t     *sao_orig_cr;
+    size_t        sao_orig_y_n;
+    size_t        sao_orig_cb_n;
+    size_t        sao_orig_cr_n;
 };
 
 void heic_hevc_param_cache_free(heic_ctx *ctx);

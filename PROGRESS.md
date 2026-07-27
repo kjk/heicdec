@@ -227,6 +227,12 @@
       - I-slice deblock skips `compute_bs` (bS always 2 when pred_mode=NULL).
       - Residual last-sig scan uses O(1) inverse tables for 4x4 / 2x2 scans.
       - HDR often ~+0–3% vs libheif (noise); `example` ~−12%; oracle OK.
+- [x] SAO plane reuse + bypass_bits inline + deblock QP fill:
+      - Edge-SAO orig plane buffers cached on `heic_ctx` (no free/alloc per tile);
+        skip SAO entirely when all CTB types are off.
+      - Inline `decode_bypass_bits` into residual/CTU; `heic_store_deblock_qp`
+        uses row `memset`.
+      - HDR still ~+0–3% vs libheif; oracle OK.
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported

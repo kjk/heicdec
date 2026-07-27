@@ -2,8 +2,9 @@
 #include "heic_internal.h"
 #include "hevc_cabac_inline.h"
 
-#define heic_cabac_decode_bin    heic_cabac_decode_bin_i
-#define heic_cabac_decode_bypass heic_cabac_decode_bypass_i
+#define heic_cabac_decode_bin         heic_cabac_decode_bin_i
+#define heic_cabac_decode_bypass      heic_cabac_decode_bypass_i
+#define heic_cabac_decode_bypass_bits heic_cabac_decode_bypass_bits_i
 
 typedef struct {
     heic_ctx *hctx;
