@@ -17,6 +17,7 @@ import { join } from "path";
 import { inflateRawSync } from "zlib";
 import { generateAvifFixtures } from "./gen_avif_fixtures";
 import {
+  generateConstrainedIntraHevc,
   generateHevcHeif,
   generateHighPrecisionWeightingHevc,
   generateSaoOffsetScaleHevc,
@@ -73,7 +74,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v21-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale";
+  "v22-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_REXT_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -97,6 +98,7 @@ const HEVC_REXT_EXTPREC_SEQUENCE1 =
 const HEVC_HIGH_PRECISION_WEIGHTING =
   "high-precision-weighting-main10.bit";
 const HEVC_SAO_OFFSET_SCALE = "sao-offset-scale-main12.bit";
+const HEVC_CONSTRAINED_INTRA = "constrained-intra-main.bit";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
   "RPLM_A_qualcomm_4.bit",
@@ -248,6 +250,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE1)) &&
     existsSync(join(hevcSequenceDir, HEVC_HIGH_PRECISION_WEIGHTING)) &&
     existsSync(join(hevcSequenceDir, HEVC_SAO_OFFSET_SCALE)) &&
+    existsSync(join(hevcSequenceDir, HEVC_CONSTRAINED_INTRA)) &&
     HEVC_REXT_GENERAL_SEQUENCES.every((index) =>
       existsSync(join(
         hevcSequenceDir,
@@ -365,6 +368,9 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   );
   generateSaoOffsetScaleHevc(
     join(hevcSequenceDir, HEVC_SAO_OFFSET_SCALE),
+  );
+  generateConstrainedIntraHevc(
+    join(hevcSequenceDir, HEVC_CONSTRAINED_INTRA),
   );
   console.log("deps/testimages: generating HEVC fixtures…");
   generateHevcHeif(

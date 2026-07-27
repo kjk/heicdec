@@ -1045,12 +1045,21 @@ int  heic_simd_sao_edge_v_row(const uint16_t *src, uint16_t *dst, int stride, in
 
 /* ---- intra prediction (hevc_intra.c) ---- */
 
+enum {
+    HEIC_PRED_UNAVAILABLE = 0,
+    HEIC_PRED_INTRA = 1,
+    HEIC_PRED_INTER = 2,
+    HEIC_PRED_SKIP = 3
+};
+
 void heic_fill_mpm(uint8_t cand_a, uint8_t cand_b, uint8_t mpm[3]);
 /* mode: 0=Planar, 1=DC, 2-34=angular. c_idx: 0=Y,1=Cb,2=Cr. */
 int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint8_t log2_size, uint8_t mode, uint8_t c_idx,
                        int strong_intra_smoothing, uint32_t slice_address,
-                       uint32_t pic_width_in_ctbs, uint32_t ctb_size);
+                       uint32_t pic_width_in_ctbs, uint32_t ctb_size,
+                       const uint8_t *pred_mode_map, uint32_t pred_mode_stride,
+                       size_t pred_mode_n, uint32_t pred_mode_min_pu);
 
 /* ---- SAO filter (hevc_sao.c) ---- */
 

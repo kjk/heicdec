@@ -222,6 +222,10 @@
       luma/chroma shifts instead of deriving a shift from bit depth. A compact
       12-bit HM intra sequence with shifts 1/2 matches the HM reconstruction
       MD5 byte-for-byte.
+- [x] HEVC constrained intra prediction: exclude inter- and skip-coded
+      neighboring min-PU regions from luma/chroma intra reference samples. A
+      compact two-frame HM P sequence with mixed prediction modes matches the
+      HM reconstruction MD5 byte-for-byte.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

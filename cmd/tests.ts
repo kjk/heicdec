@@ -273,6 +273,12 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "2a92f69d0d3571fdde7bdeaf9361846f",
   },
   {
+    name: "constrained-intra-main.bit",
+    frames: 2,
+    mse: 0,
+    md5: "cf055ca1e548a3893b2c724fc3d558d3",
+  },
+  {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
     frames: 8,
     mse: 0.05,

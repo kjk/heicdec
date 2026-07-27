@@ -61,13 +61,6 @@ typedef struct {
 } heic_slice_ctx;
 
 enum {
-    HEIC_PRED_UNAVAILABLE = 0,
-    HEIC_PRED_INTRA = 1,
-    HEIC_PRED_INTER = 2,
-    HEIC_PRED_SKIP = 3
-};
-
-enum {
     HEIC_PART_2NX2N = 0,
     HEIC_PART_2NXN = 1,
     HEIC_PART_NX2N = 2,
@@ -90,6 +83,19 @@ static uint32_t min_pu_size(const heic_sps *s)
 static int chroma_array_type(const heic_sps *s)
 {
     return s->separate_colour_plane_flag ? 0 : (int)s->chroma_format_idc;
+}
+
+static int predict_intra_block(heic_slice_ctx *sc, uint32_t x, uint32_t y,
+                               uint8_t log2_size, uint8_t mode, uint8_t c_idx,
+                               int strong_intra_smoothing)
+{
+    const uint8_t *pred_mode_map =
+        sc->pps->constrained_intra_pred_flag ? sc->pred_mode_map : NULL;
+    return heic_predict_intra(
+        sc->frame, x, y, log2_size, mode, c_idx, strong_intra_smoothing,
+        sc->sh->slice_address, sc->sps->pic_width_in_ctbs,
+        ctb_size_px(sc->sps), pred_mode_map, sc->intra_mode_stride,
+        sc->intra_mode_n, min_pu_size(sc->sps));
 }
 
 /* H.265 8.6.1: Table 8-10 only for ChromaArrayType==1 (4:2:0).
@@ -1873,10 +1879,8 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     sis = sc->sps->intra_smoothing_disabled_flag
               ? -1 : sc->sps->strong_intra_smoothing_enabled_flag;
     if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-        heic_predict_intra(sc->frame, x0, y0, log2_size, luma_mode, 0, sis,
-                           sc->sh->slice_address,
-                           sc->sps->pic_width_in_ctbs,
-                           ctb_size_px(sc->sps)) != 0)
+        predict_intra_block(
+            sc, x0, y0, log2_size, luma_mode, 0, sis) != 0)
         return -1;
     scan = sc->cu_pred_mode == HEIC_PRED_INTRA
                ? heic_get_scan_order(log2_size, luma_mode, 0, 0)
@@ -1924,10 +1928,8 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                         ? decode_cross_component_scale(sc, 1) : 0;
         if (sc->cabac.error) return -1;
         if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-            heic_predict_intra(sc->frame, cx, cy, clog2, chroma_mode, 1, sis,
-                               sc->sh->slice_address,
-                               sc->sps->pic_width_in_ctbs,
-                               ctb_size_px(sc->sps)) != 0)
+            predict_intra_block(
+                sc, cx, cy, clog2, chroma_mode, 1, sis) != 0)
             return -1;
         if (cbf_cb) {
             if (decode_and_apply_residual(sc, cx, cy, clog2, 1, cscan,
@@ -1940,10 +1942,8 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                         ? decode_cross_component_scale(sc, 2) : 0;
         if (sc->cabac.error) return -1;
         if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-            heic_predict_intra(sc->frame, cx, cy, clog2, chroma_mode, 2, sis,
-                               sc->sh->slice_address,
-                               sc->sps->pic_width_in_ctbs,
-                               ctb_size_px(sc->sps)) != 0)
+            predict_intra_block(
+                sc, cx, cy, clog2, chroma_mode, 2, sis) != 0)
             return -1;
         if (cbf_cr) {
             if (decode_and_apply_residual(sc, cx, cy, clog2, 2, cscan,
@@ -2038,20 +2038,16 @@ static int decode_tt_inner(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                            ? heic_get_scan_order(2, cm, 1, 0)
                            : HEIC_SCAN_DIAG;
             if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-                heic_predict_intra(sc->frame, x0 / 2, y0 / 2, 2, cm, 1,
-                                   sis, sc->sh->slice_address,
-                                   sc->sps->pic_width_in_ctbs,
-                                   ctb_size_px(sc->sps)) != 0)
+                predict_intra_block(
+                    sc, x0 / 2, y0 / 2, 2, cm, 1, sis) != 0)
                 return -1;
             if (cbf_cb
                 && decode_and_apply_residual(sc, x0 / 2, y0 / 2, 2, 1, scan,
                                              cm, 0) != 0)
                 return -1;
             if (sc->cu_pred_mode == HEIC_PRED_INTRA &&
-                heic_predict_intra(sc->frame, x0 / 2, y0 / 2, 2, cm, 2,
-                                   sis, sc->sh->slice_address,
-                                   sc->sps->pic_width_in_ctbs,
-                                   ctb_size_px(sc->sps)) != 0)
+                predict_intra_block(
+                    sc, x0 / 2, y0 / 2, 2, cm, 2, sis) != 0)
                 return -1;
             if (cbf_cr
                 && decode_and_apply_residual(sc, x0 / 2, y0 / 2, 2, 2, scan,

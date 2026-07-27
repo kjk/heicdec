@@ -35,6 +35,40 @@ const SAO_OFFSET_SCALE_HEVC =
   "+xBxuCg8FZja9iNTxKXq7UAAjkkY1oYoFtXNodm8XGwPI1MRC0FcWw/n9MVGKRKJ" +
   "dZT+ml90yZnhCBZ0TvuGp/n9hojyTJlu5fb55xKw";
 
+const CONSTRAINED_INTRA_HEVC =
+  "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";
+
 function writeEmbeddedHevc(outputPath: string, encoded: string): void {
   const data = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
   mkdirSync(dirname(outputPath), { recursive: true });
@@ -50,6 +84,11 @@ export function generateHighPrecisionWeightingHevc(outputPath: string): void {
 /** Install a 128x96 12-bit HM stream with luma/chroma SAO shifts 1/2. */
 export function generateSaoOffsetScaleHevc(outputPath: string): void {
   writeEmbeddedHevc(outputPath, SAO_OFFSET_SCALE_HEVC);
+}
+
+/** Install a 64x64 two-frame HM stream with constrained intra prediction. */
+export function generateConstrainedIntraHevc(outputPath: string): void {
+  writeEmbeddedHevc(outputPath, CONSTRAINED_INTRA_HEVC);
 }
 
 function be16(n: number): Uint8Array {

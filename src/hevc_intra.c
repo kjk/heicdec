@@ -113,13 +113,35 @@ static int sample_in_slice(const heic_frame *frame, uint8_t c_idx,
            >= slice_address;
 }
 
+static int sample_is_intra(const heic_frame *frame, uint8_t c_idx,
+                           uint32_t x, uint32_t y,
+                           const uint8_t *pred_mode_map,
+                           uint32_t pred_mode_stride, size_t pred_mode_n,
+                           uint32_t pred_mode_min_pu)
+{
+    uint32_t sub_x = 1, sub_y = 1;
+    size_t idx;
+    if (!pred_mode_map) return 1;
+    if (!pred_mode_stride || !pred_mode_min_pu) return 0;
+    if (c_idx != 0) {
+        if (frame->chroma_format == 1 || frame->chroma_format == 2) sub_x = 2;
+        if (frame->chroma_format == 1) sub_y = 2;
+    }
+    idx = (size_t)((y * sub_y) / pred_mode_min_pu) * pred_mode_stride
+          + (x * sub_x) / pred_mode_min_pu;
+    return idx < pred_mode_n && pred_mode_map[idx] == HEIC_PRED_INTRA;
+}
+
 static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size,
                         uint8_t c_idx, int32_t *border, int center,
                         uint32_t slice_address, uint32_t pic_width_in_ctbs,
-                        uint32_t ctb_size)
+                        uint32_t ctb_size, const uint8_t *pred_mode_map,
+                        uint32_t pred_mode_stride, size_t pred_mode_n,
+                        uint32_t pred_mode_min_pu)
 {
     uint16_t *plane;
-    int stride, plane_n, frame_w, frame_h, avail_left, avail_top, avail_tl;
+    int stride, plane_n, frame_w, frame_h;
+    int has_left, has_top, avail_left, avail_top, avail_tl;
     int avail[HEIC_BORDER_N];
     uint32_t avail_count = 0, total = 4 * size + 1;
     int32_t def;
@@ -146,13 +168,28 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
         return;
     }
     def = 1 << ((c_idx == 0 ? frame->bit_depth : frame->chroma_bit_depth) - 1);
-    avail_left = x > 0
+    has_left = x > 0
         && sample_in_slice(frame, c_idx, x - 1, y, slice_address,
                            pic_width_in_ctbs, ctb_size);
-    avail_top = y > 0
+    has_top = y > 0
         && sample_in_slice(frame, c_idx, x, y - 1, slice_address,
                            pic_width_in_ctbs, ctb_size);
-    avail_tl = avail_left && avail_top;
+    avail_left = has_left
+        && sample_is_intra(frame, c_idx, x - 1, y, pred_mode_map,
+                           pred_mode_stride, pred_mode_n, pred_mode_min_pu);
+    avail_top = has_top
+        && sample_is_intra(frame, c_idx, x, y - 1, pred_mode_map,
+                           pred_mode_stride, pred_mode_n, pred_mode_min_pu);
+    if (pred_mode_map) {
+        avail_tl = x > 0 && y > 0
+            && sample_in_slice(frame, c_idx, x - 1, y - 1, slice_address,
+                               pic_width_in_ctbs, ctb_size)
+            && sample_is_intra(frame, c_idx, x - 1, y - 1, pred_mode_map,
+                               pred_mode_stride, pred_mode_n,
+                               pred_mode_min_pu);
+    } else {
+        avail_tl = has_left && has_top;
+    }
 
     /* Only clear the slots we may write (4*size+1 around center). */
     {
@@ -190,61 +227,94 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
     if (!corner_ok) border[center] = def;
     avail[center] = corner_ok;
 
-    if (avail_top) {
+    if (has_top) {
         uint32_t top_count = 2 * size;
         uint32_t n_avail = size; /* first N top samples always reconstructed */
         const uint16_t *top_row;
         if (top_count > (uint32_t)frame_w - x) top_count = (uint32_t)frame_w - x;
         if (n_avail > top_count) n_avail = top_count;
         top_row = plane + (size_t)(y - 1) * (size_t)stride + (size_t)x;
-        if (!heic_simd_u16_to_i32_avail(top_row, &border[center + 1],
-                                        &avail[center + 1], (int)n_avail)) {
-            for (i = 0; i < n_avail; i++) {
-                border[center + 1 + (int)i] = top_row[i];
-                avail[center + 1 + (int)i] = 1;
-            }
-        }
-        avail_count += n_avail;
-        /* Extension N..2N may land on not-yet-decoded CUs (UNINIT). */
-        if (top_count > n_avail) {
-            if (!heic_simd_border_top_ext(top_row + n_avail, &border[center + 1 + (int)n_avail],
-                                          &avail[center + 1 + (int)n_avail],
-                                          (int)(top_count - n_avail))) {
-                for (i = n_avail; i < top_count; i++) {
-                    uint16_t raw = top_row[i];
-                    if (raw != HEIC_UNINIT_SAMPLE) {
-                        int idx = center + 1 + (int)i;
-                        border[idx] = raw;
-                        avail[idx] = 1;
-                        avail_count++;
-                    }
+        if (pred_mode_map) {
+            for (i = 0; i < top_count; i++) {
+                uint16_t raw = top_row[i];
+                if (raw != HEIC_UNINIT_SAMPLE
+                    && sample_is_intra(
+                        frame, c_idx, x + i, y - 1, pred_mode_map,
+                        pred_mode_stride, pred_mode_n, pred_mode_min_pu)) {
+                    int idx = center + 1 + (int)i;
+                    border[idx] = raw;
+                    avail[idx] = 1;
+                    avail_count++;
                 }
-            } else {
-                /* Count valids for avail_count bookkeeping */
-                for (i = n_avail; i < top_count; i++)
-                    if (avail[center + 1 + (int)i]) avail_count++;
+            }
+        } else {
+            if (!heic_simd_u16_to_i32_avail(top_row, &border[center + 1],
+                                            &avail[center + 1], (int)n_avail)) {
+                for (i = 0; i < n_avail; i++) {
+                    border[center + 1 + (int)i] = top_row[i];
+                    avail[center + 1 + (int)i] = 1;
+                }
+            }
+            avail_count += n_avail;
+            /* Extension N..2N may land on not-yet-decoded CUs (UNINIT). */
+            if (top_count > n_avail) {
+                if (!heic_simd_border_top_ext(
+                        top_row + n_avail,
+                        &border[center + 1 + (int)n_avail],
+                        &avail[center + 1 + (int)n_avail],
+                        (int)(top_count - n_avail))) {
+                    for (i = n_avail; i < top_count; i++) {
+                        uint16_t raw = top_row[i];
+                        if (raw != HEIC_UNINIT_SAMPLE) {
+                            int idx = center + 1 + (int)i;
+                            border[idx] = raw;
+                            avail[idx] = 1;
+                            avail_count++;
+                        }
+                    }
+                } else {
+                    /* Count valids for avail_count bookkeeping */
+                    for (i = n_avail; i < top_count; i++)
+                        if (avail[center + 1 + (int)i]) avail_count++;
+                }
             }
         }
     }
-    if (avail_left) {
+    if (has_left) {
         uint32_t left_count = 2 * size;
         uint32_t n_avail = size; /* first N left samples always reconstructed */
         const uint16_t *left_p;
         if (left_count > (uint32_t)frame_h - y) left_count = (uint32_t)frame_h - y;
         if (n_avail > left_count) n_avail = left_count;
         left_p = plane + (size_t)y * (size_t)stride + (size_t)(x - 1);
-        for (i = 0; i < n_avail; i++) {
-            border[center - 1 - (int)i] = left_p[(size_t)i * (size_t)stride];
-            avail[center - 1 - (int)i] = 1;
-            avail_count++;
-        }
-        for (i = n_avail; i < left_count; i++) {
-            uint16_t raw = left_p[(size_t)i * (size_t)stride];
-            if (raw != HEIC_UNINIT_SAMPLE) {
-                int idx = center - 1 - (int)i;
-                border[idx] = raw;
-                avail[idx] = 1;
+        if (pred_mode_map) {
+            for (i = 0; i < left_count; i++) {
+                uint16_t raw = left_p[(size_t)i * (size_t)stride];
+                if (raw != HEIC_UNINIT_SAMPLE
+                    && sample_is_intra(
+                        frame, c_idx, x - 1, y + i, pred_mode_map,
+                        pred_mode_stride, pred_mode_n, pred_mode_min_pu)) {
+                    int idx = center - 1 - (int)i;
+                    border[idx] = raw;
+                    avail[idx] = 1;
+                    avail_count++;
+                }
+            }
+        } else {
+            for (i = 0; i < n_avail; i++) {
+                border[center - 1 - (int)i] =
+                    left_p[(size_t)i * (size_t)stride];
+                avail[center - 1 - (int)i] = 1;
                 avail_count++;
+            }
+            for (i = n_avail; i < left_count; i++) {
+                uint16_t raw = left_p[(size_t)i * (size_t)stride];
+                if (raw != HEIC_UNINIT_SAMPLE) {
+                    int idx = center - 1 - (int)i;
+                    border[idx] = raw;
+                    avail[idx] = 1;
+                    avail_count++;
+                }
             }
         }
     }
@@ -487,7 +557,9 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
 int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint8_t log2_size, uint8_t mode, uint8_t c_idx,
                        int strong_intra_smoothing, uint32_t slice_address,
-                       uint32_t pic_width_in_ctbs, uint32_t ctb_size)
+                       uint32_t pic_width_in_ctbs, uint32_t ctb_size,
+                       const uint8_t *pred_mode_map, uint32_t pred_mode_stride,
+                       size_t pred_mode_n, uint32_t pred_mode_min_pu)
 {
     uint32_t size;
     int32_t border[HEIC_BORDER_N];
@@ -499,7 +571,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
         return -1;
     size = 1u << log2_size;
     fill_border(frame, x, y, size, c_idx, border, center, slice_address,
-                pic_width_in_ctbs, ctb_size);
+                pic_width_in_ctbs, ctb_size, pred_mode_map, pred_mode_stride,
+                pred_mode_n, pred_mode_min_pu);
 
     if (strong_intra_smoothing >= 0
         && (c_idx == 0 || frame->chroma_format == 3))
