@@ -199,8 +199,13 @@
       - Limited-range 4:4:4 / 4:2:0 SIMD uses clamp + fixed-point multiplies
         (same scales as LUTs) instead of per-pixel LUT gathers.
       - 4:2:0 dual-row color: even/odd luma pairs share one chroma multiply pass.
-      - HDR still ~+6–10% vs libheif (noise); `nokia_444` ≈/≤ libheif;
-        `example.heic` remains faster. Pixel oracle unchanged (HDR mse=0).
+- [x] I-slice setup trim (grid stills):
+      - Skip `mv_info` / `mc_internal` on I-only pictures; lazy-allocate if a
+        later P/B segment appears. Skip `pred_mode_map` unless constrained-intra
+        or inter. Use single-fill `heic_alloc`+memset for ct_depth / intra modes /
+        QP maps (no zero-then-overwrite).
+      - HDR ~+5–8% vs libheif (was ~+10%); `nokia_444` often faster than libheif;
+        `example.heic` still ~−9%. Inter MD5s (MVCLIP/AMVP/CIP) unchanged.
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported

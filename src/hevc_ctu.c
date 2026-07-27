@@ -193,7 +193,7 @@ static uint8_t get_pred_mode(const heic_slice_ctx *sc, int32_t x, int32_t y)
 {
     uint32_t mpu;
     size_t idx;
-    if (!neighbor_avail(sc, x, y))
+    if (!sc->pred_mode_map || !neighbor_avail(sc, x, y))
         return HEIC_PRED_UNAVAILABLE;
     mpu = min_pu_size(sc->sps);
     idx = (size_t)((uint32_t)y / mpu) * sc->intra_mode_stride +
@@ -209,6 +209,7 @@ static void store_pred_mode(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     uint32_t sx = x0 / mpu, sy = y0 / mpu;
     uint32_t nx = (w + mpu - 1) / mpu, ny = (h + mpu - 1) / mpu;
     uint32_t dx, dy;
+    if (!sc->pred_mode_map) return;
     for (dy = 0; dy < ny; dy++)
         for (dx = 0; dx < nx; dx++) {
             size_t idx = (size_t)(sy + dy) * sc->intra_mode_stride + sx + dx;
@@ -223,6 +224,7 @@ static heic_pb_motion get_motion(const heic_slice_ctx *sc, int32_t x, int32_t y)
     size_t idx;
     memset(&none, 0, sizeof(none));
     none.ref_idx[0] = none.ref_idx[1] = -1;
+    if (!sc->mv_info || !sc->pred_mode_map) return none;
     if (get_pred_mode(sc, x, y) != HEIC_PRED_INTER &&
         get_pred_mode(sc, x, y) != HEIC_PRED_SKIP)
         return none;
@@ -239,6 +241,7 @@ static void store_motion(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     uint32_t sx = x0 / mpu, sy = y0 / mpu;
     uint32_t nx = (w + mpu - 1) / mpu, ny = (h + mpu - 1) / mpu;
     uint32_t dx, dy;
+    if (!sc->mv_info) return;
     for (dy = 0; dy < ny; dy++)
         for (dx = 0; dx < nx; dx++) {
             size_t idx = (size_t)(sy + dy) * sc->intra_mode_stride + sx + dx;
@@ -2720,7 +2723,8 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     sc->ct_depth_stride = ct_w;
     ct_n = (size_t)ct_w * ct_h;
     sc->ct_depth_n = ct_n;
-    sc->ct_depth_map = (uint8_t *)heic_zalloc(ctx, ct_n);
+    /* Unavailable marker is 0xFF — allocate without zeroing first. */
+    sc->ct_depth_map = (uint8_t *)heic_alloc(ctx, ct_n);
     if (!sc->ct_depth_map) return -1;
     memset(sc->ct_depth_map, 0xFF, ct_n);
 
@@ -2729,28 +2733,31 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
     sc->intra_mode_stride = pu_w;
     pu_n = (size_t)pu_w * pu_h;
     sc->intra_mode_n = pu_n;
-    sc->intra_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
-    sc->intra_chroma_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
-    sc->pred_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
-    sc->mv_info =
-        (heic_pb_motion *)heic_zalloc(ctx, pu_n * sizeof(heic_pb_motion));
-    if (!sc->intra_mode_map || !sc->intra_chroma_mode_map ||
-        !sc->pred_mode_map || !sc->mv_info)
+    sc->intra_mode_map = (uint8_t *)heic_alloc(ctx, pu_n);
+    sc->intra_chroma_mode_map = (uint8_t *)heic_alloc(ctx, pu_n);
+    if (!sc->intra_mode_map || !sc->intra_chroma_mode_map)
         return -1;
     memset(sc->intra_mode_map, 1, pu_n); /* DC default */
     memset(sc->intra_chroma_mode_map, 1, pu_n);
+    /* pred_mode / motion only needed for inter or constrained-intra. */
+    if (sh->slice_type != HEIC_SLICE_I || pps->constrained_intra_pred_flag) {
+        sc->pred_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
+        if (!sc->pred_mode_map) return -1;
+    }
+    if (sh->slice_type != HEIC_SLICE_I) {
+        sc->mv_info =
+            (heic_pb_motion *)heic_zalloc(ctx, pu_n * sizeof(heic_pb_motion));
+        if (!sc->mv_info) return -1;
+    }
 
     qp_w = (sps->pic_width_in_luma_samples + min_tb - 1) / min_tb;
     qp_h = (sps->pic_height_in_luma_samples + min_tb - 1) / min_tb;
     sc->qp_map_stride = qp_w;
     qp_n = (size_t)qp_w * qp_h;
     sc->qp_map_n = qp_n;
-    sc->qp_map = (int8_t *)heic_zalloc(ctx, qp_n);
+    sc->qp_map = (int8_t *)heic_alloc(ctx, qp_n);
     if (!sc->qp_map) return -1;
-    {
-        size_t i;
-        for (i = 0; i < qp_n; i++) sc->qp_map[i] = (int8_t)sh->slice_qp_y;
-    }
+    memset(sc->qp_map, (int)(int8_t)sh->slice_qp_y, qp_n);
 
     sc->sao_stride = sps->pic_width_in_ctbs;
     sao_n = (size_t)sps->pic_width_in_ctbs * sps->pic_height_in_ctbs;
@@ -2772,14 +2779,11 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
         sc->deblock_flags = (uint8_t *)heic_zalloc(ctx, db_n);
         sc->cbf_map = (uint8_t *)heic_zalloc(ctx, db_n);
         sc->pcm_map = (uint8_t *)heic_zalloc(ctx, db_n);
-        sc->deblock_qp = (int8_t *)heic_zalloc(ctx, db_n);
+        sc->deblock_qp = (int8_t *)heic_alloc(ctx, db_n);
         if (!sc->deblock_flags || !sc->cbf_map || !sc->pcm_map ||
             !sc->deblock_qp)
             return -1;
-        {
-            size_t i;
-            for (i = 0; i < db_n; i++) sc->deblock_qp[i] = (int8_t)sh->slice_qp_y;
-        }
+        memset(sc->deblock_qp, (int)(int8_t)sh->slice_qp_y, db_n);
     }
     sc->residual_buf =
         (int16_t *)heic_zalloc(ctx, (size_t)HEIC_MAX_COEFF * sizeof(int16_t));
@@ -2787,14 +2791,44 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
         sc->luma_residual =
             (int32_t *)heic_zalloc(ctx, (size_t)HEIC_MAX_COEFF * sizeof(int32_t));
     sc->coeff = (heic_coeff_buf *)heic_zalloc(ctx, sizeof(heic_coeff_buf));
+    /* mc_scratch also backs RDPCM / extended residual paths on I-slices. */
     sc->mc_scratch =
         (int32_t *)heic_zalloc(ctx, 72u * 72u * sizeof(int32_t));
-    sc->mc_internal =
-        (int16_t *)heic_zalloc(ctx, 6u * 64u * 64u * sizeof(int16_t));
+    /* Bi-pred internal buffers only needed for inter. */
+    if (sh->slice_type != HEIC_SLICE_I) {
+        sc->mc_internal =
+            (int16_t *)heic_zalloc(ctx, 6u * 64u * 64u * sizeof(int16_t));
+        if (!sc->mc_internal) return -1;
+    }
     if (!sc->residual_buf
         || (pps->cross_component_prediction_enabled_flag && !sc->luma_residual)
-        || !sc->coeff || !sc->mc_scratch || !sc->mc_internal)
+        || !sc->coeff || !sc->mc_scratch)
         return -1;
+    return 0;
+}
+
+/* Late-bind inter maps when a predictive slice follows an I first-slice. */
+static int slice_ctx_ensure_inter(heic_slice_ctx *sc)
+{
+    heic_ctx *ctx;
+    size_t pu_n;
+    if (!sc || !sc->hctx || !sc->sps) return -1;
+    ctx = sc->hctx;
+    pu_n = sc->intra_mode_n;
+    if (!sc->pred_mode_map) {
+        sc->pred_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
+        if (!sc->pred_mode_map) return -1;
+    }
+    if (!sc->mv_info) {
+        sc->mv_info =
+            (heic_pb_motion *)heic_zalloc(ctx, pu_n * sizeof(heic_pb_motion));
+        if (!sc->mv_info) return -1;
+    }
+    if (!sc->mc_internal) {
+        sc->mc_internal =
+            (int16_t *)heic_zalloc(ctx, 6u * 64u * 64u * sizeof(int16_t));
+        if (!sc->mc_internal) return -1;
+    }
     return 0;
 }
 
@@ -3046,6 +3080,11 @@ int heic_hevc_picture_decode_segment(
     if (sh->slice_type == HEIC_SLICE_B && (!l1 || n_l1 <= 0)) {
         heic_error(ctx, HEIC_SEVERITY_ERROR,
                    "B-slice missing L1 reference frame");
+        return -1;
+    }
+    if (sh->slice_type != HEIC_SLICE_I && slice_ctx_ensure_inter(sc) != 0) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "failed to allocate inter-prediction maps");
         return -1;
     }
     total = sps->pic_size_in_ctbs;
