@@ -1948,7 +1948,7 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                               x0, y0, tu_size);
         heic_store_deblock_qp(sc->deblock_qp, sc->deblock_stride, sc->deblock_n,
                               x0, y0, tu_size, (int8_t)sc->current_qpy);
-        store_cbf(sc, x0, y0, tu_size, cbf_luma || cbf_cb || cbf_cr);
+        store_cbf(sc, x0, y0, tu_size, cbf_luma);
     }
 
     is_444 = sc->frame->chroma_format == 3;

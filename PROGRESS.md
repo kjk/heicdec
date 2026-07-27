@@ -235,6 +235,10 @@
       every luma/chroma edge, while applying only the PPS chroma QP offsets
       required by the deblocking process. The first `DBLK_A_SONY_3` frame,
       which varies filter offsets by slice, matches libde265 exactly.
+- [x] HEVC luma boundary strength: only nonzero luma coefficients raise the
+      strength of a transform edge; chroma-only residuals do not. All 30
+      frames of official `DBLK_B_SONY_3` and `DBLK_C_SONY_3` match their
+      reconstruction MD5s byte-for-byte.
 - [x] HEVC deblocking QP propagation: when a CU QP delta is decoded after
       earlier transform units, retroactively update the whole coding unit's
       deblock QP map. All eight frames of official `DBLK_F_VIXS_1` and
