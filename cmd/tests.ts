@@ -229,6 +229,7 @@ const HEVC_SEQUENCE_TESTS: readonly {
   { name: "WP_A_Toshiba_3.bit", frames: 17, mse: 8 },
   { name: "WP_B_Toshiba_3.bit", frames: 17, mse: 8 },
   { name: "MERGE_A_TI_3.bit", frames: 8, mse: 8 },
+  { name: "DBLK_A_SONY_3.bit", frames: 1, mse: 0 },
   { name: "DSLICE_A_HHI_5.bit", frames: 50, mse: 0.001 },
   { name: "DSLICE_B_HHI_5.bit", frames: 50, mse: 0.001 },
   { name: "LS_A_Orange_2.bit", frames: 9, mse: 0 },

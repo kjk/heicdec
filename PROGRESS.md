@@ -231,6 +231,10 @@
       honor the PPS/slice loop-filter boundary controls. Compact HM tile and
       x265 slice streams with cross-boundary filtering disabled match HM
       reconstruction MD5s byte-for-byte.
+- [x] HEVC per-slice deblocking: select beta/tC from the q-side slice for
+      every luma/chroma edge, while applying only the PPS chroma QP offsets
+      required by the deblocking process. The first `DBLK_A_SONY_3` frame,
+      which varies filter offsets by slice, matches libde265 exactly.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

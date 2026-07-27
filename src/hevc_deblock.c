@@ -53,16 +53,19 @@ static int pcm_at(const uint8_t *pcm_map, uint32_t stride,
 static int deblock_edge_allowed(
     const heic_ctb_filter_info *filter_map, uint32_t width_ctbs,
     uint32_t ctb_size, int loop_filter_across_tiles,
-    uint32_t x, uint32_t y, int vertical)
+    uint32_t x, uint32_t y, int vertical,
+    const heic_ctb_filter_info **q_info)
 {
     uint32_t qx, qy, px, py;
     const heic_ctb_filter_info *p, *q;
+    if (q_info) *q_info = NULL;
     if (!filter_map || !width_ctbs || !ctb_size) return 1;
     qx = x / ctb_size;
     qy = y / ctb_size;
     px = vertical ? (x - 1) / ctb_size : qx;
     py = vertical ? qy : (y - 1) / ctb_size;
     q = &filter_map[(size_t)qy * width_ctbs + qx];
+    if (q_info) *q_info = q;
     if (q->deblocking_disabled) return 0;
     if (px == qx && py == qy) return 1;
     p = &filter_map[(size_t)py * width_ctbs + px];
@@ -304,7 +307,7 @@ static void filter_edge_luma(heic_frame *frame, uint32_t x, uint32_t y,
 
 static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                                     const int8_t *qp_map, uint32_t deblock_stride,
-                                    int tc_offset, int cb_qp_offset, int cr_qp_offset,
+                                    int cb_qp_offset, int cr_qp_offset,
                                     const heic_ctb_filter_info *filter_map,
                                     uint32_t width_ctbs, uint32_t ctb_size,
                                     int loop_filter_across_tiles,
@@ -349,10 +352,11 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             int bs, qp_q, qp_p, c_idx;
             int filter_p, filter_q;
             uint32_t cx, cy;
+            const heic_ctb_filter_info *q_filter;
 
             if (!deblock_edge_allowed(
                     filter_map, width_ctbs, ctb_size,
-                    loop_filter_across_tiles, x, y, 1))
+                    loop_filter_across_tiles, x, y, 1, &q_filter))
                 continue;
             if ((flags[idx] & (uint8_t)vert_edge_mask) == 0) continue;
             bs = compute_bs(x, y, 1,
@@ -373,6 +377,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                 int qp_offset = c_idx == 0 ? cb_qp_offset : cr_qp_offset;
                 int qp_i = ((qp_q + qp_p + 1) >> 1) + qp_offset;
                 int qp_c = chroma_qp_mapping(qp_i);
+                int tc_offset = q_filter ? q_filter->tc_offset : 0;
                 int q_tc = clampi(qp_c + 2 + tc_offset, 0, 53);
                 int tc = ((int)TC_PRIME[q_tc]) << (bit_depth_c - 8);
                 uint16_t *plane = c_idx == 0 ? frame->cb : frame->cr;
@@ -418,10 +423,11 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             int bs, qp_q, qp_p, c_idx;
             int filter_p, filter_q;
             uint32_t cx, cy;
+            const heic_ctb_filter_info *q_filter;
 
             if (!deblock_edge_allowed(
                     filter_map, width_ctbs, ctb_size,
-                    loop_filter_across_tiles, x, y, 0))
+                    loop_filter_across_tiles, x, y, 0, &q_filter))
                 continue;
             if ((flags[idx] & (uint8_t)horiz_edge_mask) == 0) continue;
             bs = compute_bs(x, y, 0,
@@ -442,6 +448,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                 int qp_offset = c_idx == 0 ? cb_qp_offset : cr_qp_offset;
                 int qp_i = ((qp_q + qp_p + 1) >> 1) + qp_offset;
                 int qp_c = chroma_qp_mapping(qp_i);
+                int tc_offset = q_filter ? q_filter->tc_offset : 0;
                 int q_tc = clampi(qp_c + 2 + tc_offset, 0, 53);
                 int tc = ((int)TC_PRIME[q_tc]) << (bit_depth_c - 8);
                 uint16_t *plane = c_idx == 0 ? frame->cb : frame->cr;
@@ -485,7 +492,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
 }
 
 void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *qp_map,
-                        uint32_t deblock_stride, int beta_offset, int tc_offset,
+                        uint32_t deblock_stride,
                         int cb_qp_offset, int cr_qp_offset,
                         const heic_ctb_filter_info *filter_map,
                         uint32_t width_ctbs, uint32_t ctb_size,
@@ -512,9 +519,10 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
             size_t idx = (size_t)by * deblock_stride + bx;
             int flags_v = flags[idx];
             int qp_q, qp_p, bs;
+            const heic_ctb_filter_info *q_filter;
             if (!deblock_edge_allowed(
                     filter_map, width_ctbs, ctb_size,
-                    loop_filter_across_tiles, x, y, 1))
+                    loop_filter_across_tiles, x, y, 1, &q_filter))
                 continue;
             if ((flags_v & vert_edge_mask) == 0) continue;
             qp_q = (int)qp_map[idx];
@@ -525,7 +533,9 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                             deblock_stride, ref_poc);
             if (bs > 0)
                 filter_edge_luma(
-                    frame, x, y, 1, qp_p, qp_q, beta_offset, tc_offset, bs,
+                    frame, x, y, 1, qp_p, qp_q,
+                    q_filter ? q_filter->beta_offset : 0,
+                    q_filter ? q_filter->tc_offset : 0, bs,
                     !pcm_at(pcm_map, deblock_stride, x - 1, y),
                     !pcm_at(pcm_map, deblock_stride, x, y));
         }
@@ -538,9 +548,10 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
             size_t idx = (size_t)by * deblock_stride + bx;
             int flags_h = flags[idx];
             int qp_q, qp_p, bs;
+            const heic_ctb_filter_info *q_filter;
             if (!deblock_edge_allowed(
                     filter_map, width_ctbs, ctb_size,
-                    loop_filter_across_tiles, x, y, 0))
+                    loop_filter_across_tiles, x, y, 0, &q_filter))
                 continue;
             if ((flags_h & horiz_edge_mask) == 0) continue;
             qp_q = (int)qp_map[idx];
@@ -551,14 +562,16 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                             deblock_stride, ref_poc);
             if (bs > 0)
                 filter_edge_luma(
-                    frame, x, y, 0, qp_p, qp_q, beta_offset, tc_offset, bs,
+                    frame, x, y, 0, qp_p, qp_q,
+                    q_filter ? q_filter->beta_offset : 0,
+                    q_filter ? q_filter->tc_offset : 0, bs,
                     !pcm_at(pcm_map, deblock_stride, x, y - 1),
                     !pcm_at(pcm_map, deblock_stride, x, y));
         }
     }
 
     apply_chroma_deblocking(
-        frame, flags, qp_map, deblock_stride, tc_offset,
+        frame, flags, qp_map, deblock_stride,
         cb_qp_offset, cr_qp_offset, filter_map, width_ctbs, ctb_size,
         loop_filter_across_tiles, pred_mode, mv_info, pu_stride, min_pu,
         cbf_map, ref_poc, pcm_map);

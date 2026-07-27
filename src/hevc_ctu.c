@@ -3029,6 +3029,10 @@ int heic_hevc_picture_decode_segment(
             (uint8_t)sh->slice_loop_filter_across_slices_enabled_flag;
         filter->deblocking_disabled =
             (uint8_t)sh->slice_deblocking_filter_disabled_flag;
+        filter->beta_offset =
+            (int8_t)((int)sh->slice_beta_offset_div2 * 2);
+        filter->tc_offset =
+            (int8_t)((int)sh->slice_tc_offset_div2 * 2);
         if (decode_ctu(sc, x, y) != 0 || sc->cabac.error) {
             heic_error(ctx, HEIC_SEVERITY_ERROR, "CTU decode failed at (%u,%u) ctu=%u",
                        sc->ctb_x, sc->ctb_y, ctb);
@@ -3166,15 +3170,9 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
 
     ctb_sz = ctb_size_px(sps);
     if (sc->deblock_flags && sc->deblock_qp) {
-        int beta = (int)sh->slice_beta_offset_div2 * 2;
-        int tc = (int)sh->slice_tc_offset_div2 * 2;
-        int cb_off =
-            (int)pps->pps_cb_qp_offset + (int)sh->slice_cb_qp_offset;
-        int cr_off =
-            (int)pps->pps_cr_qp_offset + (int)sh->slice_cr_qp_offset;
         heic_apply_deblock(
             out, sc->deblock_flags, sc->deblock_qp, sc->deblock_stride,
-            beta, tc, cb_off, cr_off,
+            pps->pps_cb_qp_offset, pps->pps_cr_qp_offset,
             sc->filter_map, sps->pic_width_in_ctbs, ctb_sz,
             pps->loop_filter_across_tiles_enabled_flag,
             sh->slice_type == HEIC_SLICE_I ? NULL : sc->pred_mode_map,

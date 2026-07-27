@@ -1050,6 +1050,8 @@ typedef struct {
     uint16_t tile_id;
     uint8_t loop_filter_across_slices;
     uint8_t deblocking_disabled;
+    int8_t beta_offset;
+    int8_t tc_offset;
 } heic_ctb_filter_info;
 
 enum {
@@ -1093,9 +1095,9 @@ void heic_store_deblock_qp(int8_t *qp_map, uint32_t deblock_stride, uint32_t map
 void heic_mark_pb_boundary(uint8_t *flags, uint32_t deblock_stride, uint32_t map_n,
                            uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                            int vertical);
-/* I-slice deblock: bS=2 on all marked edges. Offsets are * 2 (div2 * 2). */
+/* I-slice deblock: bS=2 on all marked edges. filter_map beta/tC are div2 * 2. */
 void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *qp_map,
-                        uint32_t deblock_stride, int beta_offset, int tc_offset,
+                        uint32_t deblock_stride,
                         int cb_qp_offset, int cr_qp_offset,
                         const heic_ctb_filter_info *filter_map,
                         uint32_t width_ctbs, uint32_t ctb_size,
