@@ -1093,6 +1093,81 @@ static int do_profile_libheif(const uint8_t *data, size_t len, int loops)
 }
 #endif
 
+/* Exercise max_memory_bytes: a tiny cap must reject a frame alloc; freeing
+   must allow a subsequent alloc of the same size. */
+static int do_memory_limit_test(void)
+{
+    heic_ctx *ctx;
+    heic_limits lim;
+    heic_frame f;
+    int ok = 1;
+
+    heic_init();
+    ctx = heic_ctx_new(NULL, NULL, NULL, NULL);
+    if (!ctx) {
+        fprintf(stderr, "memory-limit: ctx_new failed\n");
+        return 1;
+    }
+    memset(&lim, 0, sizeof(lim));
+    /* 64x64 4:2:0 16-bit planes need ~12 KB of payload + headers; cap at 4 KB. */
+    lim.max_memory_bytes = 4096;
+    heic_ctx_set_limits(ctx, &lim);
+    memset(&f, 0, sizeof(f));
+    if (heic_frame_alloc(ctx, &f, 64, 64, 8, 1) == 0) {
+        fprintf(stderr, "memory-limit: expected frame alloc to fail under 4 KiB cap\n");
+        heic_frame_free(ctx, &f);
+        ok = 0;
+    }
+    /* Raise the cap and allocate successfully, then free and confirm reuse. */
+    lim.max_memory_bytes = 1024 * 1024;
+    heic_ctx_set_limits(ctx, &lim);
+    memset(&f, 0, sizeof(f));
+    if (heic_frame_alloc(ctx, &f, 64, 64, 8, 1) != 0) {
+        fprintf(stderr, "memory-limit: frame alloc failed under 1 MiB cap\n");
+        ok = 0;
+    } else {
+        heic_frame_free(ctx, &f);
+        memset(&f, 0, sizeof(f));
+        if (heic_frame_alloc(ctx, &f, 64, 64, 8, 1) != 0) {
+            fprintf(stderr, "memory-limit: realloc after free failed\n");
+            ok = 0;
+        } else {
+            heic_frame_free(ctx, &f);
+        }
+    }
+    /* Tiny successive zalloc until OOM under a small cap. */
+    lim.max_memory_bytes = 1024;
+    heic_ctx_set_limits(ctx, &lim);
+    {
+        void *blocks[64];
+        void *again;
+        int n = 0, i;
+        memset(blocks, 0, sizeof(blocks));
+        for (i = 0; i < 64; i++) {
+            blocks[i] = heic_zalloc(ctx, 200);
+            if (!blocks[i]) break;
+            n++;
+        }
+        if (n == 0 || n == 64) {
+            fprintf(stderr,
+                    "memory-limit: expected partial zalloc under 1 KiB (got %d)\n",
+                    n);
+            ok = 0;
+        }
+        for (i = 0; i < n; i++) heic_free_buf(ctx, blocks[i]);
+        again = heic_zalloc(ctx, 200);
+        if (!again) {
+            fprintf(stderr, "memory-limit: zalloc after free failed\n");
+            ok = 0;
+        } else {
+            heic_free_buf(ctx, again);
+        }
+    }
+    heic_ctx_free(ctx);
+    if (ok) printf("memory-limit: ok\n");
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     const char *path = NULL;
@@ -1102,6 +1177,7 @@ int main(int argc, char **argv)
     int do_verify_sequence_mode = 0, do_verify_gain_map_mode = 0;
     int do_hevc_sequence_mode = 0;
     int do_sequence_info = 0, sequence_frame = -1;
+    int do_memory_limit = 0;
     int profile_heic_loops = 0, profile_libheif_loops = 0;
     int hevc_sequence_frames = 512;
     int want_rgba = 0;
@@ -1123,6 +1199,8 @@ int main(int argc, char **argv)
             do_verify_gain_map_mode = 1;
         else if (strcmp(argv[i], "-verify-sequence") == 0)
             do_verify_sequence_mode = 1;
+        else if (strcmp(argv[i], "-memory-limit") == 0)
+            do_memory_limit = 1;
         else if (strcmp(argv[i], "-sequence-info") == 0)
             do_sequence_info = 1;
         else if (strcmp(argv[i], "-sequence-frame") == 0 && i + 1 < argc) {
@@ -1148,6 +1226,9 @@ int main(int argc, char **argv)
         } else if (argv[i][0] != '-')
             path = argv[i];
     }
+    if (do_memory_limit) {
+        return do_memory_limit_test();
+    }
     if (sequence_frame >= 0) do_decode = 0;
     if (!path ||
         (!do_info && !do_exif && !do_decode && !do_bench_mode
@@ -1158,7 +1239,7 @@ int main(int argc, char **argv)
          && !profile_heic_loops && !profile_libheif_loops)) {
         fprintf(stderr,
                 "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bench] [-verify] "
-                "[-verify-gain-map] [-verify-sequence] "
+                "[-verify-gain-map] [-verify-sequence] [-memory-limit] "
                 "[-sequence-info] [-sequence-frame N] "
                 "[-hevc-sequence [-hevc-frames N]] "
                 "[-profile-heic N] [-profile-libheif N] "

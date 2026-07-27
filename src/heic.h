@@ -202,8 +202,8 @@ heic_image *heic_doc_decode_gain_map_abortable(
 /* ----- metadata ----- */
 
 /* EXIF: returns 1 and sets out/out_len to a freshly allocated TIFF
-   payload (HEIF 4-byte prefix stripped). Caller frees with
-   heic_free(ctx, *out) or free() if default allocator. Returns 0 if none. */
+   payload (HEIF 4-byte prefix stripped). Caller must free with
+   heic_free(ctx, *out). Returns 0 if none. */
 int heic_doc_exif(heic_doc *doc, uint8_t **out, size_t *out_len);
 
 /* XMP: raw XML bytes. Same ownership as EXIF. */
@@ -212,7 +212,8 @@ int heic_doc_xmp(heic_doc *doc, uint8_t **out, size_t *out_len);
 /* ICC profile bytes, or 0 if none / nclx-only. */
 int heic_doc_icc(heic_doc *doc, uint8_t **out, size_t *out_len);
 
-/* Free a buffer returned by heic_doc_exif/xmp/icc (uses ctx allocator). */
+/* Free a buffer returned by heic_doc_exif/xmp/icc (uses ctx allocator).
+   Required: allocations are size-tracked for max_memory_bytes. */
 void heic_free(heic_ctx *ctx, void *p);
 
 /* Library version string (static). */

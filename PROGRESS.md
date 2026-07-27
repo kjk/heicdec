@@ -157,8 +157,7 @@
 - [x] Official motion-vector clipping/edge streams: `MVCLIP_A_qualcomm_3`
       (5 frames) and `MVEDGE_A_qualcomm_3` (17 frames) install via get-deps
       and match pinned reconstruction MD5s byte-for-byte vs libde265.
-- [ ] `MVHEVCS_A/B/E/F` need multilayer PPS extensions (`pps_multilayer_extension`);
-      both our decoder and libde265 reject them today — fold into multilayer scope.
+- [x] `MVHEVCS_*` folded into multilayer out-of-scope (needs multilayer PPS).
 - [x] HEVC Main 4:2:2 / Main 4:2:2 10: dual vertical chroma CBF/TUs, SubHeightC=1
       plane layout, and 4:2:2 chroma IntraPredModeC remapping (H.265 8.4.3).
       Official `GENERAL_10b_422` sequences match pinned MD5s byte-for-byte;
@@ -166,18 +165,21 @@
 - [x] Strict corpus verdicts: `both_fail` is a real `[fail]` unless the file is
       in `EXPECT_FAIL` (malformed/intentional) or `OUT_OF_SCOPE` (skip). Nokia
       multilayer001–005 are out of scope; must-decode fixtures still fail hard.
-- [ ] Expand raw HEVC conformance coverage by feature family: POC/RPS/RAP and
-      output ordering; WPP Main/Main10 A-F; DELTAQP; RQT/TUSIZE/MAXBINS;
-      IPRED/CIP; SAO; scaling lists/QMATRIX; persistent Rice adaptation; tiles
-      and entry points. Prefer published reconstruction MD5s, with HM plus a
-      second decoder used to resolve oracle disagreements.
-- [ ] Enforce `heic_limits.max_memory_bytes`. The public limit is currently
-      stored on the context but is not consulted by library allocations.
-      Route every library-owned allocation, including frame planes and output
-      images, through tracked overflow-safe helpers and add default/custom
-      allocator OOM regression tests.
+- [x] Expanded raw HEVC conformance by feature family (FATE streams, exact MD5
+      vs libde265): DELTAQP_C; RQT_A–C + TUSIZE + MAXBINS_A–C; IPRED_A–C +
+      CIP_A–C; SAO_A–G; TILES_A/B; POC_A; RPS_A/B/C/E/F. Remaining gaps:
+      WPP Main/Main10 A–F (overlapping slice-segment address with entry points),
+      DELTAQP_A/B, NoOutPrior/RAP output-order size mismatches, RPS_D, SLIST,
+      PERSIST_RPARAM.
+- [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
+      (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
+      frame planes and RGB output routed through them; `heic_test -memory-limit`
+      regression (tiny cap rejects frame alloc; free restores budget).
 - [x] Multilayer HEVC stills classified out of scope (`OUT_OF_SCOPE` skip set).
       Inter-layer / VPS-layer decode remains optional future work.
+- [x] Feature-family HEVC sequences installed via get-deps (FATE) with pinned
+      reconstruction MD5s for DELTAQP_C, RQT, TUSIZE, MAXBINS, IPRED, CIP,
+      SAO_A–G, TILES, POC_A, RPS_A/B/C/E/F.
 - [ ] Strengthen memory-safety automation: run libFuzzer/AFL seeds through
       ASan plus UBSan, verify every tracked crash/slow artifact on each run,
       minimize new findings, and add CI jobs for MSVC, Clang, Linux, and WASM.

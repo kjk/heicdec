@@ -163,12 +163,18 @@ struct heic_ctx {
     heic_error_cb error;
     void         *user;
     heic_limits   limits;
+    /* Live library-owned heap (including per-block size headers). */
+    size_t        live_bytes;
     /* Optional cached dav1d context (av1_dav1d.c); opaque to keep header free
      * of dav1d types. Closed in heic_ctx_free. */
     void         *dav1d_ctx;
 };
 
-void *heic_zalloc(heic_ctx *ctx, size_t size);
+/* Tracked allocators: every library-owned buffer goes through these so
+ * limits.max_memory_bytes is enforced. Returned pointers must be freed with
+ * heic_free_buf / heic_free (not plain free). */
+void *heic_alloc(heic_ctx *ctx, size_t size);       /* uninitialized */
+void *heic_zalloc(heic_ctx *ctx, size_t size);      /* zeroed */
 void *heic_realloc_buf(heic_ctx *ctx, void *p, size_t old_size, size_t new_size);
 void  heic_free_buf(heic_ctx *ctx, void *p);
 void  heic_error(heic_ctx *ctx, heic_severity sev, const char *fmt, ...);

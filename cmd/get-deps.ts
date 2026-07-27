@@ -76,7 +76,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v35-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422";
+  "v36-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+family-coverage";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -120,12 +120,41 @@ const HEVC_SEQUENCE_SAMPLES = [
   "AMVP_A_MTK_4.bit",
   "AMVP_B_MTK_4.bit",
   "AMVP_C_Samsung_6.bit",
+  "CIP_A_Panasonic_3.bit",
+  "cip_B_NEC_3.bit",
+  "CIP_C_Panasonic_2.bit",
+  "DELTAQP_C_SONY_3.bit",
+  "IPRED_A_docomo_2.bit",
+  "IPRED_B_Nokia_3.bit",
+  "IPRED_C_Mitsubishi_3.bit",
   "LTRPSPS_A_Qualcomm_1.bit",
+  "MAXBINS_A_TI_4.bit",
+  "MAXBINS_B_TI_4.bit",
+  "MAXBINS_C_TI_4.bit",
   "MVCLIP_A_qualcomm_3.bit",
   "MVDL1ZERO_A_docomo_3.bit",
   "MVEDGE_A_qualcomm_3.bit",
+  "POC_A_Bossen_3.bit",
   "RPLM_A_qualcomm_4.bit",
+  "RPS_A_docomo_4.bit",
+  "RPS_B_qualcomm_5.bit",
+  "RPS_C_ericsson_5.bit",
+  "RPS_E_qualcomm_5.bit",
+  "RPS_F_docomo_1.bit",
+  "RQT_A_HHI_4.bit",
+  "RQT_B_HHI_4.bit",
+  "RQT_C_HHI_4.bit",
+  "SAO_A_MediaTek_4.bit",
+  "SAO_B_MediaTek_5.bit",
+  "SAO_C_Samsung_5.bit",
+  "SAO_D_Samsung_5.bit",
+  "SAO_E_Canon_4.bit",
+  "SAO_F_Canon_3.bit",
+  "SAO_G_Canon_3.bit",
+  "TILES_A_Cisco_2.bit",
+  "TILES_B_Cisco_1.bit",
   "TMVP_A_MS_3.bit",
+  "TUSIZE_A_Samsung_1.bit",
   "WP_A_Toshiba_3.bit",
   "WP_B_Toshiba_3.bit",
   "MERGE_A_TI_3.bit",

@@ -463,6 +463,181 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0.05,
     bitDepth: 10,
   },
+  /* Feature-family coverage (FATE hevc-conformance; exact vs libde265). */
+  {
+    name: "DELTAQP_C_SONY_3.bit",
+    frames: 30,
+    mse: 0,
+    md5: "1c2be685b1ae953787e0e93c656ee502",
+  },
+  {
+    name: "RQT_A_HHI_4.bit",
+    frames: 2,
+    mse: 0,
+    md5: "aa7f6ef07bf76ebddd52f7e528cd6ab8",
+  },
+  {
+    name: "RQT_B_HHI_4.bit",
+    frames: 2,
+    mse: 0,
+    md5: "a63f4f4e966e77a5eb4e65dcdcc488a4",
+  },
+  {
+    name: "RQT_C_HHI_4.bit",
+    frames: 2,
+    mse: 0,
+    md5: "c82f4c88d9b2c73fabbeac8944da35a1",
+  },
+  {
+    name: "TUSIZE_A_Samsung_1.bit",
+    frames: 5,
+    mse: 0,
+    md5: "5e6c198c852e92cdcca0e137fc2610c4",
+  },
+  {
+    name: "MAXBINS_A_TI_4.bit",
+    frames: 2,
+    mse: 0,
+    md5: "81566d298a656a112a26c086d09a0094",
+  },
+  {
+    name: "MAXBINS_B_TI_4.bit",
+    frames: 3,
+    mse: 0,
+    md5: "f2469c03557755a851d183d4fb402b66",
+  },
+  {
+    name: "MAXBINS_C_TI_4.bit",
+    frames: 3,
+    mse: 0,
+    md5: "3289ca3abb2283c640bc50f64337fd2c",
+  },
+  {
+    name: "IPRED_A_docomo_2.bit",
+    frames: 20,
+    mse: 0,
+    md5: "0e4e9bd00b74e30e400de46ee7ad8023",
+  },
+  {
+    name: "IPRED_B_Nokia_3.bit",
+    frames: 1,
+    mse: 0,
+    md5: "ec3bcad4f9174404e52d132206b6617b",
+  },
+  {
+    name: "IPRED_C_Mitsubishi_3.bit",
+    frames: 4,
+    mse: 0,
+    md5: "6043c04fecc60ee88f4247aaca96441f",
+  },
+  {
+    name: "CIP_A_Panasonic_3.bit",
+    frames: 2,
+    mse: 0,
+    md5: "4cbf601ba98d63f642defab5eaa12c8d",
+  },
+  {
+    name: "cip_B_NEC_3.bit",
+    frames: 5,
+    mse: 0,
+    md5: "1315714c7b3f3237b469259f66d9b7aa",
+  },
+  {
+    name: "CIP_C_Panasonic_2.bit",
+    frames: 2,
+    mse: 0,
+    md5: "ed985932fef2aa8a74ded970070bdab2",
+  },
+  {
+    name: "SAO_A_MediaTek_4.bit",
+    frames: 60,
+    mse: 0,
+    md5: "272e694a2262a2b34f6248f787a4431d",
+  },
+  {
+    name: "SAO_B_MediaTek_5.bit",
+    frames: 60,
+    mse: 0,
+    md5: "90cc57237e3ce47eb3b4c901e200112d",
+  },
+  {
+    name: "SAO_C_Samsung_5.bit",
+    frames: 5,
+    mse: 0,
+    md5: "962290491f2f1a1e70ab7aa63d2264bc",
+  },
+  {
+    name: "SAO_D_Samsung_5.bit",
+    frames: 5,
+    mse: 0,
+    md5: "6db9575a7737816b1d7a3a3bf3ba126c",
+  },
+  {
+    name: "SAO_E_Canon_4.bit",
+    frames: 16,
+    mse: 0,
+    md5: "0b04a1378274a6ffbb8f6121e027290c",
+  },
+  {
+    name: "SAO_F_Canon_3.bit",
+    frames: 16,
+    mse: 0,
+    md5: "5c295ecba132d1e68a12dd8209e86a02",
+  },
+  {
+    name: "SAO_G_Canon_3.bit",
+    frames: 16,
+    mse: 0,
+    md5: "1f743a3e28617b8bae3e348096edcf76",
+  },
+  {
+    name: "TILES_A_Cisco_2.bit",
+    frames: 100,
+    mse: 0,
+    md5: "946f0771fa87d49f684f96871c9c3c88",
+  },
+  {
+    name: "TILES_B_Cisco_1.bit",
+    frames: 100,
+    mse: 0,
+    md5: "3382291f2b19ee2d760647d4cc756e95",
+  },
+  {
+    name: "POC_A_Bossen_3.bit",
+    frames: 5,
+    mse: 0,
+    md5: "faf33bec64d3e58c426ed2772903a0bf",
+  },
+  {
+    name: "RPS_A_docomo_4.bit",
+    frames: 44,
+    mse: 0,
+    md5: "7f4ad6c6b3de54558b0db59629b87db9",
+  },
+  {
+    name: "RPS_B_qualcomm_5.bit",
+    frames: 300,
+    mse: 0,
+    md5: "6d1ed392b067050ebd3a24a37281da03",
+  },
+  {
+    name: "RPS_C_ericsson_5.bit",
+    frames: 40,
+    mse: 0,
+    md5: "0306b9e3ec365115ccb7060c0a437b32",
+  },
+  {
+    name: "RPS_E_qualcomm_5.bit",
+    frames: 300,
+    mse: 0,
+    md5: "c30d38bbd7ea483dc7ffe81325118e16",
+  },
+  {
+    name: "RPS_F_docomo_1.bit",
+    frames: 50,
+    mse: 0,
+    md5: "fd6e6d973d39622d197dbdf4543643f2",
+  },
 ];
 
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
@@ -885,7 +1060,20 @@ async function main() {
     const [gainOk, gainFail] = await runGainMapTest(exe);
     ok += gainOk;
     fail += gainFail;
-    extra = HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 1;
+    {
+      const mp = await Bun.$`${exe} -memory-limit`.nothrow().quiet();
+      if (mp.exitCode === 0) {
+        ok++;
+        console.log(`[ok] memory-limit`);
+      } else {
+        fail++;
+        console.log(
+          `[fail] memory-limit\n` +
+            (mp.stdout.toString() + mp.stderr.toString()).slice(0, 300),
+        );
+      }
+    }
+    extra = HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 2;
   }
 
   console.log(

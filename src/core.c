@@ -82,13 +82,55 @@ void heic_ctx_set_limits(heic_ctx *ctx, const heic_limits *limits)
     if (limits->max_memory_bytes) ctx->limits.max_memory_bytes = limits->max_memory_bytes;
 }
 
+/* Size header before every tracked payload. Caller always sees payload. */
+typedef struct {
+    size_t size; /* payload bytes */
+} heic_mem_hdr;
+
+#define HEIC_MEM_HDR_SIZE sizeof(heic_mem_hdr)
+
+static int heic_memory_would_exceed(const heic_ctx *ctx, size_t total)
+{
+    size_t cap;
+    if (!ctx) return 1;
+    cap = ctx->limits.max_memory_bytes;
+    if (cap == 0) return 0; /* no limit (should not happen after ctx_new) */
+    if (total > cap) return 1;
+    if (ctx->live_bytes > cap - total) return 1;
+    return 0;
+}
+
+static void *heic_alloc_raw(heic_ctx *ctx, size_t size, int zero)
+{
+    size_t total;
+    uint8_t *raw;
+    heic_mem_hdr *h;
+    if (!ctx || size == 0) return NULL;
+    if (size > SIZE_MAX - HEIC_MEM_HDR_SIZE) return NULL;
+    total = size + HEIC_MEM_HDR_SIZE;
+    if (heic_memory_would_exceed(ctx, total)) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "memory limit exceeded (need %zu, live %zu, cap %zu)",
+                   total, ctx->live_bytes, ctx->limits.max_memory_bytes);
+        return NULL;
+    }
+    raw = (uint8_t *)ctx->alloc(ctx->user, ctx, total);
+    if (!raw) return NULL;
+    h = (heic_mem_hdr *)raw;
+    h->size = size;
+    ctx->live_bytes += total;
+    if (zero) memset(raw + HEIC_MEM_HDR_SIZE, 0, size);
+    return raw + HEIC_MEM_HDR_SIZE;
+}
+
+void *heic_alloc(heic_ctx *ctx, size_t size)
+{
+    return heic_alloc_raw(ctx, size, 0);
+}
+
 void *heic_zalloc(heic_ctx *ctx, size_t size)
 {
-    void *p;
-    if (!ctx || size == 0) return NULL;
-    p = ctx->alloc(ctx->user, ctx, size);
-    if (p) memset(p, 0, size);
-    return p;
+    return heic_alloc_raw(ctx, size, 1);
 }
 
 void *heic_realloc_buf(heic_ctx *ctx, void *p, size_t old_size, size_t new_size)
@@ -99,12 +141,13 @@ void *heic_realloc_buf(heic_ctx *ctx, void *p, size_t old_size, size_t new_size)
         heic_free_buf(ctx, p);
         return NULL;
     }
-    q = ctx->alloc(ctx->user, ctx, new_size);
+    q = heic_alloc_raw(ctx, new_size, 0);
     if (!q) return NULL;
     if (p) {
         size_t n = old_size < new_size ? old_size : new_size;
         memcpy(q, p, n);
-        if (new_size > old_size) memset((uint8_t *)q + old_size, 0, new_size - old_size);
+        if (new_size > old_size)
+            memset((uint8_t *)q + old_size, 0, new_size - old_size);
         heic_free_buf(ctx, p);
     } else {
         memset(q, 0, new_size);
@@ -114,8 +157,14 @@ void *heic_realloc_buf(heic_ctx *ctx, void *p, size_t old_size, size_t new_size)
 
 void heic_free_buf(heic_ctx *ctx, void *p)
 {
+    heic_mem_hdr *h;
+    size_t total;
     if (!ctx || !p) return;
-    ctx->free_cb(ctx->user, ctx, p);
+    h = (heic_mem_hdr *)((uint8_t *)p - HEIC_MEM_HDR_SIZE);
+    total = h->size + HEIC_MEM_HDR_SIZE;
+    if (ctx->live_bytes >= total) ctx->live_bytes -= total;
+    else ctx->live_bytes = 0;
+    ctx->free_cb(ctx->user, ctx, h);
 }
 
 void heic_free(heic_ctx *ctx, void *p)
@@ -186,14 +235,14 @@ int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
 
     y_n = (size_t)w * (size_t)h * sizeof(uint16_t);
     /* Allocate without zeroing — fill UNINIT (0xFFFF) via memset. */
-    f->y = (uint16_t *)ctx->alloc(ctx->user, ctx, y_n);
+    f->y = (uint16_t *)heic_alloc(ctx, y_n);
     if (!f->y) return -1;
     /* HEIC_UNINIT_SAMPLE is 0xFFFF; one repstos is far cheaper than a scalar loop. */
     memset(f->y, 0xFF, y_n);
     if (cw > 0 && ch > 0) {
         c_n = (size_t)cw * (size_t)ch * sizeof(uint16_t);
-        f->cb = (uint16_t *)ctx->alloc(ctx->user, ctx, c_n);
-        f->cr = (uint16_t *)ctx->alloc(ctx->user, ctx, c_n);
+        f->cb = (uint16_t *)heic_alloc(ctx, c_n);
+        f->cr = (uint16_t *)heic_alloc(ctx, c_n);
         if (!f->cb || !f->cr) {
             heic_frame_free(ctx, f);
             return -1;

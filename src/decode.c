@@ -1088,7 +1088,7 @@ int heic_decode_primary(heic_doc *doc, heic_format format,
     img->height = (uint32_t)out_h;
     img->format = format;
     img->stride = out_w * bpp;
-    img->data = (uint8_t *)doc->ctx->alloc(doc->ctx->user, doc->ctx, need);
+    img->data = (uint8_t *)heic_alloc(doc->ctx, need);
     if (!img->data) {
         heic_free_buf(doc->ctx, img);
         heic_frame_free(doc->ctx, &frame);
@@ -1137,7 +1137,7 @@ static heic_image *sequence_frame_to_image(heic_ctx *ctx, heic_frame *frame,
     img->height = (uint32_t)h;
     img->format = format;
     img->stride = w * bpp;
-    img->data = (uint8_t *)ctx->alloc(ctx->user, ctx, need);
+    img->data = (uint8_t *)heic_alloc(ctx, need);
     if (!img->data
         || heic_frame_to_rgb(ctx, frame, format, img->data, img->stride) != 0) {
         heic_image_destroy(ctx, img);
@@ -1485,7 +1485,7 @@ static heic_image *decode_item_to_image(heic_doc *doc, const heic_item *item,
     img->height = (uint32_t)h;
     img->format = format;
     img->stride = w * bpp;
-    img->data = (uint8_t *)doc->ctx->alloc(doc->ctx->user, doc->ctx, need);
+    img->data = (uint8_t *)heic_alloc(doc->ctx, need);
     if (!img->data || heic_frame_to_rgb(doc->ctx, &frame, format, img->data, img->stride) != 0) {
         heic_image_destroy(doc->ctx, img);
         heic_frame_free(doc->ctx, &frame);
