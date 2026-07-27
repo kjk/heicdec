@@ -198,8 +198,9 @@
         drives pure-DC IDCT without scanning the block.
       - Limited-range 4:4:4 / 4:2:0 SIMD uses clamp + fixed-point multiplies
         (same scales as LUTs) instead of per-pixel LUT gathers.
-      - HDR still ~+7–11% vs libheif (noise); `nokia_444` often ~+1–5%;
-        `example.heic` remains faster than libheif. Pixel oracle unchanged.
+      - 4:2:0 dual-row color: even/odd luma pairs share one chroma multiply pass.
+      - HDR still ~+6–10% vs libheif (noise); `nokia_444` ≈/≤ libheif;
+        `example.heic` remains faster. Pixel oracle unchanged (HDR mse=0).
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported

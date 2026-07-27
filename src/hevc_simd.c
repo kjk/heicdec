@@ -637,6 +637,38 @@ static inline __m128i chroma420_limited_z(const uint16_t *p, int phase)
     return _mm_sub_epi32(v, _mm_set1_epi32(128));
 }
 
+static void ycc420_tail(const uint16_t *yp, const uint16_t *cbp,
+                        const uint16_t *crp, uint8_t *row, int x0, int w,
+                        int phase, int full, const int32_t yv[256],
+                        const int32_t cr_r[256], const int32_t cb_g[256],
+                        const int32_t cr_g[256], const int32_t cb_b[256])
+{
+    int x;
+    for (x = x0; x < w; x++) {
+        int cx = (phase + x) >> 1;
+        int Y = (int)yp[x] & 255, Cb = (int)cbp[cx] & 255, Cr = (int)crp[cx] & 255;
+        int rr, gg, bb;
+        if (full) {
+            rr = yv[Y] + ((cr_r[Cr] + 128) >> 8);
+            gg = yv[Y] + ((cb_g[Cb] + cr_g[Cr] + 128) >> 8);
+            bb = yv[Y] + ((cb_b[Cb] + 128) >> 8);
+        } else {
+            rr = (yv[Y] + cr_r[Cr] + 4096) >> 13;
+            gg = (yv[Y] + cb_g[Cb] + cr_g[Cr] + 4096) >> 13;
+            bb = (yv[Y] + cb_b[Cb] + 4096) >> 13;
+        }
+        if (rr < 0) rr = 0;
+        else if (rr > 255) rr = 255;
+        if (gg < 0) gg = 0;
+        else if (gg > 255) gg = 255;
+        if (bb < 0) bb = 0;
+        else if (bb > 255) bb = 255;
+        row[x * 3 + 0] = (uint8_t)rr;
+        row[x * 3 + 1] = (uint8_t)gg;
+        row[x * 3 + 2] = (uint8_t)bb;
+    }
+}
+
 int heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_t *crp,
                           uint8_t *row, int w, int phase, int full,
                           const int32_t yv[256], const int32_t cr_r[256],
@@ -705,29 +737,93 @@ int heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
             store_rgb4(rr, gg, bb, row + x * 3);
         }
     }
-    for (; x < w; x++) {
-        int cx = (phase + x) >> 1;
-        int Y = (int)yp[x] & 255, Cb = (int)cbp[cx] & 255, Cr = (int)crp[cx] & 255;
-        int rr, gg, bb;
-        if (full) {
-            rr = yv[Y] + ((cr_r[Cr] + 128) >> 8);
-            gg = yv[Y] + ((cb_g[Cb] + cr_g[Cr] + 128) >> 8);
-            bb = yv[Y] + ((cb_b[Cb] + 128) >> 8);
-        } else {
-            rr = (yv[Y] + cr_r[Cr] + 4096) >> 13;
-            gg = (yv[Y] + cb_g[Cb] + cr_g[Cr] + 4096) >> 13;
-            bb = (yv[Y] + cb_b[Cb] + 4096) >> 13;
+    ycc420_tail(yp, cbp, crp, row, x, w, phase, full, yv, cr_r, cb_g, cr_g, cb_b);
+    return 1;
+}
+
+/* Two luma rows sharing one 4:2:0 chroma line — reuses chroma multiplies. */
+int heic_simd_ycc_420_2rows(const uint16_t *yp0, const uint16_t *yp1,
+                            const uint16_t *cbp, const uint16_t *crp,
+                            uint8_t *row0, uint8_t *row1, int w, int phase,
+                            int full, const int32_t yv[256],
+                            const int32_t cr_r[256], const int32_t cb_g[256],
+                            const int32_t cr_g[256], const int32_t cb_b[256])
+{
+    int x;
+    if (!g_simd || w < 4 || !yp1 || !row1) return 0;
+    if (full) {
+        __m128i round = _mm_set1_epi32(128);
+        __m128i mask = _mm_set1_epi16(255);
+        __m128i k_cr_r = _mm_set1_epi32(cr_r[129]);
+        __m128i k_cb_g = _mm_set1_epi32(cb_g[129]);
+        __m128i k_cr_g = _mm_set1_epi32(cr_g[129]);
+        __m128i k_cb_b = _mm_set1_epi32(cb_b[129]);
+        for (x = 0; x + 4 <= w; x += 4) {
+            const uint16_t *cb = cbp + ((phase + x) >> 1);
+            const uint16_t *cr = crp + ((phase + x) >> 1);
+            __m128i Y0 = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp0 + x)), mask));
+            __m128i Y1 = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp1 + x)), mask));
+            __m128i Cb = chroma420_centered(cb, phase);
+            __m128i Cr = chroma420_centered(cr, phase);
+            __m128i CrR = _mm_mullo_epi32(Cr, k_cr_r);
+            __m128i CbG = _mm_mullo_epi32(Cb, k_cb_g);
+            __m128i CrG = _mm_mullo_epi32(Cr, k_cr_g);
+            __m128i CbB = _mm_mullo_epi32(Cb, k_cb_b);
+            __m128i dR = _mm_srai_epi32(_mm_add_epi32(CrR, round), 8);
+            __m128i dG =
+                _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(CbG, CrG), round), 8);
+            __m128i dB = _mm_srai_epi32(_mm_add_epi32(CbB, round), 8);
+            store_rgb4(clamp_u8_epi32(_mm_add_epi32(Y0, dR)),
+                       clamp_u8_epi32(_mm_add_epi32(Y0, dG)),
+                       clamp_u8_epi32(_mm_add_epi32(Y0, dB)), row0 + x * 3);
+            store_rgb4(clamp_u8_epi32(_mm_add_epi32(Y1, dR)),
+                       clamp_u8_epi32(_mm_add_epi32(Y1, dG)),
+                       clamp_u8_epi32(_mm_add_epi32(Y1, dB)), row1 + x * 3);
         }
-        if (rr < 0) rr = 0;
-        else if (rr > 255) rr = 255;
-        if (gg < 0) gg = 0;
-        else if (gg > 255) gg = 255;
-        if (bb < 0) bb = 0;
-        else if (bb > 255) bb = 255;
-        row[x * 3 + 0] = (uint8_t)rr;
-        row[x * 3 + 1] = (uint8_t)gg;
-        row[x * 3 + 2] = (uint8_t)bb;
+    } else {
+        __m128i round = _mm_set1_epi32(4096);
+        __m128i mask = _mm_set1_epi16(255);
+        __m128i y_lo = _mm_set1_epi32(16), y_hi = _mm_set1_epi32(235);
+        __m128i k_y = _mm_set1_epi32(yv[17] ? yv[17] : 9576);
+        __m128i k_cr_r = _mm_set1_epi32(cr_r[129]);
+        __m128i k_cb_g = _mm_set1_epi32(cb_g[129]);
+        __m128i k_cr_g = _mm_set1_epi32(cr_g[129]);
+        __m128i k_cb_b = _mm_set1_epi32(cb_b[129]);
+        for (x = 0; x + 4 <= w; x += 4) {
+            const uint16_t *cb = cbp + ((phase + x) >> 1);
+            const uint16_t *cr = crp + ((phase + x) >> 1);
+            __m128i Y0 = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp0 + x)), mask));
+            __m128i Y1 = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp1 + x)), mask));
+            __m128i Cbz = chroma420_limited_z(cb, phase);
+            __m128i Crz = chroma420_limited_z(cr, phase);
+            __m128i CrR = _mm_mullo_epi32(Crz, k_cr_r);
+            __m128i CbG = _mm_mullo_epi32(Cbz, k_cb_g);
+            __m128i CrG = _mm_mullo_epi32(Crz, k_cr_g);
+            __m128i CbB = _mm_mullo_epi32(Cbz, k_cb_b);
+            __m128i dR = _mm_add_epi32(CrR, round);
+            __m128i dG = _mm_add_epi32(_mm_add_epi32(CbG, CrG), round);
+            __m128i dB = _mm_add_epi32(CbB, round);
+            __m128i Yv0, Yv1;
+            Y0 = _mm_min_epi32(_mm_max_epi32(Y0, y_lo), y_hi);
+            Y1 = _mm_min_epi32(_mm_max_epi32(Y1, y_lo), y_hi);
+            Yv0 = _mm_mullo_epi32(_mm_sub_epi32(Y0, y_lo), k_y);
+            Yv1 = _mm_mullo_epi32(_mm_sub_epi32(Y1, y_lo), k_y);
+            store_rgb4(clamp_u8_epi32(_mm_srai_epi32(_mm_add_epi32(Yv0, dR), 13)),
+                       clamp_u8_epi32(_mm_srai_epi32(_mm_add_epi32(Yv0, dG), 13)),
+                       clamp_u8_epi32(_mm_srai_epi32(_mm_add_epi32(Yv0, dB), 13)),
+                       row0 + x * 3);
+            store_rgb4(clamp_u8_epi32(_mm_srai_epi32(_mm_add_epi32(Yv1, dR), 13)),
+                       clamp_u8_epi32(_mm_srai_epi32(_mm_add_epi32(Yv1, dG), 13)),
+                       clamp_u8_epi32(_mm_srai_epi32(_mm_add_epi32(Yv1, dB), 13)),
+                       row1 + x * 3);
+        }
     }
+    ycc420_tail(yp0, cbp, crp, row0, x, w, phase, full, yv, cr_r, cb_g, cr_g, cb_b);
+    ycc420_tail(yp1, cbp, crp, row1, x, w, phase, full, yv, cr_r, cb_g, cr_g, cb_b);
     return 1;
 }
 
@@ -1334,6 +1430,27 @@ int heic_simd_ycc_420_row(const uint16_t *a, const uint16_t *b, const uint16_t *
     (void)g;
     (void)h;
     (void)i;
+    return 0;
+}
+int heic_simd_ycc_420_2rows(const uint16_t *a, const uint16_t *b, const uint16_t *c,
+                            const uint16_t *d, uint8_t *e, uint8_t *f, int w, int p,
+                            int full, const int32_t *g, const int32_t *h,
+                            const int32_t *i, const int32_t *j, const int32_t *k)
+{
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)d;
+    (void)e;
+    (void)f;
+    (void)w;
+    (void)p;
+    (void)full;
+    (void)g;
+    (void)h;
+    (void)i;
+    (void)j;
+    (void)k;
     return 0;
 }
 int heic_simd_chroma_edge4(uint16_t *p, int s, size_t b, int a, int t, int m, int al)

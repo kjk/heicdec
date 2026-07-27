@@ -1025,6 +1025,13 @@ int  heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16
                            const int32_t yv[256], const int32_t cr_r[256],
                            const int32_t cb_g[256], const int32_t cr_g[256],
                            const int32_t cb_b[256]);
+/* Two luma rows sharing one chroma line (even/odd pair). */
+int  heic_simd_ycc_420_2rows(const uint16_t *yp0, const uint16_t *yp1,
+                             const uint16_t *cbp, const uint16_t *crp,
+                             uint8_t *row0, uint8_t *row1, int w, int x_phase,
+                             int full, const int32_t yv[256],
+                             const int32_t cr_r[256], const int32_t cb_g[256],
+                             const int32_t cr_g[256], const int32_t cb_b[256]);
 /* Chroma edge: 4 samples along edge (vert: stride between samples; horiz: 1). */
 int  heic_simd_chroma_edge4(uint16_t *plane, int stride, size_t base_q0, int across,
                             int tc, int max_val, int along_is_stride);
