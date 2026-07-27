@@ -152,6 +152,47 @@
 
 ## Next
 
+### Remaining priorities (ordered)
+
+- [ ] Add official `MVCLIP_A_qualcomm_3` coverage. Its five frames already
+      match libde265 byte-for-byte; install it through `get-deps` and pin the
+      reconstruction MD5. Follow with `MVEDGE_A` and the newer `MVHEVCS_*`
+      motion-vector boundary streams.
+- [ ] Complete HEVC Main 4:2:2 / Main 4:2:2 10 decoding. Official
+      `Main_422_10_A_RExt_Sony_2` currently stops after 42 of 510 CTUs in its
+      first picture. Fix the 4:2:2 chroma transform-tree/TU layout, prediction,
+      residual, deblock, and SAO paths, then compare every frame against HM.
+- [ ] Make corpus verdicts strict. A valid image for which both our decoder
+      and libheif fail must not count as an `[ok]` pixel test. Maintain an
+      explicit malformed/out-of-scope set, report unsupported valid files as
+      skips or failures, and add HM/FFmpeg/compact pixel oracles where libheif
+      cannot serve as the reference.
+- [ ] Expand raw HEVC conformance coverage by feature family: POC/RPS/RAP and
+      output ordering; WPP Main/Main10 A-F; DELTAQP; RQT/TUSIZE/MAXBINS;
+      IPRED/CIP; SAO; scaling lists/QMATRIX; persistent Rice adaptation; tiles
+      and entry points. Prefer published reconstruction MD5s, with HM plus a
+      second decoder used to resolve oracle disagreements.
+- [ ] Enforce `heic_limits.max_memory_bytes`. The public limit is currently
+      stored on the context but is not consulted by library allocations.
+      Route every library-owned allocation, including frame planes and output
+      images, through tracked overflow-safe helpers and add default/custom
+      allocator OOM regression tests.
+- [ ] Decide multilayer HEVC scope explicitly. Nokia `multilayer001/002/004/005`
+      currently fail in both our decoder and libheif but are counted as okay.
+      Either decode the required VPS/layer and inter-layer reference paths, or
+      classify multilayer as out of scope and report those files as skips.
+- [ ] Strengthen memory-safety automation: run libFuzzer/AFL seeds through
+      ASan plus UBSan, verify every tracked crash/slow artifact on each run,
+      minimize new findings, and add CI jobs for MSVC, Clang, Linux, and WASM.
+- [ ] Resume performance work after the correctness sweep. Profile the new
+      4:2:2 and motion-vector streams plus the full HEIF corpus; then target
+      measured hot paths with AVX2/ARM64 NEON and consider parallel decoding
+      of independent grid tiles. Keep scalar output byte-identical.
+- [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
+      buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
+      rebuild/verify the amalgamation and WASM drop, and document supported
+      profiles plus intentional exclusions.
+
 - [x] unci (ISO 23001-17): planar/pixel/row/tile-comp; multi-tile; 1..16-bit RGB/mono
 - [x] unci: YUV 444/422/420 (planar + tile-comp); default matrix BT.601 like libheif
 - [x] unci: uncC `pixel_size` is uint32 (ISO/libheif)
