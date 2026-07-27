@@ -223,6 +223,24 @@ const HEVC_SEQUENCE_TESTS: readonly {
   bitDepth?: number;
   md5?: string;
 }[] = [
+  {
+    name: "AMVP_A_MTK_4.bit",
+    frames: 30,
+    mse: 0,
+    md5: "5dd1b1099391ad659225fbf94965a6c7",
+  },
+  {
+    name: "AMVP_B_MTK_4.bit",
+    frames: 41,
+    mse: 0,
+    md5: "7fecb4fe8ee4d4838f4a9873b062b819",
+  },
+  {
+    name: "AMVP_C_Samsung_6.bit",
+    frames: 60,
+    mse: 0,
+    md5: "d216e8e211c6fd94db69b5304513f1ec",
+  },
   { name: "LTRPSPS_A_Qualcomm_1.bit", frames: 17, mse: 8 },
   {
     name: "MVDL1ZERO_A_docomo_3.bit",

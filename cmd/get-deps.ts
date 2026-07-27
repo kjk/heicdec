@@ -76,7 +76,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v32-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm";
+  "v33-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -109,6 +109,9 @@ const HEVC_CONSTRAINED_INTRA = "constrained-intra-main.bit";
 const HEVC_LOOP_FILTER_TILES = "loop-filter-tiles-main.bit";
 const HEVC_LOOP_FILTER_SLICES = "loop-filter-slices-main.bit";
 const HEVC_SEQUENCE_SAMPLES = [
+  "AMVP_A_MTK_4.bit",
+  "AMVP_B_MTK_4.bit",
+  "AMVP_C_Samsung_6.bit",
   "LTRPSPS_A_Qualcomm_1.bit",
   "MVDL1ZERO_A_docomo_3.bit",
   "RPLM_A_qualcomm_4.bit",

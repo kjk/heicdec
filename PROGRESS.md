@@ -243,6 +243,9 @@
       partitions inside the current coding unit for both merge and AMVP
       candidates. All eight 10-bit frames of official
       `DBLK_A_MAIN10_VIXS_3` match the reconstruction MD5 byte-for-byte.
+- [x] HEVC advanced motion-vector prediction is covered across official
+      `AMVP_A_MTK_4`, `AMVP_B_MTK_4`, and `AMVP_C_Samsung_6`. All 131
+      frames match both HM and libde265 byte-for-byte.
 - [x] HEVC parallel merge regions use one CU-wide candidate list for every
       sub-partition of an 8x8 coding unit when the signaled merge level is
       larger than 4x4. All eight frames of official `PMERGE_A` through
