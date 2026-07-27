@@ -410,14 +410,20 @@ void heic_dequantize(int16_t *coeffs, int n, int qp, int bit_depth,
             if (heic_simd_dequant(coeffs, n, c32, shift))
                 return;
             for (i = 0; i < n; i++) {
-                int32_t v = ((int32_t)coeffs[i] * c32 + add32) >> shift;
+                int32_t c = coeffs[i];
+                int32_t v;
+                if (c == 0) continue;
+                v = (c * c32 + add32) >> shift;
                 if (v < -32768) v = -32768;
                 if (v > 32767) v = 32767;
                 coeffs[i] = (int16_t)v;
             }
         } else {
             for (i = 0; i < n; i++) {
-                int64_t v = ((int64_t)coeffs[i] * combined + add) >> shift;
+                int32_t c = coeffs[i];
+                int64_t v;
+                if (c == 0) continue;
+                v = ((int64_t)c * combined + add) >> shift;
                 if (v < -32768) v = -32768;
                 if (v > 32767) v = 32767;
                 coeffs[i] = (int16_t)v;
@@ -426,7 +432,10 @@ void heic_dequantize(int16_t *coeffs, int n, int qp, int bit_depth,
     } else {
         int neg = -shift;
         for (i = 0; i < n; i++) {
-            int64_t v = ((int64_t)coeffs[i] * combined) << neg;
+            int32_t c = coeffs[i];
+            int64_t v;
+            if (c == 0) continue;
+            v = ((int64_t)c * combined) << neg;
             if (v < -32768) v = -32768;
             if (v > 32767) v = 32767;
             coeffs[i] = (int16_t)v;
@@ -466,31 +475,48 @@ void heic_dequantize_scaled(int16_t *coeffs, int n, int qp, int bit_depth,
         heic_dequantize(coeffs, n, qp, bit_depth, log2_tr_size);
         return;
     }
-    for (i = 0; i < n; i++) {
-        int x = i % size, y = i / size;
-        uint8_t scale;
-        int64_t value;
-        if (size_id == 0) {
-            scale = list->coef[0][matrix_id][DIAG_INV_4X4[i]];
-        } else if (size_id == 1) {
-            scale = list->coef[1][matrix_id][DIAG_INV_8X8[i]];
-        } else {
-            int divisor = size_id == 2 ? 2 : 4;
-            int sx = x / divisor, sy = y / divisor;
-            if (x == 0 && y == 0)
-                scale = list->dc_coef[size_id - 2][matrix_id];
+    /* Raster walk with zero-skip: most residual positions are zero after
+     * CABAC, and scale lookup + 64-bit multiply dominate the old full loop. */
+    {
+        int x = 0, y = 0;
+        int level = LEVEL_SCALE[qp_rem];
+        for (i = 0; i < n; i++) {
+            uint8_t scale;
+            int64_t value;
+            int c = coeffs[i];
+            if (c == 0) {
+                if (++x == size) {
+                    x = 0;
+                    y++;
+                }
+                continue;
+            }
+            if (size_id == 0) {
+                scale = list->coef[0][matrix_id][DIAG_INV_4X4[i]];
+            } else if (size_id == 1) {
+                scale = list->coef[1][matrix_id][DIAG_INV_8X8[i]];
+            } else {
+                int divisor = size_id == 2 ? 2 : 4;
+                int sx = x / divisor, sy = y / divisor;
+                if (x == 0 && y == 0)
+                    scale = list->dc_coef[size_id - 2][matrix_id];
+                else
+                    scale = list->coef[size_id][matrix_id]
+                                      [DIAG_INV_8X8[sy * 8 + sx]];
+            }
+            value = (int64_t)c * scale * level * qp_scale;
+            if (shift >= 0)
+                value = (value + add) >> shift;
             else
-                scale = list->coef[size_id][matrix_id]
-                                  [DIAG_INV_8X8[sy * 8 + sx]];
+                value <<= -shift;
+            if (value < -32768) value = -32768;
+            if (value > 32767) value = 32767;
+            coeffs[i] = (int16_t)value;
+            if (++x == size) {
+                x = 0;
+                y++;
+            }
         }
-        value = (int64_t)coeffs[i] * scale * LEVEL_SCALE[qp_rem] * qp_scale;
-        if (shift >= 0)
-            value = (value + add) >> shift;
-        else
-            value <<= -shift;
-        if (value < -32768) value = -32768;
-        if (value > 32767) value = 32767;
-        coeffs[i] = (int16_t)value;
     }
 }
 

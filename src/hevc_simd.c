@@ -602,6 +602,21 @@ int heic_simd_ycc_444_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
     return 1;
 }
 
+/* Expand 2 or 3 subsampled chroma samples into 4 epi32 lanes with 4:2:0 phase. */
+static inline __m128i chroma420_epi32(const uint16_t *p, int phase)
+{
+    __m128i mask = _mm_set1_epi16(255);
+    __m128i center = _mm_set1_epi32(128);
+    int a = (int)(p[0] & 255), b = (int)(p[1] & 255), c = (int)(p[2] & 255);
+    __m128i v;
+    (void)mask;
+    if (phase)
+        v = _mm_setr_epi32(a, b, b, c);
+    else
+        v = _mm_setr_epi32(a, a, b, b);
+    return _mm_sub_epi32(v, center);
+}
+
 int heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_t *crp,
                           uint8_t *row, int w, int phase, int full,
                           const int32_t yv[256], const int32_t cr_r[256],
@@ -611,15 +626,24 @@ int heic_simd_ycc_420_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
     int x;
     if (!g_simd || w < 4) return 0;
     if (full) {
+        /* Direct fixed-point like 4:4:4 full path — avoid 5 scalar LUT gathers. */
         __m128i round = _mm_set1_epi32(128);
+        __m128i mask = _mm_set1_epi16(255);
+        __m128i k_cr_r = _mm_set1_epi32(cr_r[129]); /* coeff * 1 */
+        __m128i k_cb_g = _mm_set1_epi32(cb_g[129]);
+        __m128i k_cr_g = _mm_set1_epi32(cr_g[129]);
+        __m128i k_cb_b = _mm_set1_epi32(cb_b[129]);
         for (x = 0; x + 4 <= w; x += 4) {
             const uint16_t *cb = cbp + ((phase + x) >> 1);
             const uint16_t *cr = crp + ((phase + x) >> 1);
-            __m128i Y = lut4_i32(yv, yp + x);
-            __m128i CrR = lut420_i32(cr_r, cr, phase);
-            __m128i CbG = lut420_i32(cb_g, cb, phase);
-            __m128i CrG = lut420_i32(cr_g, cr, phase);
-            __m128i CbB = lut420_i32(cb_b, cb, phase);
+            __m128i Y = _mm_cvtepu16_epi32(
+                _mm_and_si128(_mm_loadl_epi64((const __m128i *)(yp + x)), mask));
+            __m128i Cb = chroma420_epi32(cb, phase);
+            __m128i Cr = chroma420_epi32(cr, phase);
+            __m128i CrR = _mm_mullo_epi32(Cr, k_cr_r);
+            __m128i CbG = _mm_mullo_epi32(Cb, k_cb_g);
+            __m128i CrG = _mm_mullo_epi32(Cr, k_cr_g);
+            __m128i CbB = _mm_mullo_epi32(Cb, k_cb_b);
             __m128i rr = clamp_u8_epi32(
                 _mm_add_epi32(Y, _mm_srai_epi32(_mm_add_epi32(CrR, round), 8)));
             __m128i gg = clamp_u8_epi32(_mm_add_epi32(

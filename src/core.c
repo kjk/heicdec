@@ -234,10 +234,10 @@ int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
     f->c_stride = cw > 0 ? cw : 0;
 
     y_n = (size_t)w * (size_t)h * sizeof(uint16_t);
-    /* Allocate without zeroing — fill UNINIT (0xFFFF) via memset. */
+    /* Fill UNINIT (0xFFFF): some paths leave samples unread (crop, partial
+     * CTBs, failed tiles); color conversion treats 0xFFFF specially. */
     f->y = (uint16_t *)heic_alloc(ctx, y_n);
     if (!f->y) return -1;
-    /* HEIC_UNINIT_SAMPLE is 0xFFFF; one repstos is far cheaper than a scalar loop. */
     memset(f->y, 0xFF, y_n);
     if (cw > 0 && ch > 0) {
         c_n = (size_t)cw * (size_t)ch * sizeof(uint16_t);

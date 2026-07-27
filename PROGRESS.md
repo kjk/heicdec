@@ -187,6 +187,11 @@
       4:2:2 and motion-vector streams plus the full HEIF corpus; then target
       measured hot paths with AVX2/ARM64 NEON and consider parallel decoding
       of independent grid tiles. Keep scalar output byte-identical.
+- [x] Perf restart (post-correctness): HDR `hdr-sample` 40.3ms → **37.2ms**
+      (libheif ~34.6ms, +7.4%; was +19.6%). Wins: stack color LUTs (no per-frame
+      malloc), zero-skip dequant (plain + scaling-list), direct full-range 4:2:0
+      SIMD multiplies (no chroma LUT gathers). Skipping plane UNINIT fill was
+      tried and reverted (breaks color on unread samples).
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported
