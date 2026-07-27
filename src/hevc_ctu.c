@@ -1543,6 +1543,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                              sc->sps->implicit_rdpcm_enabled_flag,
                              sc->sps->explicit_rdpcm_enabled_flag,
                              sc->sps->persistent_rice_adaptation_enabled_flag,
+                             sc->sps->cabac_bypass_alignment_enabled_flag,
                              sc->stat_coeff,
                              sc->cu_pred_mode == HEIC_PRED_INTRA, intra_mode,
                              coeff, &transform_skip, &rdpcm_mode)

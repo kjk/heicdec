@@ -318,3 +318,8 @@ uint32_t heic_cabac_decode_egk(heic_cabac *c, int k)
     }
     return base + heic_cabac_decode_bypass_bits(c, n);
 }
+
+void heic_cabac_align_bypass(heic_cabac *c)
+{
+    if (c && !c->error) c->range = 256;
+}

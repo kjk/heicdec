@@ -69,7 +69,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v17-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif";
+  "v18-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_REXT_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -82,6 +82,12 @@ const HEVC_REXT_GENERAL_SEQUENCES = [1, 2, 3, 4, 5, 6] as const;
 const HEVC_REXT_CCP = "CCP_8bit_RExt_QCOM_1.bin";
 const HEVC_REXT_CCP_ENTRY = "CCP_8bit_RExt_QCOM.bin";
 const HEVC_REXT_CCP_ZIP = "CCP_8bit_RExt_QCOM_1.zip";
+const HEVC_REXT_CABAC_ALIGN =
+  "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1.bit";
+const HEVC_REXT_CABAC_ALIGN_ZIP =
+  "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1.zip";
+const HEVC_REXT_CABAC_ALIGN_SEQUENCE =
+  "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq0.bit";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
   "RPLM_A_qualcomm_4.bit",
@@ -149,12 +155,7 @@ function extractZipEntry(zipPath: string, entrySuffix: string, dest: string): vo
   throw new Error(`ZIP entry ${entrySuffix} not found in ${zipPath}`);
 }
 
-function splitAnnexBSequences(
-  sourcePath: string,
-  outputDir: string,
-  wanted: readonly number[],
-): void {
-  const data = new Uint8Array(readFileSync(sourcePath));
+function findAnnexBSequenceStarts(data: Uint8Array): number[] {
   const starts: number[] = [];
   for (let i = 0; i + 5 < data.length;) {
     let prefix = 0;
@@ -172,6 +173,16 @@ function splitAnnexBSequences(
       i++;
     }
   }
+  return starts;
+}
+
+function splitAnnexBSequences(
+  sourcePath: string,
+  outputDir: string,
+  wanted: readonly number[],
+): void {
+  const data = new Uint8Array(readFileSync(sourcePath));
+  const starts = findAnnexBSequenceStarts(data);
   if (starts.length < 7)
     throw new Error(`expected 7 RExt sequences in ${sourcePath}`);
   starts.push(data.length);
@@ -181,6 +192,20 @@ function splitAnnexBSequences(
       data.subarray(starts[index]!, starts[index + 1]!),
     );
   }
+}
+
+function extractAnnexBSequence(
+  sourcePath: string,
+  destPath: string,
+  index: number,
+  expected: number,
+): void {
+  const data = new Uint8Array(readFileSync(sourcePath));
+  const starts = findAnnexBSequenceStarts(data);
+  if (starts.length < expected || index < 0 || index >= starts.length)
+    throw new Error(`expected ${expected} HEVC sequences in ${sourcePath}`);
+  starts.push(data.length);
+  writeFileSync(destPath, data.subarray(starts[index]!, starts[index + 1]!));
 }
 
 /** Download link-u fox AVIFs and regenerate grid/alpha + unci block fixtures. */
@@ -210,6 +235,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(miniDir, "chroma-qp-offset-rext.heic")) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_TSCTX)) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_CCP)) &&
+    existsSync(join(hevcSequenceDir, HEVC_REXT_CABAC_ALIGN_SEQUENCE)) &&
     HEVC_REXT_GENERAL_SEQUENCES.every((index) =>
       existsSync(join(
         hevcSequenceDir,
@@ -306,6 +332,17 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     if (!existsSync(dest) || opts.force) {
       await download(`${HEVC_REXT_BASE}/${HEVC_REXT_CCP_ZIP}`, zip);
       extractZipEntry(zip, HEVC_REXT_CCP_ENTRY, dest);
+      console.log(`deps/testimages: extracted ${dest}`);
+    }
+  }
+  {
+    const source = join(hevcSequenceDir, HEVC_REXT_CABAC_ALIGN);
+    const dest = join(hevcSequenceDir, HEVC_REXT_CABAC_ALIGN_SEQUENCE);
+    const zip = join(hevcSequenceDir, HEVC_REXT_CABAC_ALIGN_ZIP);
+    if (!existsSync(dest) || opts.force) {
+      await download(`${HEVC_REXT_BASE}/${HEVC_REXT_CABAC_ALIGN_ZIP}`, zip);
+      extractZipEntry(zip, HEVC_REXT_CABAC_ALIGN, source);
+      extractAnnexBSequence(source, dest, 0, 2);
       console.log(`deps/testimages: extracted ${dest}`);
     }
   }

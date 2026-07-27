@@ -861,6 +861,7 @@ int  heic_cabac_decode_bypass(heic_cabac *c);
 uint32_t heic_cabac_decode_bypass_bits(heic_cabac *c, int n);
 int  heic_cabac_decode_terminate(heic_cabac *c);
 uint32_t heic_cabac_decode_egk(heic_cabac *c, int k);
+void heic_cabac_align_bypass(heic_cabac *c);
 
 /* ---- slice header (hevc_slice.c) ---- */
 
@@ -958,6 +959,7 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                          int transform_skip_context_enabled,
                          int implicit_rdpcm_enabled, int explicit_rdpcm_enabled,
                          int persistent_rice_adaptation_enabled,
+                         int cabac_bypass_alignment_enabled,
                          uint8_t stat_coeff[4],
                          int pred_mode_intra, uint8_t intra_mode,
                          heic_coeff_buf *out, int *transform_skip, int *rdpcm_mode);

@@ -221,6 +221,7 @@ const HEVC_SEQUENCE_TESTS: readonly {
   frames: number;
   mse: number;
   bitDepth?: number;
+  md5?: string;
 }[] = [
   { name: "LTRPSPS_A_Qualcomm_1.bit", frames: 17, mse: 8 },
   { name: "RPLM_A_qualcomm_4.bit", frames: 25, mse: 8 },
@@ -243,6 +244,13 @@ const HEVC_SEQUENCE_TESTS: readonly {
   { name: "GENERAL_8b_444_RExt_Sony_2-seq5.bit", frames: 1, mse: 0 },
   { name: "GENERAL_8b_444_RExt_Sony_2-seq6.bit", frames: 1, mse: 0 },
   { name: "CCP_8bit_RExt_QCOM_1.bin", frames: 9, mse: 0.01 },
+  {
+    name: "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq0.bit",
+    frames: 1,
+    mse: 0,
+    bitDepth: 10,
+    md5: "d92c2386f43fdfb9ff66210bcc2824fe",
+  },
   {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
     frames: 8,
@@ -274,21 +282,42 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
     const ref = join(root, "out", `${stem}-ref.yuv`);
     rmSync(ours, { force: true });
     rmSync(ref, { force: true });
-    const rp = await Bun.$`${dec265} -q -f ${t.frames} -o ${ref} ${input}`
-      .nothrow()
-      .quiet();
+    const rp = t.md5
+      ? null
+      : await Bun.$`${dec265} -q -f ${t.frames} -o ${ref} ${input}`
+        .nothrow()
+        .quiet();
     const op = await Bun.$`${exe} -hevc-sequence -hevc-frames ${t.frames} -out ${ours} ${input}`
       .nothrow()
       .quiet();
-    if (rp.exitCode !== 0 || op.exitCode !== 0 || !existsSync(ours) || !existsSync(ref)) {
+    if (
+      (rp && rp.exitCode !== 0) || op.exitCode !== 0 || !existsSync(ours)
+      || (!t.md5 && !existsSync(ref))
+    ) {
       fail++;
       const detail = (
-        op.stderr.toString() + rp.stderr.toString()
+        op.stderr.toString() + (rp?.stderr.toString() ?? "")
       ).trim().slice(0, 300);
       console.log(`[fail] HEVC sequence ${t.name} decode failed\n${detail}`);
       continue;
     }
     const a = new Uint8Array(await Bun.file(ours).arrayBuffer());
+    if (t.md5) {
+      const digest = new Bun.CryptoHasher("md5").update(a).digest("hex");
+      if (digest === t.md5) {
+        ok++;
+        console.log(
+          `[ok] HEVC sequence ${t.name} frames=${t.frames} md5=${digest}`,
+        );
+      } else {
+        fail++;
+        console.log(
+          `[fail] HEVC sequence ${t.name} md5=${digest} != ${t.md5}`,
+        );
+      }
+      rmSync(ours, { force: true });
+      continue;
+    }
     const b = new Uint8Array(await Bun.file(ref).arrayBuffer());
     if (a.length !== b.length || a.length === 0) {
       fail++;

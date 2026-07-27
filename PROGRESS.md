@@ -204,6 +204,10 @@
       chroma QP group state, and per-CU Cb/Cr offsets. Official `GENERAL`
       sequence 6 matches libde265 byte-for-byte; a generated 4:4:4 HEIF wrapper
       is covered by the normal libheif corpus.
+- [x] HEVC RExt CABAC bypass alignment: detect coefficient groups carrying
+      remaining-level syntax and switch to the aligned range before sign and
+      escape bins. The first official `EXTPREC_HIGHTHROUGHPUT` picture matches
+      the published HM reconstruction MD5 byte-for-byte.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

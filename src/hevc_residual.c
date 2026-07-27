@@ -234,6 +234,7 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                          int transform_skip_context_enabled,
                          int implicit_rdpcm_enabled, int explicit_rdpcm_enabled,
                          int persistent_rice_adaptation_enabled,
+                         int cabac_bypass_alignment_enabled,
                          uint8_t stat_coeff[4],
                          int pred_mode_intra, uint8_t intra_mode,
                          heic_coeff_buf *out, int *transform_skip, int *rdpcm_mode)
@@ -453,6 +454,13 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                 coeff_values[first_g1_idx] = 3;
                 needs_remaining[first_g1_idx] = 1;
             }
+        }
+
+        if (cabac_bypass_alignment_enabled) {
+            int has_remaining = 0;
+            for (i = 0; i < n_sig; i++)
+                has_remaining |= needs_remaining[i];
+            if (has_remaining) heic_cabac_align_bypass(cabac);
         }
 
         /* Highest scan index first in array, lowest last. */
