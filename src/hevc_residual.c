@@ -38,6 +38,13 @@ static const uint8_t HEIC_SCAN_8X8_SB_DIAG[64][2] = {
     {7, 2}, {3, 7}, {4, 6}, {5, 5}, {6, 4}, {7, 3}, {4, 7}, {5, 6},
     {6, 5}, {7, 4}, {5, 7}, {6, 6}, {7, 5}, {6, 7}, {7, 6}, {7, 7},
 };
+/* Inverse of HEIC_SCAN_8X8_SB_DIAG: index = sy*8+sx → scan position. */
+static const uint8_t HEIC_INV_8X8_SB_DIAG[64] = {
+     0,  2,  5,  9, 14, 20, 27, 35,  1,  4,  8, 13, 19, 26, 34, 42,
+     3,  7, 12, 18, 25, 33, 41, 48,  6, 11, 17, 24, 32, 40, 47, 53,
+    10, 16, 23, 31, 39, 46, 52, 57, 15, 22, 30, 38, 45, 51, 56, 60,
+    21, 29, 37, 44, 50, 55, 59, 62, 28, 36, 43, 49, 54, 58, 61, 63
+};
 
 static const uint8_t HEIC_SIG_CTX_4X4[3][16] = {
     {0, 2, 1, 6, 3, 4, 7, 6, 4, 5, 7, 8, 5, 8, 8, 8},
@@ -144,6 +151,8 @@ static uint32_t find_scan_pos(const uint8_t (*scan)[2], int n, uint32_t x, uint3
     }
     if (n == 16 && scan == HEIC_SCAN_4X4_SB_DIAG)
         return (uint32_t)HEIC_INV_4X4_DIAG[(y << 2) | x];
+    if (n == 64 && scan == HEIC_SCAN_8X8_SB_DIAG)
+        return (uint32_t)HEIC_INV_8X8_SB_DIAG[(y << 3) | x];
     for (i = 0; i < n; i++)
         if (scan[i][0] == x && scan[i][1] == y) return (uint32_t)i;
     return 0;

@@ -233,6 +233,11 @@
       - Inline `decode_bypass_bits` into residual/CTU; `heic_store_deblock_qp`
         uses row `memset`.
       - HDR still ~+0–3% vs libheif; oracle OK.
+- [x] Zero-copy NAL RBSP when no EPB + 8×8 scan inverse:
+      - `heic_parse_single_nal` skips alloc/copy when payload has no 0x000003;
+        unescape uses non-zeroing alloc when copy is required.
+      - Residual last-sig uses O(1) inverse for 8×8 subblock diagonal scan.
+      - HDR often ≈/≤ libheif in noise; example still faster.
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported

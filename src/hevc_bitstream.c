@@ -13,6 +13,29 @@ static heic_nal_type nal_type_from_u8(uint8_t v)
     return HEIC_NAL_UNKNOWN;
 }
 
+/* True if payload has any emulation-prevention 0x000003 sequence. */
+static int rbsp_has_epb(const uint8_t *src, size_t len)
+{
+    size_t i;
+    if (len < 3) return 0;
+    /* Walk looking for 00 00 03; advance by 1 on non-zero, by 2 on 00 xx. */
+    for (i = 0; i + 2 < len; ) {
+        if (src[i]) {
+            i++;
+            continue;
+        }
+        if (src[i + 1]) {
+            i += 2;
+            continue;
+        }
+        /* 00 00 … */
+        if (src[i + 2] == 3) return 1;
+        /* 00 00 00… keep overlapping */
+        i++;
+    }
+    return 0;
+}
+
 /* Remove emulation prevention bytes (0x000003 → 0x0000).
    Records EBSP positions of stripped 0x03 bytes into *ep_out / *n_ep. */
 static int rbsp_unescape(heic_ctx *ctx, const uint8_t *src, size_t len,
@@ -23,7 +46,8 @@ static int rbsp_unescape(heic_ctx *ctx, const uint8_t *src, size_t len,
     uint32_t *eps = NULL;
     int ne = 0, cap = 0;
     size_t i, j;
-    dst = (uint8_t *)heic_zalloc(ctx, len ? len : 1);
+    /* Uninitialized alloc — we write every byte we keep. */
+    dst = (uint8_t *)heic_alloc(ctx, len ? len : 1);
     if (!dst) return -1;
     j = 0;
     for (i = 0; i < len; i++) {
@@ -87,6 +111,15 @@ int heic_parse_single_nal(heic_ctx *ctx, const uint8_t *data, size_t len, heic_n
     out->temporal_id -= 1;
     payload = data + 2;
     payload_len = len - 2;
+    /* Common case (HEIF still slices): no EPB → zero-copy payload. */
+    if (!rbsp_has_epb(payload, payload_len)) {
+        out->payload = payload;
+        out->payload_len = payload_len;
+        out->owned = NULL;
+        out->ep_positions = NULL;
+        out->n_ep_positions = 0;
+        return 0;
+    }
     if (rbsp_unescape(ctx, payload, payload_len, &out->owned, &out->payload_len,
                       &out->ep_positions, &out->n_ep_positions) != 0)
         return -1;
