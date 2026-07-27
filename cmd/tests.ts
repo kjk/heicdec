@@ -223,6 +223,7 @@ const HEVC_SEQUENCE_TESTS = [
   { name: "WP_B_Toshiba_3.bit", frames: 17, mse: 8 },
   { name: "MERGE_A_TI_3.bit", frames: 8, mse: 8 },
   { name: "DSLICE_A_HHI_5.bit", frames: 50, mse: 0.001 },
+  { name: "DSLICE_B_HHI_5.bit", frames: 50, mse: 0.001 },
   { name: "ipcm_A_NEC_3.bit", frames: 1, mse: 8 },
   { name: "ipcm_B_NEC_3.bit", frames: 1, mse: 8 },
   { name: "ipcm_C_NEC_3.bit", frames: 1, mse: 8 },

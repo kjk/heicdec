@@ -147,10 +147,12 @@ static int split_annexb(const uint8_t *data, size_t len,
             data, len, nal_start + 2, &next, &next_prefix);
         nal_end = have_next ? next : len;
         while (nal_end > nal_start && data[nal_end - 1] == 0) nal_end--;
-        if (nal_end >= nal_start + 2 && n < cap) {
-            nals[n].data = data + nal_start;
-            nals[n].len = nal_end - nal_start;
-            nals[n].type = (uint8_t)((data[nal_start] >> 1) & 0x3f);
+        if (nal_end >= nal_start + 2) {
+            if (nals && n < cap) {
+                nals[n].data = data + nal_start;
+                nals[n].len = nal_end - nal_start;
+                nals[n].type = (uint8_t)((data[nal_start] >> 1) & 0x3f);
+            }
             n++;
         }
         if (!have_next) break;
@@ -182,7 +184,7 @@ static uint64_t hash_plane(uint64_t h, const uint16_t *p,
 static int do_hevc_sequence(const uint8_t *data, size_t len,
                             const char *out_path, int max_frames)
 {
-    annexb_nal nals[1024];
+    annexb_nal *nals = NULL;
     uint8_t *params[16];
     size_t param_lens[16];
     heic_hvcc cfg;
@@ -196,9 +198,16 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
 
     memset(&cfg, 0, sizeof(cfg));
     memset(frames, 0, sizeof(frames));
-    n_nals = split_annexb(data, len, nals, 1024);
+    n_nals = split_annexb(data, len, NULL, 0);
     if (n_nals <= 0) {
         fprintf(stderr, "hevc-sequence: no Annex B NAL units\n");
+        return 1;
+    }
+    if ((size_t)n_nals > SIZE_MAX / sizeof(*nals)) return 1;
+    nals = (annexb_nal *)malloc((size_t)n_nals * sizeof(*nals));
+    if (!nals) return 1;
+    if (split_annexb(data, len, nals, n_nals) != n_nals) {
+        free(nals);
         return 1;
     }
     for (i = 0; i < n_nals && n_params < 16; i++)
@@ -208,6 +217,7 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
         }
     if (n_params < 2) {
         fprintf(stderr, "hevc-sequence: missing parameter sets\n");
+        free(nals);
         return 1;
     }
     cfg.length_size_minus_one = 3;
@@ -215,7 +225,10 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
     cfg.nal_unit_lens = param_lens;
     cfg.n_nal_units = n_params;
     ctx = heic_ctx_new(NULL, NULL, on_error_only, NULL);
-    if (!ctx) return 1;
+    if (!ctx) {
+        free(nals);
+        return 1;
+    }
 
     i = 0;
     while (i < n_nals && decoded < max_frames) {
@@ -314,6 +327,7 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
     }
     for (i = 0; i < decoded; i++) heic_frame_free(ctx, &frames[i]);
     heic_ctx_free(ctx);
+    free(nals);
     if (decoded == 0 || !j) return 1;
     printf("hevc-sequence frames=%d hash=%016llx\n", decoded,
            (unsigned long long)hash);

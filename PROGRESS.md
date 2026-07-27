@@ -228,6 +228,10 @@
       deblock/SAO until the picture is complete. All 50 reordered I/B pictures
       in official `DSLICE_A_HHI_5` match libde265 at mse=0.000082, maxdiff=3;
       a generated HEIC wrapper is also covered by the normal libheif corpus.
+- [x] HEVC dependent slices with WPP: dynamic Annex B NAL collection handles
+      the 1,700-segment official `DSLICE_B_HHI_5` stream; all 50 reordered I/B
+      pictures match libde265 at mse=0.000142, maxdiff=3, with a generated HEIC
+      wrapper also covered by the normal corpus.
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
 
 ## Investigation notes
