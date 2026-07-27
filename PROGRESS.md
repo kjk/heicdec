@@ -218,6 +218,10 @@
       sample midpoint, and apply offsets without 8-bit scaling. A compact
       four-frame 10-bit HM P sequence with nonzero Y/Cb/Cr offsets matches the
       HM reconstruction MD5 byte-for-byte.
+- [x] HEVC RExt SAO offset scaling: apply the independently signaled PPS
+      luma/chroma shifts instead of deriving a shift from bit depth. A compact
+      12-bit HM intra sequence with shifts 1/2 matches the HM reconstruction
+      MD5 byte-for-byte.
 - [x] HEVC bidirectional MC retains 14-bit internal samples through blending
 - [x] HEVC merge deduplication and deblocking compare resolved reference
       pictures, including cross-list B prediction order

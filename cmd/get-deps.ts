@@ -19,6 +19,7 @@ import { generateAvifFixtures } from "./gen_avif_fixtures";
 import {
   generateHevcHeif,
   generateHighPrecisionWeightingHevc,
+  generateSaoOffsetScaleHevc,
 } from "./gen_hevc_fixtures";
 import { generateUnciBlockFixtures } from "./gen_unci_block_fixtures";
 
@@ -72,7 +73,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v20-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp";
+  "v21-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_REXT_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -95,6 +96,7 @@ const HEVC_REXT_EXTPREC_SEQUENCE1 =
   "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq1.bit";
 const HEVC_HIGH_PRECISION_WEIGHTING =
   "high-precision-weighting-main10.bit";
+const HEVC_SAO_OFFSET_SCALE = "sao-offset-scale-main12.bit";
 const HEVC_SEQUENCE_SAMPLES = [
   "LTRPSPS_A_Qualcomm_1.bit",
   "RPLM_A_qualcomm_4.bit",
@@ -245,6 +247,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE0)) &&
     existsSync(join(hevcSequenceDir, HEVC_REXT_EXTPREC_SEQUENCE1)) &&
     existsSync(join(hevcSequenceDir, HEVC_HIGH_PRECISION_WEIGHTING)) &&
+    existsSync(join(hevcSequenceDir, HEVC_SAO_OFFSET_SCALE)) &&
     HEVC_REXT_GENERAL_SEQUENCES.every((index) =>
       existsSync(join(
         hevcSequenceDir,
@@ -359,6 +362,9 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   }
   generateHighPrecisionWeightingHevc(
     join(hevcSequenceDir, HEVC_HIGH_PRECISION_WEIGHTING),
+  );
+  generateSaoOffsetScaleHevc(
+    join(hevcSequenceDir, HEVC_SAO_OFFSET_SCALE),
   );
   console.log("deps/testimages: generating HEVC fixtures…");
   generateHevcHeif(

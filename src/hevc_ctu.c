@@ -2481,7 +2481,9 @@ static int decode_sao(heic_slice_ctx *sc, uint32_t x_ctb_px, uint32_t y_ctb_px)
             if (type_idx != 0) {
                 int bd = c_idx == 0 ? bit_depth_y(sc->sps) : bit_depth_c(sc->sps);
                 uint32_t c_max = (1u << (((bd < 10 ? bd : 10) - 5))) - 1;
-                int scale = 1 << (bd > 10 ? bd - 10 : 0);
+                int scale = 1 << (c_idx == 0
+                    ? sc->pps->log2_sao_offset_scale_luma
+                    : sc->pps->log2_sao_offset_scale_chroma);
                 uint32_t offs[4];
                 int e;
                 for (e = 0; e < 4; e++) offs[e] = decode_tu_bypass(sc, c_max);

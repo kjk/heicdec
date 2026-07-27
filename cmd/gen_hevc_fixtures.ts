@@ -16,14 +16,40 @@ const HIGH_PRECISION_WEIGHTING_HEVC =
   "2Ff5PGVG7wY1jNAQkV81hePQvEgAAAAAQIB0A04/gaoPoF68L3gAAAAAQIB0BV1n" +
   "/A1QfQL0BqQPkBeS4C64AAAAAECAdAdt5/8DVB9AvQGpA+QF5AJ9AXUAjV4veA=";
 
-/** Install a 64x64 10-bit HM stream with nonzero high-precision P offsets. */
-export function generateHighPrecisionWeightingHevc(outputPath: string): void {
-  const data = Uint8Array.from(atob(HIGH_PRECISION_WEIGHTING_HEVC), (c) =>
-    c.charCodeAt(0)
-  );
+const SAO_OFFSET_SCALE_HEVC =
+  "AAAAAUABDAH//wQIAAADAAmIAAADAAADAPAkAAAAAUIBAQQIAAADAAmIAAADAAAD" +
+  "AKAQIGH5Sl+SRtntkAAAAAFEAcGQkYEWAE4AAAEmAa8TgNuRbVizfNS+tRNAqAeg" +
+  "ZJpKG/zkEovamZpDQ3XdV52hxzkJVa0tiO9JpwYyfTT1T55YA4tJv1vaewNAy0w/" +
+  "8OF9zV0/RJIpf/A+C+s2hgbbiDJX4I5Ax488mbWygTlLAWY24jfA8Cuwb03uLcYz" +
+  "VaX3T0ahA+bbBMPsQV4ButzP2AgH8djQ2EWLkzV/dyMjxtDZVFb794+o2gMfOXSB" +
+  "+B+X7mogYwSejeqeJcBuLv3c4DdAoxqMFE3FiJYMnDnCUcHep4Q8DDWeshfKXVvm" +
+  "tq95e2K/5p/TYzm7FzGUt+ANEKR3AhJ/p1/jnxQW+hT8hvaW+cpEWtq0lRJiYPU2" +
+  "80faCKMnrssgivyWxBKZtCLirt0dWMCG4fe1Nyyn3mIMHeSko4ELUXr/cmswsn7D" +
+  "m/a45HZxznOskondylOXbk/2G6XfFqcyJjs4vdDACVlk8OcLHd/wL1Txbw2ReXTP" +
+  "Xr8sTT2etQozrvrXrKFftKN5W9oZAVjjYFWfN7nu4QlGmcXf4tDF8Dc2h0o62/7a" +
+  "DUtHpzGEmqyWBKiQfupVnjblZzyh3wjgoCTNvfYetLLqMvZnps/M6pVHh6wpLS2j" +
+  "QZeEtLFaB7mMgD5NpTjO35BPqsHVk3uJd5Nyc0jCmv80LHYc4B5vCa6CdXgkBT3p" +
+  "CKPcA4l0/0pjhOR5FzdsOHw2lOxaPm+Uhg0qFnWO7ipTEOD8pSlcnFbvXjViM4gB" +
+  "Njxq6v6gBJ6mTF+w5837fYVYolyUWH4+J1uD8ODDkS4tjgxuxsK18Nc0GwdnDlkS" +
+  "GVSayft1TZNtHGXCWpxGL4+UNP0XWmyRA6uQCVRN+QHAgHSMB1XnrIc+tc98mMa6" +
+  "+xBxuCg8FZja9iNTxKXq7UAAjkkY1oYoFtXNodm8XGwPI1MRC0FcWw/n9MVGKRKJ" +
+  "dZT+ml90yZnhCBZ0TvuGp/n9hojyTJlu5fb55xKw";
+
+function writeEmbeddedHevc(outputPath: string, encoded: string): void {
+  const data = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
   mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, data);
   console.log(`wrote ${outputPath} (${data.length} bytes)`);
+}
+
+/** Install a 64x64 10-bit HM stream with nonzero high-precision P offsets. */
+export function generateHighPrecisionWeightingHevc(outputPath: string): void {
+  writeEmbeddedHevc(outputPath, HIGH_PRECISION_WEIGHTING_HEVC);
+}
+
+/** Install a 128x96 12-bit HM stream with luma/chroma SAO shifts 1/2. */
+export function generateSaoOffsetScaleHevc(outputPath: string): void {
+  writeEmbeddedHevc(outputPath, SAO_OFFSET_SCALE_HEVC);
 }
 
 function be16(n: number): Uint8Array {

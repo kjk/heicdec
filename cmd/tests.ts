@@ -266,6 +266,13 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "dce18b1793cd88f18005e6bbaf5db13a",
   },
   {
+    name: "sao-offset-scale-main12.bit",
+    frames: 1,
+    mse: 0,
+    bitDepth: 12,
+    md5: "2a92f69d0d3571fdde7bdeaf9361846f",
+  },
+  {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
     frames: 8,
     mse: 0.05,
