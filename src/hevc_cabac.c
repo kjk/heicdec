@@ -71,31 +71,75 @@ void heic_ctx_model_init(heic_ctx_model *m, uint8_t init_value, int slice_qp)
     }
 }
 
-void heic_cabac_init_contexts(heic_ctx_model *ctx, int slice_type, int cabac_init_flag,
-                              int slice_qp)
+/* Precomputed init states: table × QP × contexts. Built once on first use.
+ * 5 tables (I, P, B, P↔B swap for cabac_init_flag) × 52 QPs × 174 × 2 B ≈ 88 KB. */
+enum {
+    HEIC_CABAC_TAB_I = 0,
+    HEIC_CABAC_TAB_P = 1,
+    HEIC_CABAC_TAB_B = 2,
+    HEIC_CABAC_TAB_P_SWAP = 3, /* P with cabac_init_flag → B inits */
+    HEIC_CABAC_TAB_B_SWAP = 4,
+    HEIC_CABAC_TAB_N = 5
+};
+
+static heic_ctx_model g_cabac_init_tab[HEIC_CABAC_TAB_N][52][HEIC_NUM_CONTEXTS];
+static int g_cabac_init_ready;
+
+static void cabac_fill_table(heic_ctx_model *dst, const uint8_t *table,
+                             int slice_type, int slice_qp)
 {
-    const uint8_t *table;
     int i;
-    if (slice_type == HEIC_SLICE_I)
-        table = HEIC_CABAC_INIT_I;
-    else if (slice_type == HEIC_SLICE_P)
-        table = cabac_init_flag ? HEIC_CABAC_INIT_B : HEIC_CABAC_INIT_P;
-    else
-        table = cabac_init_flag ? HEIC_CABAC_INIT_P : HEIC_CABAC_INIT_B;
     for (i = 0; i < HEIC_NUM_CONTEXTS; i++)
-        heic_ctx_model_init(&ctx[i], table[i], slice_qp);
-    heic_ctx_model_init(&ctx[HEIC_CTX_SIG_COEFF_FLAG_REXT],
+        heic_ctx_model_init(&dst[i], table[i], slice_qp);
+    heic_ctx_model_init(&dst[HEIC_CTX_SIG_COEFF_FLAG_REXT],
                         slice_type == HEIC_SLICE_I ? 141 : 140, slice_qp);
-    heic_ctx_model_init(&ctx[HEIC_CTX_SIG_COEFF_FLAG_REXT + 1],
+    heic_ctx_model_init(&dst[HEIC_CTX_SIG_COEFF_FLAG_REXT + 1],
                         slice_type == HEIC_SLICE_I ? 111 : 140, slice_qp);
     for (i = HEIC_CTX_EXPLICIT_RDPCM_FLAG;
          i < HEIC_CTX_EXPLICIT_RDPCM_DIR + 2; i++)
-        heic_ctx_model_init(&ctx[i], 139, slice_qp);
+        heic_ctx_model_init(&dst[i], 139, slice_qp);
     for (i = HEIC_CTX_LOG2_RES_SCALE_ABS_PLUS1;
          i < HEIC_CTX_RES_SCALE_SIGN_FLAG + 2; i++)
-        heic_ctx_model_init(&ctx[i], 154, slice_qp);
-    heic_ctx_model_init(&ctx[HEIC_CTX_CU_CHROMA_QP_OFFSET_FLAG], 154, slice_qp);
-    heic_ctx_model_init(&ctx[HEIC_CTX_CU_CHROMA_QP_OFFSET_IDX], 154, slice_qp);
+        heic_ctx_model_init(&dst[i], 154, slice_qp);
+    heic_ctx_model_init(&dst[HEIC_CTX_CU_CHROMA_QP_OFFSET_FLAG], 154, slice_qp);
+    heic_ctx_model_init(&dst[HEIC_CTX_CU_CHROMA_QP_OFFSET_IDX], 154, slice_qp);
+}
+
+static void cabac_build_init_tables(void)
+{
+    int qp;
+    for (qp = 0; qp <= 51; qp++) {
+        cabac_fill_table(g_cabac_init_tab[HEIC_CABAC_TAB_I][qp],
+                         HEIC_CABAC_INIT_I, HEIC_SLICE_I, qp);
+        cabac_fill_table(g_cabac_init_tab[HEIC_CABAC_TAB_P][qp],
+                         HEIC_CABAC_INIT_P, HEIC_SLICE_P, qp);
+        cabac_fill_table(g_cabac_init_tab[HEIC_CABAC_TAB_B][qp],
+                         HEIC_CABAC_INIT_B, HEIC_SLICE_B, qp);
+        cabac_fill_table(g_cabac_init_tab[HEIC_CABAC_TAB_P_SWAP][qp],
+                         HEIC_CABAC_INIT_B, HEIC_SLICE_P, qp);
+        cabac_fill_table(g_cabac_init_tab[HEIC_CABAC_TAB_B_SWAP][qp],
+                         HEIC_CABAC_INIT_P, HEIC_SLICE_B, qp);
+    }
+    g_cabac_init_ready = 1;
+}
+
+void heic_cabac_init_contexts(heic_ctx_model *ctx, int slice_type, int cabac_init_flag,
+                              int slice_qp)
+{
+    int tab, qp;
+    if (!ctx) return;
+    if (!g_cabac_init_ready) cabac_build_init_tables();
+    qp = slice_qp;
+    if (qp < 0) qp = 0;
+    if (qp > 51) qp = 51;
+    if (slice_type == HEIC_SLICE_I)
+        tab = HEIC_CABAC_TAB_I;
+    else if (slice_type == HEIC_SLICE_P)
+        tab = cabac_init_flag ? HEIC_CABAC_TAB_P_SWAP : HEIC_CABAC_TAB_P;
+    else
+        tab = cabac_init_flag ? HEIC_CABAC_TAB_B_SWAP : HEIC_CABAC_TAB_B;
+    memcpy(ctx, g_cabac_init_tab[tab][qp],
+           (size_t)HEIC_NUM_CONTEXTS * sizeof(heic_ctx_model));
 }
 
 static int cabac_read_bit(heic_cabac *c)

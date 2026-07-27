@@ -168,7 +168,11 @@ struct heic_ctx {
     /* Optional cached dav1d context (av1_dav1d.c); opaque to keep header free
      * of dav1d types. Closed in heic_ctx_free. */
     void         *dav1d_ctx;
+    /* Cached HEVC param sets from hvcC (opaque; owned by hevc_decode.c). */
+    void         *hevc_param_cache;
 };
+
+void heic_hevc_param_cache_free(heic_ctx *ctx);
 
 /* Tracked allocators: every library-owned buffer goes through these so
  * limits.max_memory_bytes is enforced. Returned pointers must be freed with

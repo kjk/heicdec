@@ -211,6 +211,12 @@
         allocate once, re-UNINIT). HEVC decode no longer `memset`s away planes.
       - Chroma tile blit uses row `memcpy` like luma.
       - HDR ~+2–5% vs libheif (was ~+8%); `example` ~−11%; `nokia_444` ≈/≤.
+- [x] CABAC init tables + hvcC param cache:
+      - Precompute all CABAC context init states for I/P/B × QP 0–51 (memcpy
+        per slice instead of 174× arithmetic).
+      - Cache SPS/PPS parsed from hvcC on `heic_ctx` so grid tiles skip reparse;
+        sample-stream param NALs invalidate the cache.
+      - HDR often ~+2–4% vs libheif; `example` still faster; oracle OK.
 - [ ] Prepare a release-quality integration pass: exercise the SumatraPDF
       buffer/size/BGR/EXIF workflow, add public-API allocator and abort tests,
       rebuild/verify the amalgamation and WASM drop, and document supported

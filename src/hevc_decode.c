@@ -1,6 +1,35 @@
 /* hevc_decode.c -- HEVC still-image entry */
 #include "heic_internal.h"
 
+/* Per-ctx cache of SPS/PPS from hvcC — grid tiles reuse one parse. */
+typedef struct {
+    const heic_hvcc *hvcc;
+    heic_sps sps;
+    heic_pps pps;
+    int have_sps;
+    int have_pps;
+} heic_param_cache;
+
+void heic_hevc_param_cache_free(heic_ctx *ctx)
+{
+    heic_param_cache *pc;
+    if (!ctx || !ctx->hevc_param_cache) return;
+    pc = (heic_param_cache *)ctx->hevc_param_cache;
+    heic_pps_free(ctx, &pc->pps);
+    heic_free_buf(ctx, pc);
+    ctx->hevc_param_cache = NULL;
+}
+
+static heic_param_cache *param_cache_get(heic_ctx *ctx)
+{
+    heic_param_cache *pc = (heic_param_cache *)ctx->hevc_param_cache;
+    if (pc) return pc;
+    pc = (heic_param_cache *)heic_zalloc(ctx, sizeof(*pc));
+    if (!pc) return NULL;
+    ctx->hevc_param_cache = pc;
+    return pc;
+}
+
 static const heic_frame *find_prev_tid0(const heic_frame *const *refs,
                                         int n_refs)
 {
@@ -162,32 +191,53 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
 {
     heic_nal *nals = NULL;
     int n_nals = 0, i;
-    heic_sps sps;
-    heic_pps pps;
+    heic_param_cache *pc;
+    heic_sps *sps;
+    heic_pps *pps;
     int have_sps = 0, have_pps = 0;
     int length_size;
     heic_nal param;
     int sub_w = 2, sub_h = 2;
     int decode_ok = 0;
 
-    memset(&sps, 0, sizeof(sps));
-    memset(&pps, 0, sizeof(pps));
     if (!ctx || !cfg || !data || !out) return -1;
     if (heic_abort_check(ab)) return -1;
+    pc = param_cache_get(ctx);
+    if (!pc) return -1;
+    sps = &pc->sps;
+    pps = &pc->pps;
 
-    /* Parameter sets from hvcC */
-    for (i = 0; i < cfg->n_nal_units; i++) {
-        if (heic_parse_single_nal(ctx, cfg->nal_units[i], cfg->nal_unit_lens[i], &param) != 0)
-            continue;
-        if (param.type == HEIC_NAL_SPS) {
-            if (heic_parse_sps(ctx, param.payload, param.payload_len, &sps) == 0)
-                have_sps = 1;
-        } else if (param.type == HEIC_NAL_PPS) {
-            heic_pps_free(ctx, &pps);
-            if (heic_parse_pps(ctx, param.payload, param.payload_len, &pps) == 0)
-                have_pps = 1;
+    /* Reuse SPS/PPS when tiles share the same hvcC property. */
+    if (pc->hvcc == cfg && pc->have_sps) {
+        have_sps = 1;
+        have_pps = pc->have_pps;
+    } else {
+        heic_pps_free(ctx, pps);
+        memset(sps, 0, sizeof(*sps));
+        memset(pps, 0, sizeof(*pps));
+        pc->hvcc = cfg;
+        pc->have_sps = 0;
+        pc->have_pps = 0;
+        for (i = 0; i < cfg->n_nal_units; i++) {
+            if (heic_parse_single_nal(ctx, cfg->nal_units[i],
+                                      cfg->nal_unit_lens[i], &param) != 0)
+                continue;
+            if (param.type == HEIC_NAL_SPS) {
+                if (heic_parse_sps(ctx, param.payload, param.payload_len, sps)
+                    == 0) {
+                    have_sps = 1;
+                    pc->have_sps = 1;
+                }
+            } else if (param.type == HEIC_NAL_PPS) {
+                heic_pps_free(ctx, pps);
+                if (heic_parse_pps(ctx, param.payload, param.payload_len, pps)
+                    == 0) {
+                    have_pps = 1;
+                    pc->have_pps = 1;
+                }
+            }
+            heic_nal_free(ctx, &param);
         }
-        heic_nal_free(ctx, &param);
     }
     if (!have_sps) {
         heic_error(ctx, HEIC_SEVERITY_ERROR, "missing SPS");
@@ -195,58 +245,66 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
     }
 
     length_size = (int)cfg->length_size_minus_one + 1;
-    if (heic_parse_length_prefixed(ctx, data, len, length_size, &nals, &n_nals) != 0) {
-        heic_pps_free(ctx, &pps);
+    if (heic_parse_length_prefixed(ctx, data, len, length_size, &nals, &n_nals) != 0)
         return -1;
-    }
 
-    /* Also allow PPS/SPS in the sample stream */
+    /* Sample-stream SPS/PPS override the cache for this decode only.
+     * Invalidate hvcC reuse so the next tile reloads clean base params. */
     for (i = 0; i < n_nals; i++) {
         if (nals[i].type == HEIC_NAL_PPS) {
-            heic_pps_free(ctx, &pps);
-            if (heic_parse_pps(ctx, nals[i].payload, nals[i].payload_len, &pps) == 0)
+            heic_pps_free(ctx, pps);
+            if (heic_parse_pps(ctx, nals[i].payload, nals[i].payload_len, pps)
+                == 0) {
                 have_pps = 1;
+                pc->have_pps = 1;
+            }
+            pc->hvcc = NULL;
         } else if (nals[i].type == HEIC_NAL_SPS) {
-            if (heic_parse_sps(ctx, nals[i].payload, nals[i].payload_len, &sps) == 0)
+            if (heic_parse_sps(ctx, nals[i].payload, nals[i].payload_len, sps)
+                == 0) {
                 have_sps = 1;
+                pc->have_sps = 1;
+            }
+            pc->hvcc = NULL;
         }
     }
 
     /* prepare reuses plane buffers across equal-size grid tiles. */
-    if (heic_frame_prepare(ctx, out, (int)sps.pic_width_in_luma_samples,
-                           (int)sps.pic_height_in_luma_samples,
-                           8 + sps.bit_depth_luma_minus8,
-                           sps.chroma_format_idc) != 0) {
+    if (heic_frame_prepare(ctx, out, (int)sps->pic_width_in_luma_samples,
+                           (int)sps->pic_height_in_luma_samples,
+                           8 + sps->bit_depth_luma_minus8,
+                           sps->chroma_format_idc) != 0) {
         heic_nals_free(ctx, nals, n_nals);
-        heic_pps_free(ctx, &pps);
         return -1;
     }
-    out->chroma_bit_depth = sps.chroma_format_idc
-        ? 8 + sps.bit_depth_chroma_minus8 : 0;
-    out->full_range = sps.video_full_range_flag;
+    out->chroma_bit_depth = sps->chroma_format_idc
+        ? 8 + sps->bit_depth_chroma_minus8 : 0;
+    out->full_range = sps->video_full_range_flag;
     /* matrix_coeffs: 0 = GBR identity (only when colour_description present).
      * When colour description is absent or matrix is unspecified (2), match
      * libheif sRGB defaults → BT.601 (6). Old code mapped 0→BT.709 (1), which
      * diverged on streams like nokia_444 (VUI full_range only, no colour desc). */
-    if (sps.colour_description_present_flag && sps.matrix_coeffs != 2)
-        out->matrix_coeffs = sps.matrix_coeffs;
+    if (sps->colour_description_present_flag && sps->matrix_coeffs != 2)
+        out->matrix_coeffs = sps->matrix_coeffs;
     else
         out->matrix_coeffs = 6;
-    out->color_primaries = sps.colour_description_present_flag ? sps.colour_primaries : 1;
+    out->color_primaries =
+        sps->colour_description_present_flag ? sps->colour_primaries : 1;
     out->transfer_characteristics =
-        sps.colour_description_present_flag ? sps.transfer_characteristics : 13;
+        sps->colour_description_present_flag ? sps->transfer_characteristics
+                                             : 13;
 
-    if (sps.conformance_window_flag) {
-        switch (sps.chroma_format_idc) {
+    if (sps->conformance_window_flag) {
+        switch (sps->chroma_format_idc) {
         case 0: sub_w = 1; sub_h = 1; break;
         case 1: sub_w = 2; sub_h = 2; break;
         case 2: sub_w = 2; sub_h = 1; break;
         case 3: sub_w = 1; sub_h = 1; break;
         }
-        out->crop_left = (int)(sps.conf_win_left_offset * (uint32_t)sub_w);
-        out->crop_right = (int)(sps.conf_win_right_offset * (uint32_t)sub_w);
-        out->crop_top = (int)(sps.conf_win_top_offset * (uint32_t)sub_h);
-        out->crop_bottom = (int)(sps.conf_win_bottom_offset * (uint32_t)sub_h);
+        out->crop_left = (int)(sps->conf_win_left_offset * (uint32_t)sub_w);
+        out->crop_right = (int)(sps->conf_win_right_offset * (uint32_t)sub_w);
+        out->crop_top = (int)(sps->conf_win_top_offset * (uint32_t)sub_h);
+        out->crop_bottom = (int)(sps->conf_win_bottom_offset * (uint32_t)sub_h);
     }
 
     {
@@ -277,7 +335,7 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 break;
             }
             if (heic_parse_slice_header(
-                    ctx, &nals[i], &sps, &pps,
+                    ctx, &nals[i], sps, pps,
                     have_independent ? &independent : NULL, &sh) != 0) {
                 failed = 1;
                 break;
@@ -301,7 +359,7 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 "data_off=%u CTUs=%u entries=%u",
                 sh.slice_type, sh.dependent_slice_segment_flag,
                 (unsigned)sh.slice_segment_address, sh.slice_qp_y,
-                (unsigned)sh.data_offset, (unsigned)sps.pic_size_in_ctbs,
+                (unsigned)sh.data_offset, (unsigned)sps->pic_size_in_ctbs,
                 (unsigned)sh.num_entry_point_offsets);
             if (sh.data_offset >= nals[i].payload_len) {
                 heic_error(ctx, HEIC_SEVERITY_ERROR, "empty slice data");
@@ -338,7 +396,7 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 const heic_frame *prev_tid0 =
                     find_prev_tid0(refs, n_refs);
                 int poc_bits =
-                    sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
+                    sps->log2_max_pic_order_cnt_lsb_minus4 + 4;
                 uint32_t max_poc_lsb = 1u << poc_bits;
                 int reset_poc =
                     nals[i].type >= HEIC_NAL_BLA_W_LP
@@ -363,13 +421,13 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 out->temporal_id = nals[i].temporal_id;
             }
             if (!failed && sh.slice_type != HEIC_SLICE_I
-                && build_ref_lists(ctx, &sps, &sh, out->poc,
+                && build_ref_lists(ctx, sps, &sh, out->poc,
                                    refs, n_refs, l0, &n_l0,
                                    l1, &n_l1) != 0)
                 failed = 1;
             if (!failed && !picture) {
                 picture = heic_hevc_picture_new(
-                    ctx, &sps, &pps, &sh, l0, n_l0, l1, n_l1, out);
+                    ctx, sps, pps, &sh, l0, n_l0, l1, n_l1, out);
                 if (!picture) failed = 1;
             }
             if (!failed
@@ -389,7 +447,7 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
     }
 
     heic_nals_free(ctx, nals, n_nals);
-    heic_pps_free(ctx, &pps);
+    /* PPS/SPS live in ctx param cache (shared across grid tiles). */
     if (!decode_ok) {
         heic_frame_free(ctx, out);
         return -1;
