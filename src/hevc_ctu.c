@@ -3438,13 +3438,22 @@ int heic_hevc_picture_decode_segment(
                 sc->ctb_y++;
                 /* WPP: end_of_sub_stream_one_bit at every row boundary (even
                  * PicWidthInCtbsY==1 — FATE WPP_D is 64×H with one CTB column).
-                 * Context restore from CTB (1,y-1) only applies when pic_w>1. */
+                 * When pic_w>1 restore models from CTB (1,y-1); when pic_w==1
+                 * that neighbour does not exist so re-init like slice start
+                 * (libde265 decode_substream / initialize_CABAC_models). */
                 if (wpp && sc->ctb_y < pic_h) {
                     (void)heic_cabac_decode_terminate(&sc->cabac); /* end_of_subset */
                     if (pic_w > 1 && work->wpp_have_saved) {
                         memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
                         memcpy(sc->stat_coeff, work->wpp_stat_coeff,
                                sizeof(sc->stat_coeff));
+                    } else if (pic_w == 1) {
+                        /* PicWidthInCtbsY==1: no (1,y-1) sync CTB — re-init
+                         * like the first CTB of the slice (H.265 9.3.2.4). */
+                        heic_cabac_init_contexts(sc->models, sh->slice_type,
+                                                 sh->cabac_init_flag,
+                                                 sh->slice_qp_y);
+                        memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
                     }
                     if (entry_idx < n_entry) {
                         uint32_t ebsp = work->entry_cum[entry_idx];

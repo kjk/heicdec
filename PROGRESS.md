@@ -169,9 +169,13 @@
       vs libde265): DELTAQP_C; RQT_A–C + TUSIZE + MAXBINS_A–C; IPRED_A–C +
       CIP_A–C; SAO_A–G; TILES_A/B; POC_A; RPS_A/B/C/E/F; WPP Main A/B/C/E/F
       (48-frame Ericsson streams). Fix: dependent slice headers still parse
-      entry-point offsets + header extension (H.265 7.3.6.1). Remaining gaps:
-      WPP_D (single-CTB-wide), WPP Main10 (P-frame WPP desync), DELTAQP_A/B,
-      NoOutPrior/RAP DPB output order, RPS_D, SLIST, PERSIST_RPARAM.
+      entry-point offsets + header extension (H.265 7.3.6.1).
+- [x] WPP PicWidthInCtbsY==1: on row boundaries re-init CABAC models (no
+      (1,y-1) sync CTB; matches libde265 initialize_CABAC_models). WPP_D I-frame
+      MD5 matches; B-frame / multi-segment still open.
+      Remaining gaps: WPP_D B/multi-segment, WPP Main10 P, DELTAQP_A/B (f0 first
+      mismatch at CTB (13,1) on 1920×1088; multi-PPS stream), NoOutPrior/RAP
+      DPB order, RPS_D, SLIST, PERSIST_RPARAM.
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`
