@@ -167,17 +167,21 @@
       multilayer001–005 are out of scope; must-decode fixtures still fail hard.
 - [x] Expanded raw HEVC conformance by feature family (FATE streams, exact MD5
       vs libde265): DELTAQP_C; RQT_A–C + TUSIZE + MAXBINS_A–C; IPRED_A–C +
-      CIP_A–C; SAO_A–G; TILES_A/B; POC_A; RPS_A/B/C/E/F; WPP Main A/B/C/E/F
-      (48-frame Ericsson streams). Fix: dependent slice headers still parse
-      entry-point offsets + header extension (H.265 7.3.6.1).
+      CIP_A–C; SAO_A–G; TILES_A/B; POC_A; RPS_A/B/C/E/F (+ RPS_D separate);
+      WPP Main A/B/C/E/F (48-frame Ericsson streams). Fix: dependent slice
+      headers still parse entry-point offsets + header extension (H.265 7.3.6.1).
 - [x] WPP PicWidthInCtbsY==1: re-init CABAC when no (1,y-1) sync CTB — on row
       boundaries and at dependent segments that start a new row (libde265
       decode_substream). FATE `WPP_D_ericsson_MAIN_2` 48 frames exact MD5.
 - [x] `IsCuQpDeltaCoded` / chroma-QP-offset flags reset on **spatial** QG
       alignment (HM `coding_quadtree`), not only when CU size ≥ QG size.
-      Remaining gaps: WPP Main10; DELTAQP_A/B (libde265 also emits
+- [x] Long-term RPS `DeltaPocMsbCycleLt` always accumulates (H.265 7-46; absent
+      cycle inferred 0 still carries prior Delta). RPS-based `dpb_mark` so
+      LSB-only LT match ignores unmarked frames. FATE `RPS_D_ericsson_6`
+      50 frames exact MD5 vs libde265.
+- [ ] Remaining HEVC FATE gaps: WPP Main10; DELTAQP_A/B (libde265 also emits
       out-of-range/CTB-outside warnings on A/B — weak oracle); NoOutPrior/RAP
-      DPB order; RPS_D; SLIST; PERSIST_RPARAM (12-bit + persistent Rice).
+      DPB order; SLIST; PERSIST_RPARAM (12-bit + persistent Rice).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`
@@ -186,7 +190,7 @@
       Inter-layer / VPS-layer decode remains optional future work.
 - [x] Feature-family HEVC sequences installed via get-deps (FATE) with pinned
       reconstruction MD5s for DELTAQP_C, RQT, TUSIZE, MAXBINS, IPRED, CIP,
-      SAO_A–G, TILES, POC_A, RPS_A/B/C/E/F.
+      SAO_A–G, TILES, POC_A, RPS_A/B/C/D/E/F.
 - [x] Strengthen memory-safety automation:
       - `bun cmd/fuzz.ts -check-crashes` replays every `fuzz/crashes/*` under ASan
       - `HEIC_FUZZ_UBSAN=1` enables ASan+UBSan+fuzzer on Linux/macOS

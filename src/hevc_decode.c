@@ -49,12 +49,55 @@ static const heic_frame *find_prev_tid0(const heic_frame *const *refs,
     return NULL;
 }
 
-static int find_ref_by_poc(const heic_frame *const *refs, int n_refs,
-                           int poc, uint32_t poc_mask, int lsb_only)
+/* DPB marks on heic_frame (see heic_internal.h). */
+#define HEIC_DPB_UNMANAGED 0
+#define HEIC_DPB_UNUSED    1
+#define HEIC_DPB_SHORT     2
+#define HEIC_DPB_LONG      3
+
+/* Sequence callers pass mutable frame storage through const pointers; RPS
+   marking updates dpb_mark so later pictures cannot match POC-wrapped frames
+   that the DPB would already have unmarked (H.265 8.3.2). */
+static void set_dpb_mark(const heic_frame *f, uint8_t mark)
+{
+    if (f) ((heic_frame *)(uintptr_t)f)->dpb_mark = mark;
+}
+
+static int refs_are_managed(const heic_frame *const *refs, int n_refs)
 {
     int i;
-    for (i = 0; i < n_refs; i++) {
-        if (!refs[i] || !refs[i]->poc_valid) continue;
+    for (i = 0; i < n_refs; i++)
+        if (refs[i] && refs[i]->dpb_mark != HEIC_DPB_UNMANAGED)
+            return 1;
+    return 0;
+}
+
+static int ref_is_available(const heic_frame *f, int managed)
+{
+    if (!f || !f->poc_valid) return 0;
+    if (!managed) return 1;
+    return f->dpb_mark == HEIC_DPB_SHORT || f->dpb_mark == HEIC_DPB_LONG;
+}
+
+static int nal_is_reference(uint8_t nal_type)
+{
+    if (nal_type >= HEIC_NAL_BLA_W_LP && nal_type <= HEIC_NAL_CRA)
+        return 1;
+    if (nal_type <= HEIC_NAL_RASL_R)
+        return (nal_type & 1u) != 0;
+    return 0;
+}
+
+static int find_ref_by_poc(const heic_frame *const *refs, int n_refs,
+                           int poc, uint32_t poc_mask, int lsb_only,
+                           int managed)
+{
+    int i;
+    /* Prefer older candidates (scan reverse of newest-first harness order)
+       so LSB-only LT matches the earliest still-marked picture, matching
+       typical DPB insertion order in libde265/FFmpeg. */
+    for (i = n_refs - 1; i >= 0; i--) {
+        if (!ref_is_available(refs[i], managed)) continue;
         if ((!lsb_only && refs[i]->poc == poc)
             || (lsb_only
                 && (((uint32_t)refs[i]->poc & poc_mask)
@@ -64,74 +107,134 @@ static int find_ref_by_poc(const heic_frame *const *refs, int n_refs,
     return -1;
 }
 
+static int lt_poc_from_sh(const heic_slice_header *sh, int i, int curr_poc,
+                          uint32_t poc_mask, int *out_poc, int *out_lsb_only)
+{
+    int poc = (int)sh->poc_lsb_lt[i];
+    int lsb_only = !sh->delta_poc_msb_present_flag[i];
+    if (!lsb_only) {
+        uint64_t delta =
+            (uint64_t)sh->delta_poc_msb_cycle_lt[i] *
+            ((uint64_t)poc_mask + 1u);
+        int curr_msb = curr_poc - (int)sh->slice_pic_order_cnt_lsb;
+        int64_t full_poc;
+        if (delta > INT_MAX)
+            return -1;
+        full_poc = (int64_t)curr_msb + poc - (int64_t)delta;
+        if (full_poc < INT_MIN || full_poc > INT_MAX)
+            return -1;
+        poc = (int)full_poc;
+    }
+    *out_poc = poc;
+    *out_lsb_only = lsb_only;
+    return 0;
+}
+
+/* Apply H.265 8.3.2 reference marking, then build L0/L1 (8.3.4).
+   Includes StFoll/LtFoll so pictures stay available for later frames. */
 static int build_ref_lists(heic_ctx *ctx, const heic_sps *sps,
                            const heic_slice_header *sh,
                            int curr_poc,
                            const heic_frame *const *refs, int n_refs,
+                           int clear_dpb,
                            const heic_frame **l0, int *n_l0,
                            const heic_frame **l1, int *n_l1)
 {
     const heic_st_rps *rps = sh->has_inline_short_term_rps
         ? &sh->inline_short_term_rps
-        : &sps->short_term_rps[sh->short_term_ref_pic_set_idx];
+        : (sh->short_term_ref_pic_set_idx < sps->num_short_term_ref_pic_sets
+               ? &sps->short_term_rps[sh->short_term_ref_pic_set_idx]
+               : NULL);
     const heic_frame *before[HEIC_MAX_REF_PICS];
     const heic_frame *after[HEIC_MAX_REF_PICS];
     const heic_frame *lt[HEIC_MAX_REF_PICS];
     const heic_frame *temp0[HEIC_MAX_REF_PICS];
     const heic_frame *temp1[HEIC_MAX_REF_PICS];
+    const heic_frame *kept[HEIC_MAX_REF_PICS * 2];
+    uint8_t kept_mark[HEIC_MAX_REF_PICS * 2];
     uint32_t poc_mask =
         (1u << (sps->log2_max_pic_order_cnt_lsb_minus4 + 4)) - 1u;
-    int n_before = 0, n_after = 0, n_lt = 0, n_temp = 0;
-    int i;
+    int n_before = 0, n_after = 0, n_lt = 0, n_temp = 0, n_kept = 0;
+    int managed, i;
+    int need_lists = sh->slice_type != HEIC_SLICE_I;
+    int do_mark;
 
-    /* StCurrBefore, StCurrAfter, then LtCurr (H.265 8.3.4). */
-    for (i = 0; i < rps->num_negative_pics; i++) {
-        int idx;
-        if (!rps->used_by_curr_pic_s0[i]) continue;
-        idx = find_ref_by_poc(refs, n_refs,
-                              curr_poc + rps->delta_poc_s0[i],
-                              poc_mask, 0);
-        if (idx >= 0 && n_before < HEIC_MAX_REF_PICS)
-            before[n_before++] = refs[idx];
+    managed = refs_are_managed(refs, n_refs);
+    if (clear_dpb) {
+        for (i = 0; i < n_refs; i++)
+            set_dpb_mark(refs[i], HEIC_DPB_UNUSED);
+        managed = 1;
     }
-    for (i = 0; i < rps->num_positive_pics; i++) {
-        int idx;
-        if (!rps->used_by_curr_pic_s1[i]) continue;
-        idx = find_ref_by_poc(refs, n_refs,
-                              curr_poc + rps->delta_poc_s1[i],
-                              poc_mask, 0);
-        if (idx >= 0 && n_after < HEIC_MAX_REF_PICS)
-            after[n_after++] = refs[idx];
-    }
-    for (i = 0; i < sh->num_long_term_sps + sh->num_long_term_pics; i++) {
-        int idx;
-        int poc = (int)sh->poc_lsb_lt[i];
-        int lsb_only = !sh->delta_poc_msb_present_flag[i];
-        if (!sh->used_by_curr_pic_lt_flag[i]) continue;
-        if (!lsb_only) {
-            uint64_t delta =
-                (uint64_t)sh->delta_poc_msb_cycle_lt[i] *
-                ((uint64_t)poc_mask + 1u);
-            int curr_msb =
-                curr_poc - (int)sh->slice_pic_order_cnt_lsb;
-            if (delta > INT_MAX)
-                continue;
-            int64_t full_poc = (int64_t)curr_msb + poc - (int64_t)delta;
-            if (full_poc < INT_MIN || full_poc > INT_MAX)
-                continue;
-            poc = (int)full_poc;
+
+    /* Short-term RPS: CurrBefore / CurrAfter / Foll (H.265 8.3.2). */
+    if (rps) {
+        for (i = 0; i < rps->num_negative_pics; i++) {
+            int idx = find_ref_by_poc(refs, n_refs,
+                                      curr_poc + rps->delta_poc_s0[i],
+                                      poc_mask, 0, managed);
+            if (idx < 0) continue;
+            if (n_kept < (int)HEIC_COUNTOF(kept)) {
+                kept[n_kept] = refs[idx];
+                kept_mark[n_kept++] = HEIC_DPB_SHORT;
+            }
+            if (rps->used_by_curr_pic_s0[i] && n_before < HEIC_MAX_REF_PICS)
+                before[n_before++] = refs[idx];
         }
-        idx = find_ref_by_poc(refs, n_refs, poc, poc_mask, lsb_only);
-        if (idx >= 0 && n_lt < HEIC_MAX_REF_PICS)
+        for (i = 0; i < rps->num_positive_pics; i++) {
+            int idx = find_ref_by_poc(refs, n_refs,
+                                      curr_poc + rps->delta_poc_s1[i],
+                                      poc_mask, 0, managed);
+            if (idx < 0) continue;
+            if (n_kept < (int)HEIC_COUNTOF(kept)) {
+                kept[n_kept] = refs[idx];
+                kept_mark[n_kept++] = HEIC_DPB_SHORT;
+            }
+            if (rps->used_by_curr_pic_s1[i] && n_after < HEIC_MAX_REF_PICS)
+                after[n_after++] = refs[idx];
+        }
+    }
+
+    /* Long-term RPS: LtCurr / LtFoll. */
+    for (i = 0; i < sh->num_long_term_sps + sh->num_long_term_pics; i++) {
+        int idx, poc, lsb_only;
+        if (lt_poc_from_sh(sh, i, curr_poc, poc_mask, &poc, &lsb_only) != 0)
+            continue;
+        idx = find_ref_by_poc(refs, n_refs, poc, poc_mask, lsb_only, managed);
+        if (idx < 0) continue;
+        if (n_kept < (int)HEIC_COUNTOF(kept)) {
+            kept[n_kept] = refs[idx];
+            kept_mark[n_kept++] = HEIC_DPB_LONG;
+        }
+        if (sh->used_by_curr_pic_lt_flag[i] && n_lt < HEIC_MAX_REF_PICS)
             lt[n_lt++] = refs[idx];
     }
 
+    /* Commit DPB marks: drop anything not in the current RPS. Once any frame
+       is managed, subsequent pictures filter LSB/POC matches through marks. */
+    do_mark = managed || n_kept > 0
+        || sh->num_long_term_sps + sh->num_long_term_pics > 0
+        || (rps && (rps->num_negative_pics || rps->num_positive_pics));
+    if (do_mark) {
+        for (i = 0; i < n_refs; i++)
+            set_dpb_mark(refs[i], HEIC_DPB_UNUSED);
+        for (i = 0; i < n_kept; i++)
+            set_dpb_mark(kept[i], kept_mark[i]);
+    }
+
+    if (!need_lists) {
+        if (n_l0) *n_l0 = 0;
+        if (n_l1) *n_l1 = 0;
+        return 0;
+    }
+
+    /* StCurrBefore, StCurrAfter, then LtCurr (H.265 8.3.4). */
     /* Some HEIF writers leave POC metadata ambiguous across independent items.
        Preserve iref order as a bounded fallback when no POC match was possible. */
     n_temp = n_before + n_after + n_lt;
     if (n_temp == 0) {
         for (i = 0; i < n_refs && n_before < HEIC_MAX_REF_PICS; i++)
-            if (refs[i]) before[n_before++] = refs[i];
+            if (refs[i] && ref_is_available(refs[i], managed))
+                before[n_before++] = refs[i];
         n_temp = n_before;
     }
     if (n_temp == 0) {
@@ -419,11 +522,19 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 out->poc_valid = 1;
                 out->nal_unit_type = (uint8_t)nals[i].type;
                 out->temporal_id = nals[i].temporal_id;
-            }
-            if (!failed && sh.slice_type != HEIC_SLICE_I
-                && build_ref_lists(ctx, sps, &sh, out->poc,
-                                   refs, n_refs, l0, &n_l0,
-                                   l1, &n_l1) != 0)
+                /* Always run RPS marking (incl. I / Foll) so the caller's
+                   DPB state drops POC-wrapped pictures before LSB LT match. */
+                if (build_ref_lists(ctx, sps, &sh, out->poc,
+                                    refs, n_refs, reset_poc,
+                                    l0, &n_l0, l1, &n_l1) != 0)
+                    failed = 1;
+                out->dpb_mark = nal_is_reference(out->nal_unit_type)
+                    ? HEIC_DPB_SHORT
+                    : HEIC_DPB_UNUSED;
+            } else if (!failed && sh.slice_type != HEIC_SLICE_I
+                       && build_ref_lists(ctx, sps, &sh, out->poc,
+                                          refs, n_refs, 0,
+                                          l0, &n_l0, l1, &n_l1) != 0)
                 failed = 1;
             if (!failed && !picture) {
                 picture = heic_hevc_picture_new(

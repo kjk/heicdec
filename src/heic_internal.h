@@ -531,6 +531,11 @@ typedef struct {
     int poc_valid;
     uint8_t nal_unit_type;
     uint8_t temporal_id;
+    /* DPB reference mark for multi-frame HEVC (sequence / refs API):
+     * 0 = unmanaged (HEIF stills: always eligible), 1 = unused for reference,
+     * 2 = used for short-term reference, 3 = used for long-term reference.
+     * Updated by heic_hevc_decode_refs when any candidate is already managed. */
+    uint8_t dpb_mark;
     heic_pb_motion *motion;
     uint8_t *motion_pred_mode;
     size_t motion_n;

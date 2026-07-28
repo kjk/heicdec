@@ -238,8 +238,14 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
                 }
                 out->delta_poc_msb_present_flag[i] =
                     (uint8_t)heic_bs_bit(&bs);
-                if (out->delta_poc_msb_present_flag[i]) {
-                    uint32_t cycle = heic_bs_ue(&bs);
+                /* H.265 (7-46): DeltaPocMsbCycleLt[i] always accumulates across
+                   i (except at i==0 and i==num_long_term_sps). When the syntax
+                   element is absent it is inferred 0 but still carries the prior
+                   Delta so later present entries do not reset the cycle chain. */
+                {
+                    uint32_t cycle = 0;
+                    if (out->delta_poc_msb_present_flag[i])
+                        cycle = heic_bs_ue(&bs);
                     if (i != 0 && i != (int)num_lt_sps) {
                         if (cycle > UINT32_MAX -
                                       out->delta_poc_msb_cycle_lt[i - 1])

@@ -627,6 +627,14 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "0306b9e3ec365115ccb7060c0a437b32",
   },
   {
+    /* Long-term RPS: DeltaPocMsbCycleLt must accumulate across absent
+       present flags; DPB marks keep LSB-only LT matches unambiguous. */
+    name: "RPS_D_ericsson_6.bit",
+    frames: 50,
+    mse: 0,
+    md5: "204a25bb5bae34a167d1b5166b1040de",
+  },
+  {
     name: "RPS_E_qualcomm_5.bit",
     frames: 300,
     mse: 0,
