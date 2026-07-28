@@ -669,6 +669,12 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "2aaf16274fe8e799d72fa08a4963850d",
   },
+  {
+    name: "WPP_D_ericsson_MAIN_2.bit",
+    frames: 48,
+    mse: 0,
+    md5: "f710612103f386c415be3e6300693451",
+  },
 ];
 
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {

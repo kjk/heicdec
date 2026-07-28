@@ -170,12 +170,11 @@
       CIP_A–C; SAO_A–G; TILES_A/B; POC_A; RPS_A/B/C/E/F; WPP Main A/B/C/E/F
       (48-frame Ericsson streams). Fix: dependent slice headers still parse
       entry-point offsets + header extension (H.265 7.3.6.1).
-- [x] WPP PicWidthInCtbsY==1: on row boundaries re-init CABAC models (no
-      (1,y-1) sync CTB; matches libde265 initialize_CABAC_models). WPP_D I-frame
-      MD5 matches; B-frame / multi-segment still open.
-      Remaining gaps: WPP_D B/multi-segment, WPP Main10 P, DELTAQP_A/B (f0 first
-      mismatch at CTB (13,1) on 1920×1088; multi-PPS stream), NoOutPrior/RAP
-      DPB order, RPS_D, SLIST, PERSIST_RPARAM.
+- [x] WPP PicWidthInCtbsY==1: re-init CABAC when no (1,y-1) sync CTB — on row
+      boundaries and at dependent segments that start a new row (libde265
+      decode_substream). FATE `WPP_D_ericsson_MAIN_2` 48 frames exact MD5.
+      Remaining gaps: WPP Main10 (small late-frame drift on WPP_D10; P on A),
+      DELTAQP_A/B, NoOutPrior/RAP DPB order, RPS_D, SLIST, PERSIST_RPARAM.
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`

@@ -3322,10 +3322,20 @@ int heic_hevc_picture_decode_segment(
         sc->cu_qp_offset_cr = 0;
         memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
         work->filter_sh = work->sh;
-    } else if (wpp && sc->ctb_x == 0 && sc->ctb_y > 0
-               && work->wpp_have_saved) {
-        memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
-        memcpy(sc->stat_coeff, work->wpp_stat_coeff, sizeof(sc->stat_coeff));
+    } else if (wpp && sc->ctb_x == 0 && sc->ctb_y > 0) {
+        /* WPP sync at first CTB of a row (H.265 9.3.2.4 / libde265
+         * decode_substream). Dependent segments that start on a new row
+         * take this path too — including PicWidthInCtbsY==1, where there
+         * is no (1,y-1) neighbour and contexts re-init like slice start. */
+        if (pic_w > 1 && work->wpp_have_saved) {
+            memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
+            memcpy(sc->stat_coeff, work->wpp_stat_coeff,
+                   sizeof(sc->stat_coeff));
+        } else if (pic_w == 1) {
+            heic_cabac_init_contexts(sc->models, sh->slice_type,
+                                     sh->cabac_init_flag, sh->slice_qp_y);
+            memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
+        }
     }
     work->have_segment = 1;
 
