@@ -193,8 +193,30 @@
       and `TSUNEQBD_A_MAIN10` exact MD5 vs libde265.
 - [x] DELTAQP: `DELTAQP_C` exact vs libde265/ffmpeg; `DELTAQP_B` exact vs
       ffmpeg (libde265 conceals “coded parameter out of range” and diverges —
-      weak oracle). `DELTAQP_A_BRCM_4` still incomplete: matches ffmpeg through
-      early frames, small Y drift at f7, CABAC desync by f13, CTU fail at f14.
+      weak oracle). `IsCuQpDeltaCoded` / chroma-offset coded flags reset when
+      `log2CbSize >= Log2MinCuQpDeltaSize` (H.265 coding_quadtree / ffmpeg /
+      libde265), not spatial QG alignment alone.
+- [ ] `DELTAQP_A_BRCM_4` incomplete (oracle: ffmpeg/HM; libde265 is weak here).
+      1920×1088, 96 frames; target full-sequence MD5
+      `1ceef83183197fd1f21472c17b53cbff`. Progress / isolation:
+      - f0–6 exact; **f7 = POC7: 62 Y only** (chroma exact); f8–10 exact with
+        ≥12-frame decode; later desync / CTU fail around f13–14.
+      - First fail: CTB (18,0), **32×32 luma TU (1152,32)** in a 64×64 INTRA
+        CU, mode 20, qpy 48 (`cu_qp_delta=-20`), `sign_data_hiding=1`,
+        multi-PPS `diff_cu_qp_delta_depth` mid-stream (POC7 pic uses diff=0).
+      - Not LF/SAO (`HEIC_SKIP_LF`); not dequant QP (best at 48); not general
+        mode-20 / 32×32 / INTRA residual (controls exact, e.g. (1760,736)
+        mode20 32 residual mid-perfect; (1184,32) mode20 cbf=0 exact).
+      - Same-CU top 16×16 residual mid-perfect; BAD residual vs need
+        (`ff−pred`): corr≈0.7 but energy ~139×; mid exact only 11/55.
+      - Debug helpers: `HEIC_SKIP_LF=1`, `HEIC_FORCE_SCALAR=1`.
+      **Next work items:**
+      1. Diff pre-dequant levels for (1152,32) POC7 vs HM residual / analyser.
+      2. Trace sign-hide + `coeff_abs_level_remaining` on CGs that feed mid
+         errors (last_sig often near corner; full 8×8 CG grid).
+      3. Rule out RQT/chroma bin count between top-16 residual and bottom-32
+         without breaking top-16 mid residual.
+      4. After f7 exact: full 96-frame MD5 + pin in `HEVC_SEQUENCE_TESTS`.
 - [x] SLIST exact vs ffmpeg: scaling-list coeffs stored in raster order (like
       ffmpeg); Raster ScalingFactor tables; apply scaled dequant for 4x4
       transform_skip (`!(ts && log2>2)` per H.265/ffmpeg). libde265 diverges on
@@ -216,8 +238,9 @@
       shift + arithmetic `>> 3` (H.265 RExt 8.6.6 / HM). The prior
       `(uint32_t)<<BdC>>BdY` form (libde265) breaks negatives and diverged from
       HM/ffmpeg (CCP mse ~8390 → ~0.00035). PERSIST_RPARAM pin retargeted to HM.
-- [ ] Remaining HEVC FATE gaps: `DELTAQP_A_BRCM_4` (mid-stream desync; not pinned);
-      `CCP_8bit_RExt_QCOM_1` (mse≈0.00035 maxdiff=4 vs HM after CCP residual fix).
+- [ ] Remaining HEVC FATE gaps: `DELTAQP_A_BRCM_4` (see isolation above; not
+      pinned); `CCP_8bit_RExt_QCOM_1` (mse≈0.00035 maxdiff=4 vs HM after CCP
+      residual fix — optional polish to exact).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`

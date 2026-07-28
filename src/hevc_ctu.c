@@ -2586,29 +2586,22 @@ static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     else
         split = 0;
 
-    /* Reset cu_qp_delta / chroma QP-offset coded flags at the start of each
-     * quantization group (HM coding_quadtree: spatial alignment to
-     * Log2MinCuQpDeltaSize), not merely when CU size >= QG size. */
+    /* H.265 coding_quadtree / ffmpeg / libde265: reset when
+     * log2CbSize >= Log2MinCuQpDeltaSize. */
     log2_qg = sc->sps->log2_ctb_size > sc->pps->diff_cu_qp_delta_depth
                   ? (uint8_t)(sc->sps->log2_ctb_size - sc->pps->diff_cu_qp_delta_depth)
                   : 0;
-    if (sc->pps->cu_qp_delta_enabled_flag) {
-        uint32_t qg_mask = (1u << log2_qg) - 1u;
-        if ((x0 & qg_mask) == 0 && (y0 & qg_mask) == 0) {
-            sc->is_cu_qp_delta_coded = 0;
-            sc->cu_qp_delta = 0;
-        }
+    if (sc->pps->cu_qp_delta_enabled_flag && log2_cb >= log2_qg) {
+        sc->is_cu_qp_delta_coded = 0;
+        sc->cu_qp_delta = 0;
     }
     log2_chroma_qg =
         sc->sps->log2_ctb_size > sc->pps->diff_cu_chroma_qp_offset_depth
             ? (uint8_t)(sc->sps->log2_ctb_size
                         - sc->pps->diff_cu_chroma_qp_offset_depth)
             : 0;
-    if (sc->sh->cu_chroma_qp_offset_enabled_flag) {
-        uint32_t qg_mask = (1u << log2_chroma_qg) - 1u;
-        if ((x0 & qg_mask) == 0 && (y0 & qg_mask) == 0)
-            sc->is_cu_chroma_qp_offset_coded = 0;
-    }
+    if (sc->sh->cu_chroma_qp_offset_enabled_flag && log2_cb >= log2_chroma_qg)
+        sc->is_cu_chroma_qp_offset_coded = 0;
 
     if (split) {
         uint32_t half = cb / 2;
@@ -3590,7 +3583,8 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
     }
 
     ctb_sz = ctb_size_px(sps);
-    if (sc->deblock_flags && sc->deblock_qp) {
+    /* HEIC_SKIP_LF=1: skip deblock+SAO for residual isolation. */
+    if (!getenv("HEIC_SKIP_LF") && sc->deblock_flags && sc->deblock_qp) {
         heic_apply_deblock(
             out, sc->deblock_flags, sc->deblock_qp, sc->deblock_stride,
             pps->pps_cb_qp_offset, pps->pps_cr_qp_offset,
@@ -3603,7 +3597,8 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
             sh->slice_type == HEIC_SLICE_I ? NULL : out->ref_poc,
             sc->has_filter_exclusions ? sc->pcm_map : NULL);
     }
-    if (sps->sample_adaptive_offset_enabled_flag && sc->sao_map) {
+    if (!getenv("HEIC_SKIP_LF")
+        && sps->sample_adaptive_offset_enabled_flag && sc->sao_map) {
         heic_apply_sao(
             ctx, out, sc->sao_map, sps->pic_width_in_ctbs,
             sps->pic_height_in_ctbs, ctb_sz,

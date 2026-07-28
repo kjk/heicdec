@@ -24,6 +24,7 @@ static int g_simd; /* 0 = off, 1 = SSE4.1 */
 void heic_simd_init(void)
 {
     g_simd = 0;
+    if (getenv("HEIC_FORCE_SCALAR")) return;
 #if HEIC_X86
     {
 #if defined(_MSC_VER)
