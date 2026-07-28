@@ -192,7 +192,11 @@
       (H.265 8.5.3.3.4.2 / libde265). Direct `heic_mc_luma` final path rounded
       differently at 10-bit and drifted from f8. FATE `WPP_A–F_ericsson_MAIN10_2`
       and `TSUNEQBD_A_MAIN10` exact MD5 vs libde265.
-- [ ] Remaining HEVC FATE gaps: DELTAQP_A/B (weak oracle);
+- [x] DELTAQP: `DELTAQP_C` exact vs libde265/ffmpeg; `DELTAQP_B` exact vs
+      ffmpeg (libde265 conceals “coded parameter out of range” and diverges —
+      weak oracle). `DELTAQP_A_BRCM_4` still incomplete: matches ffmpeg through
+      early frames, small Y drift at f7, CABAC desync by f13, CTU fail at f14.
+- [ ] Remaining HEVC FATE gaps: DELTAQP_A (mid-stream desync);
       SLIST exact MD5 (scaled dequant residual); PERSIST_RPARAM
       (12-bit + persistent Rice).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free

@@ -465,6 +465,13 @@ const HEVC_SEQUENCE_TESTS: readonly {
     bitDepth: 10,
   },
   /* Feature-family coverage (FATE hevc-conformance; exact vs libde265). */
+  /* DELTAQP_B: exact vs ffmpeg/HM; libde265 conceals and diverges (weak oracle). */
+  {
+    name: "DELTAQP_B_SONY_3.bit",
+    frames: 30,
+    mse: 0,
+    md5: "f02fa96633c63bd5e1ce0f103447d1ed",
+  },
   {
     name: "DELTAQP_C_SONY_3.bit",
     frames: 30,
