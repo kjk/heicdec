@@ -124,7 +124,22 @@ function cUnits(dir: string, ext: string, withLibheif: boolean): CompileUnit[] {
       label: "test/bench_libheif.c",
     });
   }
+  /* WIC bench is Windows-only; always compile the stub/real unit on win so
+   * heic_test.c can call heic_bench_wic_session when _WIN32 is set. */
+  if (isWindows) {
+    units.push({
+      src: `${ROOT}/test/bench_wic.c`,
+      obj: `${dir}/bench_wic.${ext}`,
+      label: "test/bench_wic.c",
+    });
+  }
   return units;
+}
+
+/** System libs for WIC HEIF/AVIF decode timing (Windows only). */
+function wicLinkLibs(): string[] {
+  if (!isWindows) return [];
+  return ["windowscodecs.lib", "ole32.lib", "shlwapi.lib"];
 }
 
 const harnessExeName = (useClang: boolean) =>
@@ -352,6 +367,7 @@ async function buildClang(opts: BuildOpts = {}): Promise<string> {
     linkLibs.push(...comp.libs);
   }
   if (!isWindows) linkLibs.push("-lpthread", "-lm");
+  else linkLibs.push(...wicLinkLibs());
   const linkExtra = linkLibs.length ? ` ${linkLibs.join(" ")}` : "";
   const linkCmd = withLibheif ? "clang++" : "clang";
   /* Windows: -g + -gcodeview → heic_test_clang.pdb next to the exe. */
@@ -433,6 +449,7 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
     if (dav1d) linkLibs.push(dav1d.lib);
     linkLibs.push(...comp.libs);
   }
+  linkLibs.push(...wicLinkLibs());
   const linkExtra = linkLibs.length ? ` ${linkLibs.join(" ")}` : "";
   if (
     needsRebuild(

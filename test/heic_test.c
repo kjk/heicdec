@@ -24,6 +24,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <objbase.h>
+#include "bench_wic.h"
 /* Vendored control client; calls are no-ops when winperf is not recording. */
 #include "winperf_control.h"
 #else
@@ -690,9 +692,19 @@ static int do_bench(const uint8_t *data, size_t len)
     heic_bench_session libraw[3];
     bench_session lib[3];
 #endif
+#ifdef _WIN32
+    heic_wic_session wic[3];
+    int com_inited = 0;
+#endif
     int r;
 
     printf("(bench: session open/decode/close)\n");
+
+#ifdef _WIN32
+    /* WIC is COM; init once for the whole multi-run session. */
+    if (SUCCEEDED(CoInitializeEx(NULL, COINIT_MULTITHREADED)))
+        com_inited = 1;
+#endif
 
     for (r = 0; r < RUNS; r++) {
         if (bench_ours_session(data, len, &ours[r]) != 0) {
@@ -715,6 +727,19 @@ static int do_bench(const uint8_t *data, size_t len)
         lib[r].height = libraw[r].height;
         lib[r].ok = libraw[r].ok;
 #endif
+#ifdef _WIN32
+        if (!com_inited || heic_bench_wic_session(data, len, &wic[r]) != 0) {
+            if (!com_inited) {
+                wic[r].ok = 0;
+                wic[r].total_ms = -1.0;
+                wic[r].width = wic[r].height = 0;
+                snprintf(wic[r].error, sizeof wic[r].error, "CoInitializeEx failed");
+            } else {
+                wic[r].ok = 0;
+                if (wic[r].total_ms < 0.0) wic[r].total_ms = -1.0;
+            }
+        }
+#endif
     }
 
 #ifdef HEIC_HAVE_LIBHEIF
@@ -728,9 +753,16 @@ static int do_bench(const uint8_t *data, size_t len)
         printf("BENCH_RESULT ours_ok=0 libheif_ok=0 "
                "ours_open=-1 ours_decode=-1 ours_close=-1 ours_total=-1 "
                "libheif_open=-1 libheif_decode=-1 libheif_close=-1 "
-               "libheif_total=-1\n");
+               "libheif_total=-1"
+#ifdef _WIN32
+               " wic_ok=0 wic_total=-1"
+#endif
+               "\n");
         printf("BENCH_LIBHEIF_ERROR %s\n", lib_error);
         printf("skip: both heic and libheif failed (unsupported / not decodable)\n");
+#ifdef _WIN32
+        if (com_inited) CoUninitialize();
+#endif
         return 0;
     }
 #endif
@@ -743,6 +775,12 @@ static int do_bench(const uint8_t *data, size_t len)
         /* libheif-only failures are expected for some Nokia conformance files;
          * do not spam stderr (table shows ERROR; note below explains). */
         bench_print_session_line("libheif", &lib[r]);
+#endif
+#ifdef _WIN32
+        if (wic[r].ok)
+            printf("wic total: %.2f\n", wic[r].total_ms);
+        else
+            printf("wic total: ERROR\n");
 #endif
     }
 
@@ -762,6 +800,9 @@ static int do_bench(const uint8_t *data, size_t len)
                           : ours[1].height ? ours[1].height : ours[2].height),
                ours[0].ok || ours[1].ok || ours[2].ok);
     }
+#ifdef _WIN32
+    if (com_inited) CoUninitialize();
+#endif
     return (ours[0].ok || ours[1].ok || ours[2].ok) ? 0 : 1;
 #else
     {
@@ -774,6 +815,14 @@ static int do_bench(const uint8_t *data, size_t len)
         double l_dec = bench_best3(lib[0].decode_ms, lib[1].decode_ms, lib[2].decode_ms);
         double l_close = bench_best3(lib[0].close_ms, lib[1].close_ms, lib[2].close_ms);
         double l_tot = bench_best3(lib[0].total_ms, lib[1].total_ms, lib[2].total_ms);
+#ifdef _WIN32
+        double w_tot = bench_best3(wic[0].total_ms, wic[1].total_ms, wic[2].total_ms);
+        int wic_ok = wic[0].ok || wic[1].ok || wic[2].ok;
+        const char *wic_error = wic[0].error[0] ? wic[0].error
+                                : wic[1].error[0] ? wic[1].error
+                                : wic[2].error[0] ? wic[2].error
+                                                  : "unknown error";
+#endif
 
         strcpy(rows[0].op, "open");
         rows[0].ours = o_open;
@@ -795,16 +844,35 @@ static int do_bench(const uint8_t *data, size_t len)
                                     : libraw[1].error[0] ? libraw[1].error
                                     : libraw[2].error[0] ? libraw[2].error
                                                         : "unknown error";
+            int ret;
 
             printf("(best of %d runs; + = heic slower)\n", RUNS);
             bench_print_compare_table(rows, 4);
+#ifdef _WIN32
+            if (wic_ok)
+                printf("wic total (best of %d): %.2f ms\n", RUNS, w_tot);
+            else
+                printf("wic: SKIP (%s)\n", wic_error);
+#endif
             printf("BENCH_RESULT ours_ok=%d libheif_ok=%d "
                    "ours_open=%.4f ours_decode=%.4f ours_close=%.4f ours_total=%.4f "
                    "libheif_open=%.4f libheif_decode=%.4f libheif_close=%.4f "
-                   "libheif_total=%.4f\n",
+                   "libheif_total=%.4f"
+#ifdef _WIN32
+                   " wic_ok=%d wic_total=%.4f"
+#endif
+                   "\n",
                    ours_ok, lib_ok, o_open, o_dec, o_close, o_tot,
-                   l_open, l_dec, l_close, l_tot);
+                   l_open, l_dec, l_close, l_tot
+#ifdef _WIN32
+                   ,
+                   wic_ok, wic_ok ? w_tot : -1.0
+#endif
+            );
             if (!lib_ok) printf("BENCH_LIBHEIF_ERROR %s\n", lib_error);
+#ifdef _WIN32
+            if (!wic_ok) printf("BENCH_WIC_ERROR %s\n", wic_error);
+#endif
 
             if (ours_ok && lib_ok) {
                 uint32_t ow = ours[0].width ? ours[0].width
@@ -818,20 +886,23 @@ static int do_bench(const uint8_t *data, size_t len)
                 if (ow != lw || oh != lh)
                     printf("note: size heic=%ux%u libheif=%ux%u\n", (unsigned)ow,
                            (unsigned)oh, (unsigned)lw, (unsigned)lh);
-                return 0;
-            }
-            if (ours_ok && !lib_ok) {
+                ret = 0;
+            } else if (ours_ok && !lib_ok) {
                 /* Oracle reject (e.g. Nokia C021 double dimg iref) while we
                  * decode primary: report heic timings, exit 0 so bench.ts skips
                  * compare rather than failing the run. */
                 printf("note: libheif failed; heic timings only (no compare)\n");
-                return 0;
-            }
-            if (!ours_ok && lib_ok) {
+                ret = 0;
+            } else if (!ours_ok && lib_ok) {
                 printf("note: heic failed; libheif timings only\n");
-                return 1;
+                ret = 1;
+            } else {
+                ret = 1;
             }
-            return 1;
+#ifdef _WIN32
+            if (com_inited) CoUninitialize();
+#endif
+            return ret;
         }
     }
 #endif

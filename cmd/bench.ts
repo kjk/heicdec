@@ -1,4 +1,5 @@
 // bench.ts -- benchmark our decoder against strukturag libheif (native).
+// On Windows also times the OS WIC HEIF/AVIF codec (time only).
 //
 //   bun cmd/bench.ts <file.heic ... | -rand N | -all> [-verbose] [-clang] [-clean]
 //   bun cmd/bench.ts -list-files
@@ -9,7 +10,8 @@
 // interleaved runs each side.
 //
 // Default output: directory header lines (`deps/...`), then per-file totals
-//   libheif heic diff %diff <basename> : <bytes>
+//   libheif heic [wic] diff %diff <basename> : <bytes>
+//   (wic column on Windows only; time only — no wic vs heic/libheif diff)
 // Last data line is sum of best-of-3 totals, label "total". After that:
 // wall-clock elapsed and the top 10 files where heic is slowest vs libheif
 // (by relative %; files with |diff| < 2ms omitted). `-verbose` also prints
@@ -18,7 +20,7 @@
 // With no selection it prints usage + the available corpus file count.
 import { basename, dirname } from "path";
 import { getDeps } from "./get-deps";
-import { build, buildRef, cleanBuildOutput, defaultUseClang } from "./build";
+import { build, buildRef, cleanBuildOutput, defaultUseClang, isWindows } from "./build";
 import {
   corpusFiles,
   corpusSummary,
@@ -73,12 +75,17 @@ type BenchResult = {
   ours: BenchTimes;
   libheif: BenchTimes;
   libheifError: string;
+  /** Present on Windows builds; null when missing / not reported. */
+  wicOk: boolean | null;
+  wicTotal: number | null;
+  wicError: string;
 };
 
 type RankedResult = {
   label: string;
   ours: number;
   libheif: number;
+  wic: number | null;
   diff: number;
   pct: number;
 };
@@ -92,6 +99,9 @@ function parseBenchResult(out: string): BenchResult | null {
     if (eq > 0) fields.set(part.slice(0, eq), part.slice(eq + 1));
   }
   const num = (key: string): number => Number(fields.get(key) ?? "NaN");
+  const hasWic = fields.has("wic_ok") || fields.has("wic_total");
+  const wicOkFlag = fields.get("wic_ok");
+  const wicTotalRaw = num("wic_total");
   const result: BenchResult = {
     oursOk: fields.get("ours_ok") === "1",
     libheifOk: fields.get("libheif_ok") === "1",
@@ -109,6 +119,14 @@ function parseBenchResult(out: string): BenchResult | null {
     },
     libheifError:
       out.match(/^BENCH_LIBHEIF_ERROR (.*)$/m)?.[1]?.trim() || "unknown error",
+    wicOk: hasWic ? wicOkFlag === "1" : null,
+    wicTotal: hasWic && Number.isFinite(wicTotalRaw) && wicTotalRaw >= 0
+      ? wicTotalRaw
+      : hasWic
+        ? null
+        : null,
+    wicError:
+      out.match(/^BENCH_WIC_ERROR (.*)$/m)?.[1]?.trim() || "unknown error",
   };
   return Number.isFinite(result.ours.total) &&
     Number.isFinite(result.libheif.total)
@@ -135,16 +153,38 @@ function fmtPct(ours: number | null, lib: number | null): string {
   return "0.0%";
 }
 
-// Compact default line: 4× 8-char right-aligned number columns, then file.
+// Compact default line: right-aligned number columns, then file.
 const col = (s: string) => s.padStart(8);
+
+/** libheif / heic / [wic] / diff / %diff / file. WIC is Windows-only, time only. */
 function printCompactLine(
   lib: string,
   ours: string,
+  wic: string | null,
   diff: string,
   pct: string,
   label: string,
 ): void {
-  console.log(`${col(lib)} ${col(ours)} ${col(diff)} ${col(pct)} ${label}`);
+  if (wic !== null) {
+    console.log(
+      `${col(lib)} ${col(ours)} ${col(wic)} ${col(diff)} ${col(pct)} ${label}`,
+    );
+  } else {
+    console.log(`${col(lib)} ${col(ours)} ${col(diff)} ${col(pct)} ${label}`);
+  }
+}
+
+function printHeader(withWic: boolean): void {
+  if (withWic) printCompactLine("libheif", "heic", "wic", "diff", "%diff", "file");
+  else printCompactLine("libheif", "heic", null, "diff", "%diff", "file");
+}
+
+function wicCell(result: BenchResult | null, forceSkip = false): string | null {
+  if (!isWindows) return null;
+  if (forceSkip || !result) return "SKIP";
+  if (result.wicOk === null) return "—";
+  if (!result.wicOk || result.wicTotal === null) return "SKIP";
+  return fmtMs(result.wicTotal);
 }
 
 function signed(value: number, digits: number): string {
@@ -181,6 +221,7 @@ async function main(): Promise<void> {
     argv.includes("-clang") ? true : argv.includes("-msvc") ? false : defaultUseClang;
   const doClean = argv.includes("-clean");
   const verbose = argv.includes("-verbose");
+  const withWic = isWindows;
 
   await getDeps();
 
@@ -207,7 +248,9 @@ options:
   -clang          build with clang instead of MSVC
   -clean          delete out/ first (forces full rebuild of harness + oracle)
 
-Default: dir headers (deps/...), then basename lines (libheif heic diff %diff file),
+Default: dir headers (deps/...), then basename lines
+  libheif heic [wic] diff %diff file
+  (wic on Windows only = OS Imaging Component time; diff/%diff = heic vs libheif)
 ends with a "total" line (sum of best-of-3 times), then elapsed and top 10
 slowest vs libheif (+ = heic slower; |diff| < 2ms ignored).
 
@@ -234,7 +277,7 @@ ${corpusSummary()}`,
   let n_fail = 0;
   const ranked: RankedResult[] = [];
 
-  if (!verbose) printCompactLine("libheif", "heic", "diff", "%diff", "file");
+  if (!verbose) printHeader(withWic);
 
   const lastDir = { value: "" };
   for (const file of files) {
@@ -261,7 +304,7 @@ ${corpusSummary()}`,
     if (!result) {
       if (expectReject) {
         if (verbose) console.log(`total: skip expected reject ${name}`);
-        else printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", nameLabel);
+        else printCompactLine("SKIP", "SKIP", wicCell(null, true), "SKIP", "SKIP", nameLabel);
         n_skip++;
         continue;
       }
@@ -269,7 +312,7 @@ ${corpusSummary()}`,
         console.log(`total: benchmark failed (exit ${r.exitCode ?? "unknown"})`);
         if (out.trim()) console.log(out.trim());
       } else {
-        printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", nameLabel);
+        printCompactLine("ERROR", "ERROR", withWic ? "ERROR" : null, "ERROR", "ERROR", nameLabel);
       }
       n_fail++;
       rc = r.exitCode || 1;
@@ -282,10 +325,17 @@ ${corpusSummary()}`,
         console.log(comparisonLine("open", result.ours.open, result.libheif.open));
         console.log(comparisonLine("decode", result.ours.decode, result.libheif.decode));
         console.log(comparisonLine("close", result.ours.close, result.libheif.close));
+        if (withWic) {
+          if (result.wicOk && result.wicTotal !== null)
+            console.log(`wic: ${result.wicTotal.toFixed(2)}ms`);
+          else
+            console.log(`wic: SKIP (${result.wicError})`);
+        }
       } else {
         printCompactLine(
           fmtMs(result.libheif.total),
           fmtMs(result.ours.total),
+          wicCell(result),
           fmtDiff(result.ours.total, result.libheif.total),
           fmtPct(result.ours.total, result.libheif.total),
           nameLabel,
@@ -296,6 +346,7 @@ ${corpusSummary()}`,
         label: rankLabel,
         ours: result.ours.total,
         libheif: result.libheif.total,
+        wic: result.wicOk && result.wicTotal !== null ? result.wicTotal : null,
         diff,
         pct: result.libheif.total > 0 ? (diff / result.libheif.total) * 100 : 0,
       });
@@ -312,12 +363,19 @@ ${corpusSummary()}`,
           : "; heic failed";
         const tag = expectReject ? "expected reject" : "libheif failed";
         console.log(`total: ${tag}: ${result.libheifError}${ours}`);
+        if (withWic) {
+          if (result.wicOk && result.wicTotal !== null)
+            console.log(`wic: ${result.wicTotal.toFixed(2)}ms`);
+          else
+            console.log(`wic: SKIP (${result.wicError})`);
+        }
       } else if (!result.oursOk) {
-        printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", nameLabel);
+        printCompactLine("SKIP", "SKIP", wicCell(result), "SKIP", "SKIP", nameLabel);
       } else {
         printCompactLine(
           "SKIP",
           fmtMs(result.ours.total),
+          wicCell(result),
           "SKIP",
           "SKIP",
           nameLabel,
@@ -330,16 +388,23 @@ ${corpusSummary()}`,
     /* libheif ok, heic failed — real decoder regression (unless expected reject). */
     if (expectReject) {
       if (verbose) console.log(`total: expected reject (heic fail, libheif ok?)`);
-      else printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", nameLabel);
+      else printCompactLine("SKIP", "SKIP", wicCell(result), "SKIP", "SKIP", nameLabel);
       n_skip++;
       continue;
     }
     if (verbose) {
       console.log(`total: libheif ${result.libheif.total.toFixed(2)}ms; heic failed`);
+      if (withWic) {
+        if (result.wicOk && result.wicTotal !== null)
+          console.log(`wic: ${result.wicTotal.toFixed(2)}ms`);
+        else
+          console.log(`wic: SKIP (${result.wicError})`);
+      }
     } else {
       printCompactLine(
         fmtMs(result.libheif.total),
         "ERROR",
+        wicCell(result),
         "ERROR",
         "ERROR",
         nameLabel,
@@ -352,9 +417,14 @@ ${corpusSummary()}`,
   if (ranked.length > 0) {
     const sumLib = ranked.reduce((s, r) => s + r.libheif, 0);
     const sumOurs = ranked.reduce((s, r) => s + r.ours, 0);
+    const sumWic = ranked.reduce(
+      (s, r) => (r.wic !== null ? (s === null ? r.wic : s + r.wic) : s),
+      null as number | null,
+    );
     printCompactLine(
       fmtMs(sumLib),
       fmtMs(sumOurs),
+      withWic ? (sumWic === null ? "—" : fmtMs(sumWic)) : null,
       fmtDiff(sumOurs, sumLib),
       fmtPct(sumOurs, sumLib),
       "total",
@@ -374,9 +444,15 @@ ${corpusSummary()}`,
     console.log("  no comparable files");
   } else {
     for (const [index, item] of slowest.entries()) {
+      const wicPart =
+        withWic && item.wic !== null
+          ? ` | wic ${item.wic.toFixed(2)}ms`
+          : withWic
+            ? " | wic —"
+            : "";
       console.log(
         `${index + 1}. ${signed(item.pct, 1)}% | heic ${item.ours.toFixed(2)}ms | ` +
-          `libheif ${item.libheif.toFixed(2)}ms | ${item.label}`,
+          `libheif ${item.libheif.toFixed(2)}ms${wicPart} | ${item.label}`,
       );
     }
   }
