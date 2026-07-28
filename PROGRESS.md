@@ -180,8 +180,7 @@
       LSB-only LT match ignores unmarked frames. FATE `RPS_D_ericsson_6`
       50 frames exact MD5 vs libde265.
 - [x] Multi-SPS/PPS by id + hvcC content fingerprint (SLIST_B dual SPS;
-      per-AU PPS scaling lists). Fixed scaled-dequant diagonal scan inverse
-      tables. FATE SLIST_A–D fully decode; A/C ~MSE 45 vs libde265 (not exact).
+      per-AU PPS scaling lists).
 - [x] Sequence output: `pic_output_flag`, NoRaslOutputFlag (BLA; first CRA;
       CRA after EOS/EOB), conformance-window crop on YUV write. FATE
       `RAP_A_docomo_4` and `NoOutPrior_A_Qualcomm_1` exact MD5 vs libde265.
@@ -205,7 +204,11 @@
       Prior clamp broke 12-bit 4:4:4 chroma dequant. FATE
       `PERSIST_RPARAM_A_RExt_Sony_3` (12-bit 4:4:4 + persistent Rice) exact
       MD5 vs libde265; Y was already exact, chroma now matches.
-- [ ] Remaining HEVC FATE gaps: DELTAQP_A (mid-stream desync).
+- [x] Full HEVC sequence pin suite: 106/106 ok (md5 + mse thresholds; no
+      skips). Covers WPP Main/Main10, SLIST A–D, PERSIST, RAP/NoOutPrior,
+      RPS, SAO, TILES, DELTAQP_B/C, and the rest of `HEVC_SEQUENCE_TESTS`.
+- [ ] Remaining HEVC FATE gap: `DELTAQP_A_BRCM_4` (mid-stream desync; not in
+      the pin suite until it fully decodes).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`
@@ -213,8 +216,9 @@
 - [x] Multilayer HEVC stills classified out of scope (`OUT_OF_SCOPE` skip set).
       Inter-layer / VPS-layer decode remains optional future work.
 - [x] Feature-family HEVC sequences installed via get-deps (FATE) with pinned
-      reconstruction MD5s for DELTAQP_C, RQT, TUSIZE, MAXBINS, IPRED, CIP,
-      SAO_A–G, TILES, POC_A, RPS_A/B/C/D/E/F.
+      reconstruction MD5s for DELTAQP_B/C, RQT, TUSIZE, MAXBINS, IPRED, CIP,
+      SAO_A–G, TILES, POC_A, RPS_A–F, WPP Main/Main10, SLIST A–D, PERSIST,
+      RAP/NoOutPrior.
 - [x] Strengthen memory-safety automation:
       - `bun cmd/fuzz.ts -check-crashes` replays every `fuzz/crashes/*` under ASan
       - `HEIC_FUZZ_UBSAN=1` enables ASan+UBSan+fuzzer on Linux/macOS

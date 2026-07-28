@@ -62,7 +62,7 @@ Smoke that path with `heic_test -sumatra file.heic` (or `bun cmd/verify-release.
 | JPEG / H.264 in HEIF | rejected clearly |
 | PQ/HLG tone-mapping | CICP exposed; caller tone-maps |
 | GPU backends | CPU only |
-| DELTAQP_A | see `PROGRESS.md` remaining gaps |
+| DELTAQP_A mid-stream desync | only remaining FATE pin gap (see `PROGRESS.md`) |
 | Negative-offset `iovl` vs libheif | ISO offsets; libheif may paint black |
 
 ## Build & test
