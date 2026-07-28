@@ -483,8 +483,10 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "777439d78f6a82e2d2fa522fe1f93e17",
   },
-  /* CCP: small residual drift vs libde265 (mse≈0.00075, maxdiff=4). */
-  { name: "CCP_8bit_RExt_QCOM_1.bin", frames: 9, mse: 0.01 },
+  /* CCP: signed residual scale matches HM/ffmpeg (was mse~8390 vs HM with
+   * libde265-style uint cast). Remaining chroma drift mse≈0.00035 maxdiff=4
+   * vs HM (libde265 is a weak oracle here). */
+  { name: "CCP_8bit_RExt_QCOM_1.bin", frames: 9, mse: 0.001 },
   {
     name: "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq0.bit",
     frames: 1,
@@ -552,11 +554,12 @@ const HEVC_SEQUENCE_TESTS: readonly {
   },
   /* RExt 12-bit 4:4:4 + persistent Rice adaptation; exact vs libde265. */
   {
+    /* 12-bit 4:4:4 + CCP: exact vs HM/ffmpeg (libde265 CCP residual wrong). */
     name: "PERSIST_RPARAM_A_RExt_Sony_3.bit",
     frames: 2,
     mse: 0,
     bitDepth: 12,
-    md5: "ef1fd46e694331ecc20a31431e6652d2",
+    md5: "d19f5cd87d5b971c4b4abbca22958031",
   },
   {
     name: "GENERAL_10b_422_RExt_Sony_1-seq0.bit",

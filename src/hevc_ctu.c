@@ -1640,17 +1640,23 @@ static int32_t cross_component_residual(const heic_slice_ctx *sc,
     int luma_size = 1 << sc->luma_residual_log2;
     int lx = x * sub_x;
     int ly = y * sub_y;
+    int32_t r;
     int64_t v;
-    uint32_t normalized;
+    int bd_c, bd_y;
     if (!sc->luma_residual || lx >= luma_size || ly >= luma_size) return 0;
-    /* The RExt bit-depth normalization uses a fixed-width unsigned intermediate. */
-    normalized =
-        (uint32_t)sc->luma_residual[ly * luma_size + lx]
-        << bit_depth_c(sc->sps);
-    normalized >>= bit_depth_y(sc->sps);
-    v = (int64_t)res_scale * (int32_t)normalized;
-    if (v >= 0) return (int32_t)(v >> 3);
-    return (int32_t)-(((-v) + 7) >> 3);
+    /* H.265 RExt 8.6.6 / HM TComTrQuant::crossComponentPrediction:
+     * ((alpha * rightShift(resiY, BitDepthY-BitDepthC)) >> 3). Signed residual;
+     * the libde265 (uint32_t)<<C>>Y form breaks negatives when depths match
+     * and diverges from HM/ffmpeg (FATE CCP_8bit). */
+    r = (int32_t)sc->luma_residual[ly * luma_size + lx];
+    bd_c = bit_depth_c(sc->sps);
+    bd_y = bit_depth_y(sc->sps);
+    if (bd_c > bd_y)
+        r <<= (bd_c - bd_y);
+    else if (bd_y > bd_c)
+        r >>= (bd_y - bd_c);
+    v = (int64_t)res_scale * (int64_t)r;
+    return (int32_t)(v >> 3);
 }
 
 static int apply_cross_component_only(heic_slice_ctx *sc, uint32_t x0,
@@ -1729,7 +1735,14 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                              coeff, &transform_skip, &rdpcm_mode)
         != 0)
         return -1;
-    if (coeff->num_nonzero == 0) return 0;
+    /* cbf may be 1 with no significant coeffs after decode in edge cases;
+     * still apply cross-component residual when scale is nonzero. */
+    if (coeff->num_nonzero == 0) {
+        if (c_idx != 0 && res_scale != 0)
+            return apply_cross_component_only(
+                sc, x0, y0, log2_size, c_idx, res_scale);
+        return 0;
+    }
 
     size = 1 << log2_size;
     num = size * size;
@@ -2143,6 +2156,10 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
         if (decode_and_apply_residual(sc, x0, y0, log2_size, 0, scan,
                                       luma_mode, 0) != 0)
             return -1;
+    } else if (sc->luma_residual) {
+        /* Avoid stale luma residual leaking into a later CCP chroma TU. */
+        sc->luma_residual_log2 = 0;
+        sc->luma_residual[0] = 0;
     }
 
     /* Mark TU edges + QP for deblocking (4x4 grid) */
