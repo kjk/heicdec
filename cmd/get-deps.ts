@@ -80,7 +80,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v40-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+deltaqp-ab+slist+persist-rparam+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+family-coverage";
+  "v41-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+deltaqp-ab+slist+persist-rparam+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+main422b+family-coverage+exact-pins";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -204,6 +204,7 @@ const HEVC_SEQUENCE_SAMPLES = [
   "WPP_E_ericsson_MAIN10_2.bit",
   "WPP_F_ericsson_MAIN10_2.bit",
   "WPP_HIGH_TP_444_8BIT_RExt_Apple_2.bit",
+  "Main_422_10_B_RExt_Sony_1.bin",
 ];
 
 function sleep(ms: number): Promise<void> {
