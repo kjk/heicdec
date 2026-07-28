@@ -8,19 +8,45 @@
 // benchmark: open from memory, decode primary RGB, close; best of 3
 // interleaved runs each side.
 //
-// Default output: one header line, then one total line per file
-//   libheif heic diff %diff file
-// After all files: wall-clock elapsed and the top 10 files where heic is
-// slowest vs libheif (by relative %). `-verbose` also prints open/decode/close
-// comparisons per file.
+// Default output: directory header lines (`deps/...`), then per-file totals
+//   libheif heic diff %diff <basename> : <bytes>
+// Last data line is sum of best-of-3 totals, label "total". After that:
+// wall-clock elapsed and the top 10 files where heic is slowest vs libheif
+// (by relative %; files with |diff| < 2ms omitted). `-verbose` also prints
+// open/decode/close comparisons per file.
 //
 // With no selection it prints usage + the available corpus file count.
 import { basename, dirname } from "path";
 import { getDeps } from "./get-deps";
 import { build, buildRef, cleanBuildOutput, defaultUseClang } from "./build";
-import { corpusFiles, corpusSummary, fileLabel, selectFiles } from "./corpus";
+import {
+  corpusFiles,
+  corpusSummary,
+  fileLabel,
+  fileNameLabel,
+  fileRel,
+  selectFiles,
+} from "./corpus";
 
 const ROOT = dirname(import.meta.dir).replaceAll("\\", "/");
+
+/** Print `deps/...` dir once when it changes; return basename(+size) for the line. */
+function enterDirAndName(
+  file: string,
+  lastDir: { value: string },
+): string {
+  const rel = fileRel(file, ROOT);
+  const dir = dirname(rel).replaceAll("\\", "/");
+  if (dir !== lastDir.value) {
+    console.log(dir);
+    lastDir.value = dir;
+  }
+  try {
+    return fileNameLabel(file);
+  } catch {
+    return basename(file);
+  }
+}
 
 /**
  * Intentionally invalid fixtures (malformed / oversize). Both heic and libheif
@@ -160,12 +186,10 @@ async function main(): Promise<void> {
 
   if (argv.includes("-list-files")) {
     const all = corpusFiles();
+    const lastDir = { value: "" };
     for (const f of all) {
-      try {
-        console.log(fileLabel(f, ROOT));
-      } catch {
-        console.log(f);
-      }
+      const name = enterDirAndName(f, lastDir);
+      console.log(name);
     }
     console.log(`\n${all.length} file(s)`);
     process.exit(0);
@@ -177,14 +201,15 @@ selection (required; default prints this help):
   file.heic ...   bench the given files
   -rand N         bench N randomly selected corpus files
   -all            bench every corpus file
-  -list-files     list corpus files (path, size) and exit
+  -list-files     list corpus dirs + basenames (with size) and exit
 options:
   -verbose        also print open/decode/close timing changes
   -clang          build with clang instead of MSVC
   -clean          delete out/ first (forces full rebuild of harness + oracle)
 
-Default: one header + one total line per file (libheif heic diff %diff file),
-then elapsed and top 10 slowest vs libheif (+ = heic slower).
+Default: dir headers (deps/...), then basename lines (libheif heic diff %diff file),
+ends with a "total" line (sum of best-of-3 times), then elapsed and top 10
+slowest vs libheif (+ = heic slower; |diff| < 2ms ignored).
 
 Oracle: strukturag libheif + libde265 (+ dav1d), built static via cmake/ninja
 into out/libheif_build (same idea as djvudec's libdjvu static oracle).
@@ -211,9 +236,17 @@ ${corpusSummary()}`,
 
   if (!verbose) printCompactLine("libheif", "heic", "diff", "%diff", "file");
 
+  const lastDir = { value: "" };
   for (const file of files) {
-    const label = fileLabel(file, ROOT);
-    if (verbose) console.log(`=== ${label}`);
+    const nameLabel = enterDirAndName(file, lastDir);
+    const rankLabel = (() => {
+      try {
+        return fileLabel(file, ROOT);
+      } catch {
+        return fileRel(file, ROOT);
+      }
+    })();
+    if (verbose) console.log(`=== ${nameLabel}`);
     const r = Bun.spawnSync({
       cmd: [exe, "-bench", file],
       stdout: "pipe",
@@ -228,7 +261,7 @@ ${corpusSummary()}`,
     if (!result) {
       if (expectReject) {
         if (verbose) console.log(`total: skip expected reject ${name}`);
-        else printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", label);
+        else printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", nameLabel);
         n_skip++;
         continue;
       }
@@ -236,7 +269,7 @@ ${corpusSummary()}`,
         console.log(`total: benchmark failed (exit ${r.exitCode ?? "unknown"})`);
         if (out.trim()) console.log(out.trim());
       } else {
-        printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", label);
+        printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", nameLabel);
       }
       n_fail++;
       rc = r.exitCode || 1;
@@ -255,12 +288,12 @@ ${corpusSummary()}`,
           fmtMs(result.ours.total),
           fmtDiff(result.ours.total, result.libheif.total),
           fmtPct(result.ours.total, result.libheif.total),
-          label,
+          nameLabel,
         );
       }
       const diff = result.ours.total - result.libheif.total;
       ranked.push({
-        label,
+        label: rankLabel,
         ours: result.ours.total,
         libheif: result.libheif.total,
         diff,
@@ -280,14 +313,14 @@ ${corpusSummary()}`,
         const tag = expectReject ? "expected reject" : "libheif failed";
         console.log(`total: ${tag}: ${result.libheifError}${ours}`);
       } else if (!result.oursOk) {
-        printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", label);
+        printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", nameLabel);
       } else {
         printCompactLine(
           "SKIP",
           fmtMs(result.ours.total),
           "SKIP",
           "SKIP",
-          label,
+          nameLabel,
         );
       }
       n_skip++;
@@ -297,7 +330,7 @@ ${corpusSummary()}`,
     /* libheif ok, heic failed — real decoder regression (unless expected reject). */
     if (expectReject) {
       if (verbose) console.log(`total: expected reject (heic fail, libheif ok?)`);
-      else printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", label);
+      else printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", nameLabel);
       n_skip++;
       continue;
     }
@@ -309,17 +342,34 @@ ${corpusSummary()}`,
         "ERROR",
         "ERROR",
         "ERROR",
-        label,
+        nameLabel,
       );
     }
     n_fail++;
     rc = r.exitCode || 1;
   }
 
+  if (ranked.length > 0) {
+    const sumLib = ranked.reduce((s, r) => s + r.libheif, 0);
+    const sumOurs = ranked.reduce((s, r) => s + r.ours, 0);
+    printCompactLine(
+      fmtMs(sumLib),
+      fmtMs(sumOurs),
+      fmtDiff(sumOurs, sumLib),
+      fmtPct(sumOurs, sumLib),
+      "total",
+    );
+  }
+
   console.log(`\nbench summary: ok=${n_ok} skip=${n_skip} fail=${n_fail}`);
   console.log(`elapsed: ${formatElapsed(performance.now() - startedAt)}`);
-  console.log("top 10 slowest relative to libheif (+ = heic slower):");
-  const slowest = ranked.sort((a, b) => b.pct - a.pct || b.diff - a.diff).slice(0, 10);
+  console.log(
+    "top 10 slowest relative to libheif (+ = heic slower; |diff| < 2ms ignored):",
+  );
+  const slowest = ranked
+    .filter((r) => Math.abs(r.diff) >= 2)
+    .sort((a, b) => b.pct - a.pct || b.diff - a.diff)
+    .slice(0, 10);
   if (slowest.length === 0) {
     console.log("  no comparable files");
   } else {

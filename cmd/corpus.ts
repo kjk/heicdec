@@ -77,19 +77,23 @@ export function corpusSummary(): string {
   return `${files.length} corpus images`;
 }
 
-function fmtBytesHuman(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
-}
-
-/** Path relative to `root` when possible, plus human size. */
-export function fileLabel(f: string, root: string): string {
+/** Path relative to `root` when possible (forward slashes). */
+export function fileRel(f: string, root: string): string {
   let rel = relative(root, f);
   if (rel.startsWith("..") || isAbsolute(rel)) rel = f;
-  rel = rel.replaceAll("\\", "/");
+  return rel.replaceAll("\\", "/");
+}
+
+/** Basename + size for compact bench lines under a directory header. */
+export function fileNameLabel(f: string): string {
   const size = statSync(f).size;
-  return `${rel} (${fmtBytesHuman(size)}, ${size.toLocaleString("en-US")} bytes)`;
+  return `${basename(f)} : ${size.toLocaleString("en-US")} bytes`;
+}
+
+/** Full relative path + size (e.g. top-10 summary). */
+export function fileLabel(f: string, root: string): string {
+  const size = statSync(f).size;
+  return `${fileRel(f, root)} : ${size.toLocaleString("en-US")} bytes`;
 }
 
 export function selectFiles(
