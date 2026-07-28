@@ -688,7 +688,7 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
             out->row_height_minus1 =
                 (uint16_t *)heic_zalloc(ctx, (size_t)nr * sizeof(uint16_t));
             if ((!out->column_width_minus1 && nc) || (!out->row_height_minus1 && nr))
-                return -1;
+                goto fail;
             for (i = 0; i < out->num_tile_columns_minus1; i++)
                 out->column_width_minus1[i] = (uint16_t)heic_bs_ue(&bs);
             for (i = 0; i < out->num_tile_rows_minus1; i++)
@@ -709,7 +709,7 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
     out->pps_scaling_list_data_present_flag = heic_bs_bit(&bs);
     if (out->pps_scaling_list_data_present_flag)
         if (parse_scaling_list_data(&bs, &out->scaling_list) != 0)
-            return -1;
+            goto fail;
     out->lists_modification_present_flag = heic_bs_bit(&bs);
     out->log2_parallel_merge_level_minus2 = (uint8_t)heic_bs_ue(&bs);
     out->slice_segment_header_extension_present_flag = heic_bs_bit(&bs);
@@ -725,7 +725,7 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
                 if (minus2 > 3) {
                     heic_error(ctx, HEIC_SEVERITY_ERROR,
                                "PPS transform skip block size out of range");
-                    return -1;
+                    goto fail;
                 }
                 out->log2_max_transform_skip_block_size = (uint8_t)(minus2 + 2);
             }
@@ -737,7 +737,7 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
                 if (depth > 6 || len_minus1 > 5) {
                     heic_error(ctx, HEIC_SEVERITY_ERROR,
                                "PPS chroma QP offset list out of range");
-                    return -1;
+                    goto fail;
                 }
                 out->diff_cu_chroma_qp_offset_depth = (uint8_t)depth;
                 out->chroma_qp_offset_list_len = (uint8_t)(len_minus1 + 1);
@@ -747,7 +747,7 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
                     if (cb < -12 || cb > 12 || cr < -12 || cr > 12) {
                         heic_error(ctx, HEIC_SEVERITY_ERROR,
                                    "PPS chroma QP offset out of range");
-                        return -1;
+                        goto fail;
                     }
                     out->cb_qp_offset_list[i] = (int8_t)cb;
                     out->cr_qp_offset_list[i] = (int8_t)cr;
@@ -759,7 +759,7 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
                 if (luma > 6 || chroma > 6) {
                     heic_error(ctx, HEIC_SEVERITY_ERROR,
                                "PPS SAO offset scale out of range");
-                    return -1;
+                    goto fail;
                 }
                 out->log2_sao_offset_scale_luma = (uint8_t)luma;
                 out->log2_sao_offset_scale_chroma = (uint8_t)chroma;
@@ -767,11 +767,15 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
         }
         if (unsupported_extension) {
             heic_error(ctx, HEIC_SEVERITY_ERROR, "unsupported PPS extension");
-            return -1;
+            goto fail;
         }
     }
-    if (bs.error) return -1;
+    if (bs.error) goto fail;
     return 0;
+fail:
+    /* Tile geometry arrays are the only heap fields on heic_pps. */
+    heic_pps_free(ctx, out);
+    return -1;
 }
 
 void heic_pps_free(heic_ctx *ctx, heic_pps *pps)

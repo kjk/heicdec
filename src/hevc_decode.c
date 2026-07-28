@@ -386,16 +386,19 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                     heic_pps tmp;
                     memset(&tmp, 0, sizeof(tmp));
                     if (heic_parse_pps(ctx, param.payload, param.payload_len,
-                                       &tmp) == 0
-                        && tmp.pps_pic_parameter_set_id < HEIC_PARAM_MAX_PPS) {
-                        uint8_t id = tmp.pps_pic_parameter_set_id;
-                        if (pc->pps_valid[id])
-                            heic_pps_free(ctx, &pc->pps_set[id]);
-                        pc->pps_set[id] = tmp;
-                        pc->pps_valid[id] = 1;
-                        have_pps = 1;
-                        pc->have_pps = 1;
-                        active_pps_id = id;
+                                       &tmp) == 0) {
+                        if (tmp.pps_pic_parameter_set_id < HEIC_PARAM_MAX_PPS) {
+                            uint8_t id = tmp.pps_pic_parameter_set_id;
+                            if (pc->pps_valid[id])
+                                heic_pps_free(ctx, &pc->pps_set[id]);
+                            pc->pps_set[id] = tmp;
+                            pc->pps_valid[id] = 1;
+                            have_pps = 1;
+                            pc->have_pps = 1;
+                            active_pps_id = id;
+                        } else {
+                            heic_pps_free(ctx, &tmp);
+                        }
                     }
                 }
                 heic_nal_free(ctx, &param);
@@ -418,15 +421,19 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
             heic_pps tmp;
             memset(&tmp, 0, sizeof(tmp));
             if (heic_parse_pps(ctx, nals[i].payload, nals[i].payload_len, &tmp)
-                == 0 && tmp.pps_pic_parameter_set_id < HEIC_PARAM_MAX_PPS) {
-                uint8_t id = tmp.pps_pic_parameter_set_id;
-                if (pc->pps_valid[id])
-                    heic_pps_free(ctx, &pc->pps_set[id]);
-                pc->pps_set[id] = tmp;
-                pc->pps_valid[id] = 1;
-                have_pps = 1;
-                pc->have_pps = 1;
-                active_pps_id = id;
+                == 0) {
+                if (tmp.pps_pic_parameter_set_id < HEIC_PARAM_MAX_PPS) {
+                    uint8_t id = tmp.pps_pic_parameter_set_id;
+                    if (pc->pps_valid[id])
+                        heic_pps_free(ctx, &pc->pps_set[id]);
+                    pc->pps_set[id] = tmp;
+                    pc->pps_valid[id] = 1;
+                    have_pps = 1;
+                    pc->have_pps = 1;
+                    active_pps_id = id;
+                } else {
+                    heic_pps_free(ctx, &tmp);
+                }
             }
             pc->hvcc = NULL;
         } else if (nals[i].type == HEIC_NAL_SPS) {
