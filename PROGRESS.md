@@ -173,8 +173,11 @@
 - [x] WPP PicWidthInCtbsY==1: re-init CABAC when no (1,y-1) sync CTB — on row
       boundaries and at dependent segments that start a new row (libde265
       decode_substream). FATE `WPP_D_ericsson_MAIN_2` 48 frames exact MD5.
-      Remaining gaps: WPP Main10 (small late-frame drift on WPP_D10; P on A),
-      DELTAQP_A/B, NoOutPrior/RAP DPB order, RPS_D, SLIST, PERSIST_RPARAM.
+- [x] `IsCuQpDeltaCoded` / chroma-QP-offset flags reset on **spatial** QG
+      alignment (HM `coding_quadtree`), not only when CU size ≥ QG size.
+      Remaining gaps: WPP Main10; DELTAQP_A/B (libde265 also emits
+      out-of-range/CTB-outside warnings on A/B — weak oracle); NoOutPrior/RAP
+      DPB order; RPS_D; SLIST; PERSIST_RPARAM (12-bit + persistent Rice).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`

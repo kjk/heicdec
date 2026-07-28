@@ -2534,21 +2534,29 @@ static int decode_cqt(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     else
         split = 0;
 
+    /* Reset cu_qp_delta / chroma QP-offset coded flags at the start of each
+     * quantization group (HM coding_quadtree: spatial alignment to
+     * Log2MinCuQpDeltaSize), not merely when CU size >= QG size. */
     log2_qg = sc->sps->log2_ctb_size > sc->pps->diff_cu_qp_delta_depth
                   ? (uint8_t)(sc->sps->log2_ctb_size - sc->pps->diff_cu_qp_delta_depth)
                   : 0;
-    if (sc->pps->cu_qp_delta_enabled_flag && log2_cb >= log2_qg) {
-        sc->is_cu_qp_delta_coded = 0;
-        sc->cu_qp_delta = 0;
+    if (sc->pps->cu_qp_delta_enabled_flag) {
+        uint32_t qg_mask = (1u << log2_qg) - 1u;
+        if ((x0 & qg_mask) == 0 && (y0 & qg_mask) == 0) {
+            sc->is_cu_qp_delta_coded = 0;
+            sc->cu_qp_delta = 0;
+        }
     }
     log2_chroma_qg =
         sc->sps->log2_ctb_size > sc->pps->diff_cu_chroma_qp_offset_depth
             ? (uint8_t)(sc->sps->log2_ctb_size
                         - sc->pps->diff_cu_chroma_qp_offset_depth)
             : 0;
-    if (sc->sh->cu_chroma_qp_offset_enabled_flag
-        && log2_cb >= log2_chroma_qg)
-        sc->is_cu_chroma_qp_offset_coded = 0;
+    if (sc->sh->cu_chroma_qp_offset_enabled_flag) {
+        uint32_t qg_mask = (1u << log2_chroma_qg) - 1u;
+        if ((x0 & qg_mask) == 0 && (y0 & qg_mask) == 0)
+            sc->is_cu_chroma_qp_offset_coded = 0;
+    }
 
     if (split) {
         uint32_t half = cb / 2;
