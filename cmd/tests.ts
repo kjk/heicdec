@@ -434,8 +434,9 @@ const HEVC_SEQUENCE_TESTS: readonly {
   {
     name: "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
     frames: 8,
-    mse: 0.05,
+    mse: 0,
     bitDepth: 10,
+    md5: "1bed23df7253170eeb8efc3fd1b740a3",
   },
   {
     name: "WPP_HIGH_TP_444_8BIT_RExt_Apple_2.bit",
@@ -733,6 +734,49 @@ const HEVC_SEQUENCE_TESTS: readonly {
     frames: 48,
     mse: 0,
     md5: "f710612103f386c415be3e6300693451",
+  },
+  /* WPP Main10: uni-pred via 14-bit intermediate + put_unweighted (exact). */
+  {
+    name: "WPP_A_ericsson_MAIN10_2.bit",
+    frames: 48,
+    mse: 0,
+    bitDepth: 10,
+    md5: "e68b9d75ff9cf1d9486e964051351f69",
+  },
+  {
+    name: "WPP_B_ericsson_MAIN10_2.bit",
+    frames: 48,
+    mse: 0,
+    bitDepth: 10,
+    md5: "d8290fc1eec3a196aa796c92e71a779b",
+  },
+  {
+    name: "WPP_C_ericsson_MAIN10_2.bit",
+    frames: 48,
+    mse: 0,
+    bitDepth: 10,
+    md5: "aadac4d468d5950551d606c1016abc9c",
+  },
+  {
+    name: "WPP_D_ericsson_MAIN10_2.bit",
+    frames: 48,
+    mse: 0,
+    bitDepth: 10,
+    md5: "dde9aa65b78a8ca5602d834f234655d4",
+  },
+  {
+    name: "WPP_E_ericsson_MAIN10_2.bit",
+    frames: 48,
+    mse: 0,
+    bitDepth: 10,
+    md5: "f12e746306c59544d6162de0b62c4649",
+  },
+  {
+    name: "WPP_F_ericsson_MAIN10_2.bit",
+    frames: 48,
+    mse: 0,
+    bitDepth: 10,
+    md5: "210055a33d7d912fda6a3c40764b0482",
   },
 ];
 

@@ -188,7 +188,11 @@
 - [x] Multi-CVS display order: sort by `(cvs_id, poc)` so successive IDR/BLA
       CVSs that reuse POC values are not interleaved. FATE `RAP_B_Bossen_1`
       and `NoOutPrior_B_Qualcomm_1` exact MD5 vs libde265.
-- [ ] Remaining HEVC FATE gaps: WPP Main10; DELTAQP_A/B (weak oracle);
+- [x] WPP Main10: uni-pred always uses 14-bit MC intermediate + put_unweighted
+      (H.265 8.5.3.3.4.2 / libde265). Direct `heic_mc_luma` final path rounded
+      differently at 10-bit and drifted from f8. FATE `WPP_A–F_ericsson_MAIN10_2`
+      and `TSUNEQBD_A_MAIN10` exact MD5 vs libde265.
+- [ ] Remaining HEVC FATE gaps: DELTAQP_A/B (weak oracle);
       SLIST exact MD5 (scaled dequant residual); PERSIST_RPARAM
       (12-bit + persistent Rice).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free

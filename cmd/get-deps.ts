@@ -76,7 +76,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v36-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+family-coverage";
+  "v37-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+family-coverage";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -180,6 +180,18 @@ const HEVC_SEQUENCE_SAMPLES = [
   "ipcm_C_NEC_3.bit",
   "TSKIP_A_MS_3.bit",
   "TSUNEQBD_A_MAIN10_Technicolor_2.bit",
+  "WPP_A_ericsson_MAIN_2.bit",
+  "WPP_B_ericsson_MAIN_2.bit",
+  "WPP_C_ericsson_MAIN_2.bit",
+  "WPP_D_ericsson_MAIN_2.bit",
+  "WPP_E_ericsson_MAIN_2.bit",
+  "WPP_F_ericsson_MAIN_2.bit",
+  "WPP_A_ericsson_MAIN10_2.bit",
+  "WPP_B_ericsson_MAIN10_2.bit",
+  "WPP_C_ericsson_MAIN10_2.bit",
+  "WPP_D_ericsson_MAIN10_2.bit",
+  "WPP_E_ericsson_MAIN10_2.bit",
+  "WPP_F_ericsson_MAIN10_2.bit",
   "WPP_HIGH_TP_444_8BIT_RExt_Apple_2.bit",
 ];
 

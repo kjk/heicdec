@@ -1197,26 +1197,6 @@ static heic_pb_motion resolve_motion(heic_slice_ctx *sc, heic_pb_coding coding,
     }
 }
 
-static int predict_from_list(heic_slice_ctx *sc, const heic_pu *pu,
-                             heic_pb_motion motion, int list)
-{
-    const heic_frame *ref;
-    int idx = motion.ref_idx[list];
-    if (!motion.pred_flag[list] || idx < 0 || idx >= sc->n_refs[list])
-        return -1;
-    ref = sc->refs[list][idx];
-    if (!ref) return -1;
-    if (heic_mc_luma(ref, sc->frame, motion.mv[list],
-                     pu->x, pu->y, pu->w, pu->h,
-                     sc->mc_scratch, 72u * 72u) != 0)
-        return -1;
-    if (heic_mc_chroma(ref, sc->frame, motion.mv[list],
-                       pu->x, pu->y, pu->w, pu->h,
-                       sc->mc_scratch, 72u * 72u) != 0)
-        return -1;
-    return 0;
-}
-
 static int predict_internal_from_list(heic_slice_ctx *sc, const heic_pu *pu,
                                       heic_pb_motion motion, int list)
 {
@@ -1238,6 +1218,54 @@ static int predict_internal_from_list(heic_slice_ctx *sc, const heic_pu *pu,
                                 sc->mc_scratch, 72u * 72u) != 0)
         return -1;
     return 0;
+}
+
+/* H.265 8.5.3.3.4.2 / libde265 put_unweighted_pred: intermediate → sample. */
+static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
+                                    int list)
+{
+    int16_t *pred = sc->mc_internal + (size_t)list * 3u * 64u * 64u;
+    uint32_t x, y;
+    int bd_y = bit_depth_y(sc->sps);
+    int shift_y = 14 - bd_y;
+    int max_y = (1 << bd_y) - 1;
+    if (shift_y < 2) shift_y = 2;
+    for (y = 0; y < pu->h
+                && pu->y + y < (uint32_t)sc->frame->height; y++)
+        for (x = 0; x < pu->w
+                    && pu->x + x < (uint32_t)sc->frame->width; x++) {
+            size_t pos =
+                (size_t)(pu->y + y) * sc->frame->y_stride + pu->x + x;
+            int v = (pred[y * 64u + x] + (1 << (shift_y - 1))) >> shift_y;
+            sc->frame->y[pos] = (uint16_t)clip_int(v, 0, max_y);
+        }
+    if (sc->frame->chroma_format != 0) {
+        int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
+        int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
+        uint32_t cx = pu->x / (uint32_t)sub_x;
+        uint32_t cy = pu->y / (uint32_t)sub_y;
+        uint32_t cw = pu->w / (uint32_t)sub_x;
+        uint32_t ch = pu->h / (uint32_t)sub_y;
+        int bd_c = bit_depth_c(sc->sps);
+        int shift_c = 14 - bd_c;
+        int max_c = (1 << bd_c) - 1;
+        uint16_t *planes[2] = {sc->frame->cb, sc->frame->cr};
+        int c;
+        if (shift_c < 2) shift_c = 2;
+        for (c = 0; c < 2; c++) {
+            int16_t *src = pred + (size_t)(c + 1) * 64u * 64u;
+            for (y = 0; y < ch
+                        && cy + y < (uint32_t)sc->frame->c_height; y++)
+                for (x = 0; x < cw
+                            && cx + x < (uint32_t)sc->frame->c_width; x++) {
+                    size_t pos =
+                        (size_t)(cy + y) * sc->frame->c_stride + cx + x;
+                    int v = (src[y * 64u + x] + (1 << (shift_c - 1)))
+                            >> shift_c;
+                    planes[c][pos] = (uint16_t)clip_int(v, 0, max_c);
+                }
+        }
+    }
 }
 
 static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
@@ -1419,7 +1447,10 @@ static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
         blend_internal_block(sc, pu);
         return 0;
     }
-    if (predict_from_list(sc, pu, motion, list) != 0) return -1;
+    /* Uni-pred: always use 14-bit intermediate + put_unweighted so 10-bit
+       rounding matches H.265 / libde265 (direct heic_mc_luma path diverges). */
+    if (predict_internal_from_list(sc, pu, motion, list) != 0) return -1;
+    put_unweighted_internal(sc, pu, list);
     return 0;
 }
 
