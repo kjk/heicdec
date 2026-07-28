@@ -15,6 +15,7 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -31,13 +32,20 @@ const DIST_C = path.join(ROOT, "dist", "heic.c");
 const WASM = path.join(ROOT, "dist", "wasm");
 export const WASM_JS = path.join(WASM, "heic.js");
 export const WASM_BINARY = path.join(WASM, "heic.wasm");
+/* Stage under out/ so wasm-opt never rewrites a locked dist/ artifact in place
+   (Windows: "Failed opening output file … Invalid argument"). */
+const WASM_STAGE = path.join(ROOT, "out", "wasm-stage");
 const EMSDK = path.join(ROOT, "deps", "emsdk");
 const isWin = process.platform === "win32";
 const EMSDK_ENV = path.join(EMSDK, isWin ? "emsdk_env.bat" : "emsdk_env.sh");
 
+/* emcc/binaryen shell out more reliably with POSIX slashes on Windows. */
+const emPath = (p: string) => p.replaceAll("\\", "/");
+
 const q = (s: string) => {
-  if (isWin) return /[\s"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+  const p = emPath(s);
+  if (isWin) return /[\s"]/.test(p) ? `"${p.replace(/"/g, '""')}"` : p;
+  return `'${p.replace(/'/g, `'\\''`)}'`;
 };
 
 function sh(
@@ -172,7 +180,14 @@ export function wasmOutdated(useDist = false): boolean {
 
 function compile(prefix: string, useDist: boolean) {
   mkdirSync(WASM, { recursive: true });
-  const out = q(WASM_JS);
+  /* Fresh stage dir each build: emcc/wasm-opt write here, then we copy into
+     dist/wasm/. Avoids Windows EINVAL when wasm-opt rewrites a locked or
+     just-written final heic.wasm in place (input == output). */
+  rmSync(WASM_STAGE, { recursive: true, force: true });
+  mkdirSync(WASM_STAGE, { recursive: true });
+  const stageJs = path.join(WASM_STAGE, "heic.js");
+  const stageWasm = path.join(WASM_STAGE, "heic.wasm");
+  const out = q(stageJs);
   const flags = [
     "-O2",
     "-sMODULARIZE=1",
@@ -202,17 +217,25 @@ function compile(prefix: string, useDist: boolean) {
   }
 
   sh(`${prefix}emcc ${inputs} ${flags} -o ${out}`);
+  if (!existsSync(stageJs) || !existsSync(stageWasm)) {
+    throw new Error(
+      `emcc did not produce ${stageJs} / ${stageWasm}`,
+    );
+  }
   // emcc on Windows may emit CRLF in the JS glue; keep the committed drop LF-only
   // (matches .gitattributes eol=lf and avoids noisy line-ending diffs).
   {
-    const raw = readFileSync(WASM_JS);
+    const raw = readFileSync(stageJs);
     if (raw.includes(0x0d)) {
       writeFileSync(
-        WASM_JS,
+        stageJs,
         Buffer.from(raw.toString("utf8").replace(/\r\n/g, "\n")),
       );
     }
   }
+  copyFileSync(stageJs, WASM_JS);
+  copyFileSync(stageWasm, WASM_BINARY);
+  rmSync(WASM_STAGE, { recursive: true, force: true });
   const kb = (Bun.file(WASM_JS).size / 1024).toFixed(0);
   const wasmKb = (Bun.file(WASM_BINARY).size / 1024).toFixed(0);
   console.log(
