@@ -18,6 +18,9 @@ concurrency:
 env:
   # Non-interactive; scripts already print install hints if meson/cmake missing.
   BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.bun-cache
+  # CI smoke / fuzz crash replay only need git deps (heic testdata, dav1d, …).
+  # Skip FATE/ITU HEVC sequence downloads — large, rate-limited, unused here.
+  HEIC_SKIP_TESTIMAGES: "1"
 
 jobs:
   windows-msvc:

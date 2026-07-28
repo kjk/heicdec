@@ -1,10 +1,14 @@
 // get-deps.ts -- fetch reference checkouts (corpus + oracles) and local fixtures.
 //
 //   bun cmd/get-deps.ts
+//   bun cmd/get-deps.ts -force              # re-download testimages
+//   bun cmd/get-deps.ts -skip-testimages    # repos only (CI smoke path)
+//   HEIC_SKIP_TESTIMAGES=1 bun cmd/get-deps.ts
 //
 // Clones into deps/ (skipped if present). deps/ is gitignored.
 // Also fills deps/testimages/ with AVIF samples, official HEIF Mini samples,
-// and regenerated grid/alpha + unci block fixtures (no checked-in binaries).
+// HEVC FATE/ITU sequences, and regenerated grid/alpha + unci block fixtures
+// (no checked-in binaries). Downloads retry with backoff (FATE rate-limits).
 import { $ } from "bun";
 import {
   copyFileSync,
@@ -202,12 +206,39 @@ const HEVC_SEQUENCE_SAMPLES = [
   "WPP_HIGH_TP_444_8BIT_RExt_Apple_2.bit",
 ];
 
-async function download(url: string, dest: string): Promise<void> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`GET ${url} → ${res.status}`);
-  const buf = new Uint8Array(await res.arrayBuffer());
-  writeFileSync(dest, buf);
-  console.log(`deps/testimages: downloaded ${dest} (${buf.length} bytes)`);
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Transient network failures (rate limits, ConnectionRefused, …) are retried. */
+async function download(
+  url: string,
+  dest: string,
+  opts: { attempts?: number } = {},
+): Promise<void> {
+  const attempts = opts.attempts ?? 6;
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`GET ${url} → ${res.status}`);
+      const buf = new Uint8Array(await res.arrayBuffer());
+      writeFileSync(dest, buf);
+      console.log(`deps/testimages: downloaded ${dest} (${buf.length} bytes)`);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (i + 1 >= attempts) break;
+      const delayMs = Math.min(30_000, 1000 * 2 ** i);
+      console.log(
+        `deps/testimages: download retry ${i + 1}/${attempts - 1} in ${delayMs}ms (${url})`,
+      );
+      await sleep(delayMs);
+    }
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(`GET ${url} failed: ${String(lastErr)}`);
 }
 
 function extractZipEntry(zipPath: string, entrySuffix: string, dest: string): void {
@@ -397,8 +428,11 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   console.log("deps/testimages: installing HEVC sequence fixtures…");
   for (const name of HEVC_SEQUENCE_SAMPLES) {
     const dest = join(hevcSequenceDir, name);
-    if (!existsSync(dest) || opts.force)
+    if (!existsSync(dest) || opts.force) {
       await download(`${HEVC_SEQUENCE_BASE}/${name}`, dest);
+      // FATE suite rate-limits rapid sequential GETs (ConnectionRefused on CI).
+      await sleep(150);
+    }
   }
   {
     const dest = join(hevcSequenceDir, HEVC_SAO_DIAGONAL);
@@ -556,7 +590,9 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   console.log(`deps/testimages: ready (${STAMP_WANT})`);
 }
 
-export async function getDeps(opts: { forceTestImages?: boolean } = {}): Promise<void> {
+export async function getDeps(
+  opts: { forceTestImages?: boolean; skipTestImages?: boolean } = {},
+): Promise<void> {
   mkdirSync(DEPS_DIR, { recursive: true });
   for (const { url, dir } of REPOS) {
     const path = join(DEPS_DIR, dir);
@@ -564,13 +600,29 @@ export async function getDeps(opts: { forceTestImages?: boolean } = {}): Promise
     console.log(`deps: cloning ${url}`);
     await $`git clone --depth 1 ${url} ${path}`;
   }
+  const skip =
+    opts.skipTestImages
+    || process.env.HEIC_SKIP_TESTIMAGES === "1"
+    || process.env.HEIC_SKIP_TESTIMAGES === "true";
+  if (skip) {
+    console.log(
+      "deps: skipping testimages (HEIC_SKIP_TESTIMAGES / -skip-testimages)",
+    );
+    return;
+  }
   await ensureTestImages({ force: !!opts.forceTestImages });
 }
 
 if (import.meta.main) {
   const force = process.argv.includes("-force");
-  await getDeps({ forceTestImages: force });
+  const skipTestImages = process.argv.includes("-skip-testimages");
+  await getDeps({ forceTestImages: force, skipTestImages });
   console.log(
-    "deps: ready (heic, dav1d, libheif, libde265, zlib, brotli, heif_conformance, testimages)",
+    "deps: ready (heic, dav1d, libheif, libde265, zlib, brotli, heif_conformance"
+      + (skipTestImages
+          || process.env.HEIC_SKIP_TESTIMAGES === "1"
+          || process.env.HEIC_SKIP_TESTIMAGES === "true"
+        ? "; testimages skipped)"
+        : ", testimages)"),
   );
 }
