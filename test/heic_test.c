@@ -327,13 +327,16 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
         }
         free(sample);
         /* NoRaslOutputFlag (H.265 8.1.3): BLA always; CRA if first picture or
-           first picture after EOS/EOB. */
+           first picture after EOS/EOB. IDR always starts a new CVS. */
         if (out.nal_unit_type >= HEIC_NAL_BLA_W_LP
             && out.nal_unit_type <= HEIC_NAL_BLA_N_LP)
             out.no_rasl_output_flag = 1;
         else if (out.nal_unit_type == HEIC_NAL_CRA)
             out.no_rasl_output_flag =
                 (decoded == 0 || after_eos) ? 1u : 0u;
+        else if (out.nal_unit_type == HEIC_NAL_IDR_W_RADL
+                 || out.nal_unit_type == HEIC_NAL_IDR_N_LP)
+            out.no_rasl_output_flag = 1;
         if (out.nal_unit_type >= HEIC_NAL_BLA_W_LP
             && out.nal_unit_type <= HEIC_NAL_CRA)
             after_eos = 0;
@@ -351,20 +354,33 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
         int n_all = decoded;
         int n_out = 0;
         int suppress_rasl = 0;
+        uint16_t cvs = 0;
         for (i = 0; i < n_all; i++) {
             uint8_t nt = frames[i].nal_unit_type;
             int is_rasl = (nt == HEIC_NAL_RASL_N || nt == HEIC_NAL_RASL_R);
-            int is_cra = (nt == HEIC_NAL_CRA);
-            int is_bla = (nt >= HEIC_NAL_BLA_W_LP && nt <= HEIC_NAL_BLA_N_LP);
-            if (is_bla || is_cra)
-                suppress_rasl = frames[i].no_rasl_output_flag != 0;
+            int is_irap = (nt >= HEIC_NAL_BLA_W_LP && nt <= HEIC_NAL_CRA);
+            /* New CVS at IRAP with NoRaslOutputFlag (includes IDR/BLA and
+               first/post-EOS CRA). Prevents POC-only sort from interleaving
+               multiple CVSs that reuse the same POC values. */
+            if (is_irap && frames[i].no_rasl_output_flag) {
+                if (i > 0) cvs++;
+                suppress_rasl = 1;
+            } else if (is_irap) {
+                suppress_rasl = 0;
+            }
+            frames[i].cvs_id = cvs;
             if (!frames[i].pic_output_flag) continue;
             if (is_rasl && suppress_rasl) continue;
             order[n_out++] = i;
         }
+        /* Sort by (cvs_id, poc) for correct multi-CVS display order. */
         for (i = 1; i < n_out; i++) {
             int oi = order[i], k = i;
-            while (k > 0 && frames[order[k - 1]].poc > frames[oi].poc) {
+            while (k > 0) {
+                heic_frame *a = &frames[order[k - 1]];
+                heic_frame *b = &frames[oi];
+                if (a->cvs_id < b->cvs_id) break;
+                if (a->cvs_id == b->cvs_id && a->poc <= b->poc) break;
                 order[k] = order[k - 1];
                 k--;
             }

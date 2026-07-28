@@ -672,7 +672,7 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "0859021ec0602cdca6a0fa6c469ea0a4",
   },
-  /* NoRaslOutputFlag: first CRA / CRA after EOS; conformance crop on write. */
+  /* NoRaslOutputFlag + multi-CVS (cvs_id, poc) sort; conformance crop. */
   {
     name: "RAP_A_docomo_4.bit",
     frames: 512,
@@ -680,10 +680,22 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "8a536a80ed42b37b1ac5810bc046f82a",
   },
   {
+    name: "RAP_B_Bossen_1.bit",
+    frames: 512,
+    mse: 0,
+    md5: "9a85001a2279df623eaa367d666501dd",
+  },
+  {
     name: "NoOutPrior_A_Qualcomm_1.bit",
     frames: 512,
     mse: 0,
     md5: "276f1c2240397c0618f26ad8b4af08cf",
+  },
+  {
+    name: "NoOutPrior_B_Qualcomm_1.bit",
+    frames: 512,
+    mse: 0,
+    md5: "1f2e78cc91d3e50894d51b020b378fc7",
   },
   /* WPP + multi-segment (dependent entry-point parse); exact vs libde265. */
   {

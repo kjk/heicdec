@@ -541,6 +541,8 @@ typedef struct {
     uint8_t no_output_of_prior_pics_flag;
     /* Derived NoRaslOutputFlag for CRA/BLA (8.1.3). */
     uint8_t no_rasl_output_flag;
+    /* Coded video sequence index for multi-CVS POC sort (sequence harness). */
+    uint16_t cvs_id;
     heic_pb_motion *motion;
     uint8_t *motion_pred_mode;
     size_t motion_n;

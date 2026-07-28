@@ -185,9 +185,12 @@
 - [x] Sequence output: `pic_output_flag`, NoRaslOutputFlag (BLA; first CRA;
       CRA after EOS/EOB), conformance-window crop on YUV write. FATE
       `RAP_A_docomo_4` and `NoOutPrior_A_Qualcomm_1` exact MD5 vs libde265.
+- [x] Multi-CVS display order: sort by `(cvs_id, poc)` so successive IDR/BLA
+      CVSs that reuse POC values are not interleaved. FATE `RAP_B_Bossen_1`
+      and `NoOutPrior_B_Qualcomm_1` exact MD5 vs libde265.
 - [ ] Remaining HEVC FATE gaps: WPP Main10; DELTAQP_A/B (weak oracle);
-      NoOutPrior_B / RAP_B (DPB bump + mid-stream edge cases); SLIST exact
-      MD5 (scaled dequant residual); PERSIST_RPARAM (12-bit + persistent Rice).
+      SLIST exact MD5 (scaled dequant residual); PERSIST_RPARAM
+      (12-bit + persistent Rice).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`
