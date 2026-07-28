@@ -69,8 +69,9 @@ static double bench_now_ms(void)
     QueryPerformanceCounter(&c);
     return (double)c.QuadPart * 1000.0 / (double)freq.QuadPart;
 #else
+    /* C11 timespec_get — no POSIX feature macros needed under -std=c11. */
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (timespec_get(&ts, TIME_UTC) == 0) return 0.0;
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1.0e6;
 #endif
 }
