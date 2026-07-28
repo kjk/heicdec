@@ -536,6 +536,11 @@ typedef struct {
      * 2 = used for short-term reference, 3 = used for long-term reference.
      * Updated by heic_hevc_decode_refs when any candidate is already managed. */
     uint8_t dpb_mark;
+    /* Slice header output control (H.265 7.4.7 / 8.1.3). Default 1. */
+    uint8_t pic_output_flag;
+    uint8_t no_output_of_prior_pics_flag;
+    /* Derived NoRaslOutputFlag for CRA/BLA (8.1.3). */
+    uint8_t no_rasl_output_flag;
     heic_pb_motion *motion;
     uint8_t *motion_pred_mode;
     size_t motion_n;

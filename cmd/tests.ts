@@ -672,6 +672,19 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "0859021ec0602cdca6a0fa6c469ea0a4",
   },
+  /* NoRaslOutputFlag: first CRA / CRA after EOS; conformance crop on write. */
+  {
+    name: "RAP_A_docomo_4.bit",
+    frames: 512,
+    mse: 0,
+    md5: "8a536a80ed42b37b1ac5810bc046f82a",
+  },
+  {
+    name: "NoOutPrior_A_Qualcomm_1.bit",
+    frames: 512,
+    mse: 0,
+    md5: "276f1c2240397c0618f26ad8b4af08cf",
+  },
   /* WPP + multi-segment (dependent entry-point parse); exact vs libde265. */
   {
     name: "WPP_A_ericsson_MAIN_2.bit",

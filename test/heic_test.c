@@ -265,15 +265,25 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
     }
 
     i = 0;
+    {
+    int after_eos = 0; /* next CRA has NoRaslOutputFlag (H.265 8.1.3) */
     while (i < n_nals && decoded < max_frames) {
         uint8_t *sample;
         size_t sample_len = 0, pos = 0;
         heic_frame out;
         int au_start, au_end, k;
-        while (i < n_nals && nals[i].type > 31) i++;
+        while (i < n_nals && nals[i].type > 31) {
+            if (nals[i].type == HEIC_NAL_EOS || nals[i].type == HEIC_NAL_EOB)
+                after_eos = 1;
+            i++;
+        }
         if (i >= n_nals) break;
         au_start = i++;
-        while (i < n_nals && !annexb_first_slice(&nals[i])) i++;
+        while (i < n_nals && !annexb_first_slice(&nals[i])) {
+            if (nals[i].type == HEIC_NAL_EOS || nals[i].type == HEIC_NAL_EOB)
+                after_eos = 1;
+            i++;
+        }
         au_end = i;
         for (k = au_start; k < au_end; k++) {
             if (nals[k].type > 31) continue;
@@ -316,6 +326,17 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
             break;
         }
         free(sample);
+        /* NoRaslOutputFlag (H.265 8.1.3): BLA always; CRA if first picture or
+           first picture after EOS/EOB. */
+        if (out.nal_unit_type >= HEIC_NAL_BLA_W_LP
+            && out.nal_unit_type <= HEIC_NAL_BLA_N_LP)
+            out.no_rasl_output_flag = 1;
+        else if (out.nal_unit_type == HEIC_NAL_CRA)
+            out.no_rasl_output_flag =
+                (decoded == 0 || after_eos) ? 1u : 0u;
+        if (out.nal_unit_type >= HEIC_NAL_BLA_W_LP
+            && out.nal_unit_type <= HEIC_NAL_CRA)
+            after_eos = 0;
         frames[decoded++] = out;
         for (k = au_start + 1; k < au_end; k++)
             if (update_hvcc_param(params, param_lens, &n_params, &nals[k]) != 0) {
@@ -324,65 +345,124 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
             }
         if (!complete) break;
     }
+    } /* after_eos scope */
     j = complete && (i >= n_nals || decoded == max_frames);
-    for (i = 0; i < decoded; i++) order[i] = i;
-    for (i = 1; i < decoded; i++) {
-        int oi = order[i], k = i;
-        while (k > 0 && frames[order[k - 1]].poc > frames[oi].poc) {
-            order[k] = order[k - 1];
-            k--;
+    {
+        int n_all = decoded;
+        int n_out = 0;
+        int suppress_rasl = 0;
+        for (i = 0; i < n_all; i++) {
+            uint8_t nt = frames[i].nal_unit_type;
+            int is_rasl = (nt == HEIC_NAL_RASL_N || nt == HEIC_NAL_RASL_R);
+            int is_cra = (nt == HEIC_NAL_CRA);
+            int is_bla = (nt >= HEIC_NAL_BLA_W_LP && nt <= HEIC_NAL_BLA_N_LP);
+            if (is_bla || is_cra)
+                suppress_rasl = frames[i].no_rasl_output_flag != 0;
+            if (!frames[i].pic_output_flag) continue;
+            if (is_rasl && suppress_rasl) continue;
+            order[n_out++] = i;
         }
-        order[k] = oi;
-    }
-    for (i = 0; i < decoded; i++) {
-        heic_frame *f = &frames[order[i]];
-        hash = hash_plane(hash, f->y, f->y_stride, f->width, f->height);
-        if (f->chroma_format != 0) {
-            hash = hash_plane(hash, f->cb, f->c_stride,
-                              f->c_width, f->c_height);
-            hash = hash_plane(hash, f->cr, f->c_stride,
-                              f->c_width, f->c_height);
+        for (i = 1; i < n_out; i++) {
+            int oi = order[i], k = i;
+            while (k > 0 && frames[order[k - 1]].poc > frames[oi].poc) {
+                order[k] = order[k - 1];
+                k--;
+            }
+            order[k] = oi;
         }
-    }
-    if (out_path) {
-        FILE *f = fopen(out_path, "wb");
-        if (!f) j = 0;
-        for (i = 0; f && i < decoded; i++) {
-            heic_frame *fr = &frames[order[i]];
-            int plane, y, x;
-            const uint16_t *planes[3] = {fr->y, fr->cb, fr->cr};
-            int strides[3] = {fr->y_stride, fr->c_stride, fr->c_stride};
-            int widths[3] = {fr->width, fr->c_width, fr->c_width};
-            int heights[3] = {fr->height, fr->c_height, fr->c_height};
-            int depths[3] = {
-                fr->bit_depth, fr->chroma_bit_depth, fr->chroma_bit_depth
-            };
-            int n_planes = fr->chroma_format ? 3 : 1;
-            for (plane = 0; plane < n_planes; plane++)
-                for (y = 0; y < heights[plane]; y++)
-                    for (x = 0; x < widths[plane]; x++) {
-                        uint16_t v = planes[plane][
-                            (size_t)y * strides[plane] + x];
-                        if (depths[plane] > 8) {
-                            uint8_t bytes[2] = {
-                                (uint8_t)v, (uint8_t)(v >> 8)
-                            };
-                            if (fwrite(bytes, 1, 2, f) != 2) j = 0;
-                        } else {
-                            uint8_t byte = (uint8_t)v;
-                            if (fwrite(&byte, 1, 1, f) != 1) j = 0;
+        for (i = 0; i < n_out; i++) {
+            heic_frame *f = &frames[order[i]];
+            int sub_x = f->chroma_format == 3 ? 1
+                : (f->chroma_format == 0 ? 1 : 2);
+            int sub_y = f->chroma_format == 1 ? 2 : 1;
+            int yw = f->width - f->crop_left - f->crop_right;
+            int yh = f->height - f->crop_top - f->crop_bottom;
+            hash = hash_plane(
+                hash,
+                f->y + (size_t)f->crop_top * f->y_stride + f->crop_left,
+                f->y_stride, yw, yh);
+            if (f->chroma_format != 0) {
+                int cw = f->c_width - f->crop_left / sub_x
+                         - f->crop_right / sub_x;
+                int ch = f->c_height - f->crop_top / sub_y
+                         - f->crop_bottom / sub_y;
+                int cox = f->crop_left / sub_x, coy = f->crop_top / sub_y;
+                hash = hash_plane(
+                    hash,
+                    f->cb + (size_t)coy * f->c_stride + cox,
+                    f->c_stride, cw, ch);
+                hash = hash_plane(
+                    hash,
+                    f->cr + (size_t)coy * f->c_stride + cox,
+                    f->c_stride, cw, ch);
+            }
+        }
+        if (out_path) {
+            FILE *f = fopen(out_path, "wb");
+            if (!f) j = 0;
+            for (i = 0; f && i < n_out; i++) {
+                heic_frame *fr = &frames[order[i]];
+                int plane, y, x;
+                int sub_x = fr->chroma_format == 3 ? 1
+                    : (fr->chroma_format == 0 ? 1 : 2);
+                int sub_y = fr->chroma_format == 1 ? 2 : 1;
+                const uint16_t *planes[3] = {fr->y, fr->cb, fr->cr};
+                int strides[3] = {fr->y_stride, fr->c_stride, fr->c_stride};
+                int origins[3][2] = {
+                    { fr->crop_left, fr->crop_top },
+                    { fr->crop_left / sub_x, fr->crop_top / sub_y },
+                    { fr->crop_left / sub_x, fr->crop_top / sub_y }
+                };
+                int widths[3] = {
+                    fr->width - fr->crop_left - fr->crop_right,
+                    fr->c_width
+                        - fr->crop_left / sub_x - fr->crop_right / sub_x,
+                    fr->c_width
+                        - fr->crop_left / sub_x - fr->crop_right / sub_x
+                };
+                int heights[3] = {
+                    fr->height - fr->crop_top - fr->crop_bottom,
+                    fr->c_height
+                        - fr->crop_top / sub_y - fr->crop_bottom / sub_y,
+                    fr->c_height
+                        - fr->crop_top / sub_y - fr->crop_bottom / sub_y
+                };
+                int depths[3] = {
+                    fr->bit_depth, fr->chroma_bit_depth, fr->chroma_bit_depth
+                };
+                int n_planes = fr->chroma_format ? 3 : 1;
+                if (widths[0] <= 0 || heights[0] <= 0) {
+                    j = 0;
+                    break;
+                }
+                for (plane = 0; plane < n_planes; plane++) {
+                    int ox = origins[plane][0], oy = origins[plane][1];
+                    for (y = 0; y < heights[plane]; y++)
+                        for (x = 0; x < widths[plane]; x++) {
+                            uint16_t v = planes[plane][
+                                (size_t)(oy + y) * strides[plane] + ox + x];
+                            if (depths[plane] > 8) {
+                                uint8_t bytes[2] = {
+                                    (uint8_t)v, (uint8_t)(v >> 8)
+                                };
+                                if (fwrite(bytes, 1, 2, f) != 2) j = 0;
+                            } else {
+                                uint8_t byte = (uint8_t)v;
+                                if (fwrite(&byte, 1, 1, f) != 1) j = 0;
+                            }
                         }
-                    }
+                }
+            }
+            if (f) fclose(f);
         }
-        if (f) fclose(f);
+        for (i = 0; i < n_all; i++) heic_frame_free(ctx, &frames[i]);
+        heic_ctx_free(ctx);
+        free(nals);
+        if (n_out == 0 || !j) return 1;
+        printf("hevc-sequence frames=%d hash=%016llx\n", n_out,
+               (unsigned long long)hash);
+        return 0;
     }
-    for (i = 0; i < decoded; i++) heic_frame_free(ctx, &frames[i]);
-    heic_ctx_free(ctx);
-    free(nals);
-    if (decoded == 0 || !j) return 1;
-    printf("hevc-sequence frames=%d hash=%016llx\n", decoded,
-           (unsigned long long)hash);
-    return 0;
 }
 
 static int write_ppm(const char *path, const heic_image *img)

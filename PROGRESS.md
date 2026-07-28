@@ -182,10 +182,12 @@
 - [x] Multi-SPS/PPS by id + hvcC content fingerprint (SLIST_B dual SPS;
       per-AU PPS scaling lists). Fixed scaled-dequant diagonal scan inverse
       tables. FATE SLIST_A–D fully decode; A/C ~MSE 45 vs libde265 (not exact).
-- [ ] Remaining HEVC FATE gaps: WPP Main10; DELTAQP_A/B (libde265 also emits
-      out-of-range/CTB-outside warnings on A/B — weak oracle); NoOutPrior/RAP
-      DPB order; SLIST exact MD5 (scaled dequant residual); PERSIST_RPARAM
-      (12-bit + persistent Rice).
+- [x] Sequence output: `pic_output_flag`, NoRaslOutputFlag (BLA; first CRA;
+      CRA after EOS/EOB), conformance-window crop on YUV write. FATE
+      `RAP_A_docomo_4` and `NoOutPrior_A_Qualcomm_1` exact MD5 vs libde265.
+- [ ] Remaining HEVC FATE gaps: WPP Main10; DELTAQP_A/B (weak oracle);
+      NoOutPrior_B / RAP_B (DPB bump + mid-stream edge cases); SLIST exact
+      MD5 (scaled dequant residual); PERSIST_RPARAM (12-bit + persistent Rice).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`

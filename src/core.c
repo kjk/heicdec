@@ -296,6 +296,9 @@ int heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
         f->nal_unit_type = 0;
         f->temporal_id = 0;
         f->dpb_mark = 0;
+        f->pic_output_flag = 1;
+        f->no_output_of_prior_pics_flag = 0;
+        f->no_rasl_output_flag = 0;
         f->chroma_bit_depth = chroma_format ? bit_depth : 0;
         y_n = (size_t)w * (size_t)h * sizeof(uint16_t);
         memset(f->y, 0xFF, y_n);

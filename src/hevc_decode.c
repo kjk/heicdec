@@ -626,6 +626,9 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 out->poc_valid = 1;
                 out->nal_unit_type = (uint8_t)nals[i].type;
                 out->temporal_id = nals[i].temporal_id;
+                out->pic_output_flag = sh.pic_output_flag ? 1u : 0u;
+                out->no_output_of_prior_pics_flag =
+                    sh.no_output_of_prior_pics_flag ? 1u : 0u;
                 /* Always run RPS marking (incl. I / Foll) so the caller's
                    DPB state drops POC-wrapped pictures before LSB LT match. */
                 if (build_ref_lists(ctx, sps, &sh, out->poc,
