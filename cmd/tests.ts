@@ -444,6 +444,14 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "3c94b5ebc0aed0abae4e619b9dcca9cc",
   },
+  /* RExt 12-bit 4:4:4 + persistent Rice adaptation; exact vs libde265. */
+  {
+    name: "PERSIST_RPARAM_A_RExt_Sony_3.bit",
+    frames: 2,
+    mse: 0,
+    bitDepth: 12,
+    md5: "ef1fd46e694331ecc20a31431e6652d2",
+  },
   {
     name: "GENERAL_10b_422_RExt_Sony_1-seq0.bit",
     frames: 1,

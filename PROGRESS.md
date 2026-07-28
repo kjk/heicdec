@@ -200,8 +200,12 @@
       ffmpeg); Raster ScalingFactor tables; apply scaled dequant for 4x4
       transform_skip (`!(ts && log2>2)` per H.265/ffmpeg). libde265 diverges on
       custom lists (weak oracle). FATE `SLIST_A–D_Sony_*` exact MD5 vs ffmpeg.
-- [ ] Remaining HEVC FATE gaps: DELTAQP_A (mid-stream desync);
-      PERSIST_RPARAM (12-bit + persistent Rice).
+- [x] PERSIST_RPARAM: H.265 8.6.1 for ChromaArrayType≠1 uses `QpC = Min(qPi, 51)`
+      without clamping negative qPi to 0 (then `Qp′C = QpC + QpBdOffsetC`).
+      Prior clamp broke 12-bit 4:4:4 chroma dequant. FATE
+      `PERSIST_RPARAM_A_RExt_Sony_3` (12-bit 4:4:4 + persistent Rice) exact
+      MD5 vs libde265; Y was already exact, chroma now matches.
+- [ ] Remaining HEVC FATE gaps: DELTAQP_A (mid-stream desync).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`

@@ -106,12 +106,12 @@ static int predict_intra_block(heic_slice_ctx *sc, uint32_t x, uint32_t y,
 }
 
 /* H.265 8.6.1: Table 8-10 only for ChromaArrayType==1 (4:2:0).
-   For 4:2:2 / 4:4:4, QpC = Min(qPi, 51). */
+   For 4:2:2 / 4:4:4, QpC = Min(qPi, 51) — negative qPi is kept (then
+   Qp′C = QpC + QpBdOffsetC). Do not clamp negative qPi to 0. */
 static int chroma_qp_from_luma(int qpi, int chroma_array_type)
 {
     static const int TAB[13] = {29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37};
     if (chroma_array_type != 1) {
-        if (qpi < 0) return 0;
         if (qpi > 51) return 51;
         return qpi;
     }
