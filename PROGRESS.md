@@ -179,9 +179,13 @@
       cycle inferred 0 still carries prior Delta). RPS-based `dpb_mark` so
       LSB-only LT match ignores unmarked frames. FATE `RPS_D_ericsson_6`
       50 frames exact MD5 vs libde265.
+- [x] Multi-SPS/PPS by id + hvcC content fingerprint (SLIST_B dual SPS;
+      per-AU PPS scaling lists). Fixed scaled-dequant diagonal scan inverse
+      tables. FATE SLIST_A–D fully decode; A/C ~MSE 45 vs libde265 (not exact).
 - [ ] Remaining HEVC FATE gaps: WPP Main10; DELTAQP_A/B (libde265 also emits
       out-of-range/CTB-outside warnings on A/B — weak oracle); NoOutPrior/RAP
-      DPB order; SLIST; PERSIST_RPARAM (12-bit + persistent Rice).
+      DPB order; SLIST exact MD5 (scaled dequant residual); PERSIST_RPARAM
+      (12-bit + persistent Rice).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`

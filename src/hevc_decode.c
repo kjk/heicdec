@@ -1,11 +1,22 @@
 /* hevc_decode.c -- HEVC still-image entry */
 #include "heic_internal.h"
 
-/* Per-ctx cache of SPS/PPS from hvcC — grid tiles reuse one parse. */
+/* Per-ctx cache of SPS/PPS from hvcC — grid tiles reuse one parse.
+ * Fingerprint includes NAL pointers/lengths so sequence harness updates
+ * (new PPS per AU for scaling-list tests) invalidate the cache even when
+ * the heic_hvcc struct address is unchanged.
+ * Multiple SPS/PPS are retained by id (SLIST_B: SPS0 with scaling lists +
+ * SPS1 without; many PPS ids with per-picture scaling lists). */
+#define HEIC_PARAM_MAX_SPS 16
+#define HEIC_PARAM_MAX_PPS 64
+
 typedef struct {
     const heic_hvcc *hvcc;
-    heic_sps sps;
-    heic_pps pps;
+    uint64_t hvcc_fp;
+    heic_sps sps_set[HEIC_PARAM_MAX_SPS];
+    heic_pps pps_set[HEIC_PARAM_MAX_PPS];
+    uint8_t sps_valid[HEIC_PARAM_MAX_SPS];
+    uint8_t pps_valid[HEIC_PARAM_MAX_PPS];
     int have_sps;
     int have_pps;
 } heic_param_cache;
@@ -13,9 +24,11 @@ typedef struct {
 void heic_hevc_param_cache_free(heic_ctx *ctx)
 {
     heic_param_cache *pc;
+    int i;
     if (!ctx || !ctx->hevc_param_cache) return;
     pc = (heic_param_cache *)ctx->hevc_param_cache;
-    heic_pps_free(ctx, &pc->pps);
+    for (i = 0; i < HEIC_PARAM_MAX_PPS; i++)
+        if (pc->pps_valid[i]) heic_pps_free(ctx, &pc->pps_set[i]);
     heic_free_buf(ctx, pc);
     ctx->hevc_param_cache = NULL;
 }
@@ -28,6 +41,32 @@ static heic_param_cache *param_cache_get(heic_ctx *ctx)
     if (!pc) return NULL;
     ctx->hevc_param_cache = pc;
     return pc;
+}
+
+static uint64_t hvcc_fingerprint(const heic_hvcc *cfg)
+{
+    uint64_t h = UINT64_C(1469598103934665603);
+    int i;
+    if (!cfg) return 0;
+    h ^= (uint64_t)cfg->n_nal_units + 1u;
+    h *= UINT64_C(1099511628211);
+    h ^= (uint64_t)cfg->length_size_minus_one + 1u;
+    h *= UINT64_C(1099511628211);
+    for (i = 0; i < cfg->n_nal_units; i++) {
+        const uint8_t *p = cfg->nal_units[i];
+        size_t n = cfg->nal_unit_lens[i];
+        size_t j;
+        h ^= (uint64_t)(uintptr_t)p;
+        h *= UINT64_C(1099511628211);
+        h ^= (uint64_t)n + 1u;
+        h *= UINT64_C(1099511628211);
+        /* Content hash: sequences rewrite the same slot with a new PPS body. */
+        for (j = 0; j < n; j++) {
+            h ^= p[j];
+            h *= UINT64_C(1099511628211);
+        }
+    }
+    return h;
 }
 
 static const heic_frame *find_prev_tid0(const heic_frame *const *refs,
@@ -295,51 +334,72 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
     heic_nal *nals = NULL;
     int n_nals = 0, i;
     heic_param_cache *pc;
-    heic_sps *sps;
-    heic_pps *pps;
+    heic_sps *sps = NULL;
+    heic_pps *pps = NULL;
     int have_sps = 0, have_pps = 0;
     int length_size;
     heic_nal param;
     int sub_w = 2, sub_h = 2;
     int decode_ok = 0;
+    int active_pps_id = -1;
 
     if (!ctx || !cfg || !data || !out) return -1;
     if (heic_abort_check(ab)) return -1;
     pc = param_cache_get(ctx);
     if (!pc) return -1;
-    sps = &pc->sps;
-    pps = &pc->pps;
 
-    /* Reuse SPS/PPS when tiles share the same hvcC property. */
-    if (pc->hvcc == cfg && pc->have_sps) {
-        have_sps = 1;
-        have_pps = pc->have_pps;
-    } else {
-        heic_pps_free(ctx, pps);
-        memset(sps, 0, sizeof(*sps));
-        memset(pps, 0, sizeof(*pps));
-        pc->hvcc = cfg;
-        pc->have_sps = 0;
-        pc->have_pps = 0;
-        for (i = 0; i < cfg->n_nal_units; i++) {
-            if (heic_parse_single_nal(ctx, cfg->nal_units[i],
-                                      cfg->nal_unit_lens[i], &param) != 0)
-                continue;
-            if (param.type == HEIC_NAL_SPS) {
-                if (heic_parse_sps(ctx, param.payload, param.payload_len, sps)
-                    == 0) {
-                    have_sps = 1;
-                    pc->have_sps = 1;
-                }
-            } else if (param.type == HEIC_NAL_PPS) {
-                heic_pps_free(ctx, pps);
-                if (heic_parse_pps(ctx, param.payload, param.payload_len, pps)
-                    == 0) {
-                    have_pps = 1;
-                    pc->have_pps = 1;
+    /* Reuse SPS/PPS maps when tiles share the same hvcC property contents. */
+    {
+        uint64_t fp = hvcc_fingerprint(cfg);
+        if (pc->hvcc == cfg && pc->hvcc_fp == fp && pc->have_sps) {
+            have_sps = 1;
+            have_pps = pc->have_pps;
+        } else {
+            for (i = 0; i < HEIC_PARAM_MAX_PPS; i++) {
+                if (pc->pps_valid[i]) {
+                    heic_pps_free(ctx, &pc->pps_set[i]);
+                    pc->pps_valid[i] = 0;
                 }
             }
-            heic_nal_free(ctx, &param);
+            memset(pc->sps_set, 0, sizeof(pc->sps_set));
+            memset(pc->sps_valid, 0, sizeof(pc->sps_valid));
+            pc->hvcc = cfg;
+            pc->hvcc_fp = fp;
+            pc->have_sps = 0;
+            pc->have_pps = 0;
+            for (i = 0; i < cfg->n_nal_units; i++) {
+                if (heic_parse_single_nal(ctx, cfg->nal_units[i],
+                                          cfg->nal_unit_lens[i], &param) != 0)
+                    continue;
+                if (param.type == HEIC_NAL_SPS) {
+                    heic_sps tmp;
+                    memset(&tmp, 0, sizeof(tmp));
+                    if (heic_parse_sps(ctx, param.payload, param.payload_len,
+                                       &tmp) == 0
+                        && tmp.sps_seq_parameter_set_id < HEIC_PARAM_MAX_SPS) {
+                        pc->sps_set[tmp.sps_seq_parameter_set_id] = tmp;
+                        pc->sps_valid[tmp.sps_seq_parameter_set_id] = 1;
+                        have_sps = 1;
+                        pc->have_sps = 1;
+                    }
+                } else if (param.type == HEIC_NAL_PPS) {
+                    heic_pps tmp;
+                    memset(&tmp, 0, sizeof(tmp));
+                    if (heic_parse_pps(ctx, param.payload, param.payload_len,
+                                       &tmp) == 0
+                        && tmp.pps_pic_parameter_set_id < HEIC_PARAM_MAX_PPS) {
+                        uint8_t id = tmp.pps_pic_parameter_set_id;
+                        if (pc->pps_valid[id])
+                            heic_pps_free(ctx, &pc->pps_set[id]);
+                        pc->pps_set[id] = tmp;
+                        pc->pps_valid[id] = 1;
+                        have_pps = 1;
+                        pc->have_pps = 1;
+                        active_pps_id = id;
+                    }
+                }
+                heic_nal_free(ctx, &param);
+            }
         }
     }
     if (!have_sps) {
@@ -355,22 +415,66 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
      * Invalidate hvcC reuse so the next tile reloads clean base params. */
     for (i = 0; i < n_nals; i++) {
         if (nals[i].type == HEIC_NAL_PPS) {
-            heic_pps_free(ctx, pps);
-            if (heic_parse_pps(ctx, nals[i].payload, nals[i].payload_len, pps)
-                == 0) {
+            heic_pps tmp;
+            memset(&tmp, 0, sizeof(tmp));
+            if (heic_parse_pps(ctx, nals[i].payload, nals[i].payload_len, &tmp)
+                == 0 && tmp.pps_pic_parameter_set_id < HEIC_PARAM_MAX_PPS) {
+                uint8_t id = tmp.pps_pic_parameter_set_id;
+                if (pc->pps_valid[id])
+                    heic_pps_free(ctx, &pc->pps_set[id]);
+                pc->pps_set[id] = tmp;
+                pc->pps_valid[id] = 1;
                 have_pps = 1;
                 pc->have_pps = 1;
+                active_pps_id = id;
             }
             pc->hvcc = NULL;
         } else if (nals[i].type == HEIC_NAL_SPS) {
-            if (heic_parse_sps(ctx, nals[i].payload, nals[i].payload_len, sps)
-                == 0) {
+            heic_sps tmp;
+            memset(&tmp, 0, sizeof(tmp));
+            if (heic_parse_sps(ctx, nals[i].payload, nals[i].payload_len, &tmp)
+                == 0 && tmp.sps_seq_parameter_set_id < HEIC_PARAM_MAX_SPS) {
+                pc->sps_set[tmp.sps_seq_parameter_set_id] = tmp;
+                pc->sps_valid[tmp.sps_seq_parameter_set_id] = 1;
                 have_sps = 1;
                 pc->have_sps = 1;
             }
             pc->hvcc = NULL;
         }
     }
+
+    /* Pick active PPS (last loaded, or first valid) and its SPS. */
+    if (active_pps_id < 0) {
+        for (i = 0; i < HEIC_PARAM_MAX_PPS; i++)
+            if (pc->pps_valid[i]) {
+                active_pps_id = i;
+                break;
+            }
+    }
+    if (active_pps_id >= 0 && pc->pps_valid[active_pps_id]) {
+        pps = &pc->pps_set[active_pps_id];
+        if (pps->pps_seq_parameter_set_id < HEIC_PARAM_MAX_SPS
+            && pc->sps_valid[pps->pps_seq_parameter_set_id])
+            sps = &pc->sps_set[pps->pps_seq_parameter_set_id];
+    }
+    if (!sps) {
+        for (i = 0; i < HEIC_PARAM_MAX_SPS; i++)
+            if (pc->sps_valid[i]) {
+                sps = &pc->sps_set[i];
+                break;
+            }
+    }
+    if (!sps) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "missing SPS");
+        heic_nals_free(ctx, nals, n_nals);
+        return -1;
+    }
+    if (!pps) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "missing PPS");
+        heic_nals_free(ctx, nals, n_nals);
+        return -1;
+    }
+    have_pps = 1;
 
     /* prepare reuses plane buffers across equal-size grid tiles. */
     if (heic_frame_prepare(ctx, out, (int)sps->pic_width_in_luma_samples,

@@ -696,6 +696,7 @@ typedef struct {
     uint8_t  sps_video_parameter_set_id;
     uint8_t  sps_max_sub_layers_minus1;
     int      sps_temporal_id_nesting_flag;
+    uint8_t  sps_seq_parameter_set_id;
     /* profile_tier_level omitted fields that we only need partially */
     uint8_t  general_profile_idc;
     uint8_t  general_level_idc;

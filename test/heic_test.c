@@ -176,12 +176,23 @@ static int update_hvcc_param(uint8_t **params, size_t *param_lens,
     if (!params || !param_lens || !n_params || !nal ||
         nal->type < 32 || nal->type > 34)
         return 0;
-    for (i = 0; i < *n_params; i++) {
-        uint8_t type = (uint8_t)((params[i][0] >> 1) & 0x3f);
-        if (type == nal->type) {
-            params[i] = (uint8_t *)nal->data;
-            param_lens[i] = nal->len;
-            return 0;
+    /* Keep every SPS (streams like SLIST_B carry SPS id 0 with scaling lists
+       plus a second SPS id 1). Replace VPS and the active PPS in place. */
+    if (nal->type != 33) {
+        for (i = 0; i < *n_params; i++) {
+            uint8_t type = (uint8_t)((params[i][0] >> 1) & 0x3f);
+            if (type == nal->type) {
+                params[i] = (uint8_t *)nal->data;
+                param_lens[i] = nal->len;
+                return 0;
+            }
+        }
+    } else {
+        for (i = 0; i < *n_params; i++) {
+            uint8_t type = (uint8_t)((params[i][0] >> 1) & 0x3f);
+            if (type == 33 && params[i] == nal->data
+                && param_lens[i] == nal->len)
+                return 0;
         }
     }
     if (*n_params >= 16) return -1;

@@ -448,18 +448,16 @@ void heic_dequantize_scaled(int16_t *coeffs, int n, int qp, int bit_depth,
                             uint8_t matrix_id)
 {
     static const int32_t LEVEL_SCALE[6] = {40, 45, 51, 57, 64, 72};
+    /* Inverse of H.265 diagonal scan: index = y*N+x → scan position.
+       Must match residual.c HEIC_INV_4X4_DIAG / HEIC_INV_8X8_SB_DIAG. */
     static const uint8_t DIAG_INV_4X4[16] = {
-        0, 1, 3, 6, 2, 4, 7, 10, 5, 8, 11, 13, 9, 12, 14, 15
+        0, 2, 5, 9, 1, 4, 8, 12, 3, 7, 11, 14, 6, 10, 13, 15
     };
     static const uint8_t DIAG_INV_8X8[64] = {
-         0,  1,  3,  6, 10, 15, 21, 28,
-         2,  4,  7, 11, 16, 22, 29, 36,
-         5,  8, 12, 17, 23, 30, 37, 43,
-         9, 13, 18, 24, 31, 38, 44, 49,
-        14, 19, 25, 32, 39, 45, 50, 54,
-        20, 26, 33, 40, 46, 51, 55, 58,
-        27, 34, 41, 47, 52, 56, 59, 61,
-        35, 42, 48, 53, 57, 60, 62, 63
+         0,  2,  5,  9, 14, 20, 27, 35,  1,  4,  8, 13, 19, 26, 34, 42,
+         3,  7, 12, 18, 25, 33, 41, 48,  6, 11, 17, 24, 32, 40, 47, 53,
+        10, 16, 23, 31, 39, 46, 52, 57, 15, 22, 30, 38, 45, 51, 56, 60,
+        21, 29, 37, 44, 50, 55, 59, 62, 28, 36, 43, 49, 54, 58, 61, 63
     };
     int size = 1 << log2_tr_size;
     int size_id = (int)log2_tr_size - 2;
@@ -550,18 +548,16 @@ void heic_dequantize_scaled_extended(
     int max_transform_range, const heic_scaling_list *list, uint8_t matrix_id)
 {
     static const int32_t LEVEL_SCALE[6] = {40, 45, 51, 57, 64, 72};
+    /* Inverse of H.265 diagonal scan: index = y*N+x → scan position.
+       Must match residual.c HEIC_INV_4X4_DIAG / HEIC_INV_8X8_SB_DIAG. */
     static const uint8_t DIAG_INV_4X4[16] = {
-        0, 1, 3, 6, 2, 4, 7, 10, 5, 8, 11, 13, 9, 12, 14, 15
+        0, 2, 5, 9, 1, 4, 8, 12, 3, 7, 11, 14, 6, 10, 13, 15
     };
     static const uint8_t DIAG_INV_8X8[64] = {
-         0,  1,  3,  6, 10, 15, 21, 28,
-         2,  4,  7, 11, 16, 22, 29, 36,
-         5,  8, 12, 17, 23, 30, 37, 43,
-         9, 13, 18, 24, 31, 38, 44, 49,
-        14, 19, 25, 32, 39, 45, 50, 54,
-        20, 26, 33, 40, 46, 51, 55, 58,
-        27, 34, 41, 47, 52, 56, 59, 61,
-        35, 42, 48, 53, 57, 60, 62, 63
+         0,  2,  5,  9, 14, 20, 27, 35,  1,  4,  8, 13, 19, 26, 34, 42,
+         3,  7, 12, 18, 25, 33, 41, 48,  6, 11, 17, 24, 32, 40, 47, 53,
+        10, 16, 23, 31, 39, 46, 52, 57, 15, 22, 30, 38, 45, 51, 56, 60,
+        21, 29, 37, 44, 50, 55, 59, 62, 28, 36, 43, 49, 54, 58, 61, 63
     };
     int size = 1 << log2_tr_size;
     int size_id = (int)log2_tr_size - 2;

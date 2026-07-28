@@ -303,7 +303,15 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
     out->sps_temporal_id_nesting_flag = heic_bs_bit(&bs);
     skip_profile_tier_level(&bs, out->sps_max_sub_layers_minus1);
 
-    (void)heic_bs_ue(&bs); /* sps_seq_parameter_set_id */
+    {
+        uint32_t sps_id = heic_bs_ue(&bs);
+        if (sps_id > 15) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "SPS seq_parameter_set_id out of range");
+            return -1;
+        }
+        out->sps_seq_parameter_set_id = (uint8_t)sps_id;
+    }
     out->chroma_format_idc = (uint8_t)heic_bs_ue(&bs);
     if (out->chroma_format_idc == 3) out->separate_colour_plane_flag = heic_bs_bit(&bs);
 

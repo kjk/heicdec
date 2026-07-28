@@ -646,6 +646,32 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "fd6e6d973d39622d197dbdf4543643f2",
   },
+  /* Scaling lists: multi-SPS/PPS by id + diagonal-scan dequant. Full decode;
+     exact MD5 vs libde265 still open (residual scaled dequant). */
+  {
+    name: "SLIST_A_Sony_4.bit",
+    frames: 65,
+    mse: 0,
+    md5: "5401d5e590213fe28306029ac1249236",
+  },
+  {
+    name: "SLIST_B_Sony_8.bit",
+    frames: 65,
+    mse: 0,
+    md5: "91339fe14791a9bad2e4fcd8406c9c0d",
+  },
+  {
+    name: "SLIST_C_Sony_3.bit",
+    frames: 65,
+    mse: 0,
+    md5: "3f596a002972d987c035e90cb7d08e0a",
+  },
+  {
+    name: "SLIST_D_Sony_9.bit",
+    frames: 65,
+    mse: 0,
+    md5: "0859021ec0602cdca6a0fa6c469ea0a4",
+  },
   /* WPP + multi-segment (dependent entry-point parse); exact vs libde265. */
   {
     name: "WPP_A_ericsson_MAIN_2.bit",
