@@ -15,12 +15,24 @@
 // comparisons per file.
 //
 // With no selection it prints usage + the available corpus file count.
-import { dirname } from "path";
+import { basename, dirname } from "path";
 import { getDeps } from "./get-deps";
 import { build, buildRef, cleanBuildOutput, defaultUseClang } from "./build";
 import { corpusFiles, corpusSummary, fileLabel, selectFiles } from "./corpus";
 
 const ROOT = dirname(import.meta.dir).replaceAll("\\", "/");
+
+/**
+ * Intentionally invalid fixtures (malformed / oversize). Both heic and libheif
+ * reject them; do not treat as decoder failures in the bench table.
+ * Keep in sync with EXPECT_FAIL decode-rejects in tests.ts.
+ */
+const BENCH_EXPECT_REJECT = new Set([
+  "meta_size_zero.avif",
+  "mini_size_zero.avif",
+  "iovl_badver.heic",
+  "iovl_huge_canvas.heic",
+]);
 
 type BenchTimes = {
   open: number;
@@ -210,7 +222,16 @@ ${corpusSummary()}`,
     });
     const out = (r.stdout?.toString() ?? "") + (r.stderr?.toString() ?? "");
     const result = parseBenchResult(out);
+    const name = basename(file);
+    const expectReject = BENCH_EXPECT_REJECT.has(name);
+
     if (!result) {
+      if (expectReject) {
+        if (verbose) console.log(`total: skip expected reject ${name}`);
+        else printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", label);
+        n_skip++;
+        continue;
+      }
       if (verbose) {
         console.log(`total: benchmark failed (exit ${r.exitCode ?? "unknown"})`);
         if (out.trim()) console.log(out.trim());
@@ -250,17 +271,22 @@ ${corpusSummary()}`,
     }
 
     if (!result.libheifOk) {
+      /* Both reject (or libheif-only): skip compare. Intentional rejects are
+       * expected; other both-fail is still a skip (unsupported / no oracle). */
       if (verbose) {
         const ours = result.oursOk
           ? `; heic ${result.ours.total.toFixed(2)}ms`
           : "; heic failed";
-        console.log(`total: libheif failed: ${result.libheifError}${ours}`);
+        const tag = expectReject ? "expected reject" : "libheif failed";
+        console.log(`total: ${tag}: ${result.libheifError}${ours}`);
+      } else if (!result.oursOk) {
+        printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", label);
       } else {
         printCompactLine(
-          "ERROR",
-          result.oursOk ? fmtMs(result.ours.total) : "ERROR",
-          "ERROR",
-          "ERROR",
+          "SKIP",
+          fmtMs(result.ours.total),
+          "SKIP",
+          "SKIP",
           label,
         );
       }
@@ -268,6 +294,13 @@ ${corpusSummary()}`,
       continue;
     }
 
+    /* libheif ok, heic failed — real decoder regression (unless expected reject). */
+    if (expectReject) {
+      if (verbose) console.log(`total: expected reject (heic fail, libheif ok?)`);
+      else printCompactLine("SKIP", "SKIP", "SKIP", "SKIP", label);
+      n_skip++;
+      continue;
+    }
     if (verbose) {
       console.log(`total: libheif ${result.libheif.total.toFixed(2)}ms; heic failed`);
     } else {

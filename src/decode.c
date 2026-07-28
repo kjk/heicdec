@@ -756,9 +756,18 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
         owned = 0;
     }
 
-    if (canvas_w == 0 || canvas_h == 0 || canvas_w > doc->ctx->limits.max_width ||
-        canvas_h > doc->ctx->limits.max_height)
+    /* Reject oversize canvas before any plane allocation (iovl_huge_canvas). */
+    if (canvas_w == 0 || canvas_h == 0) {
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "overlay canvas has zero size");
         return -1;
+    }
+    if (canvas_w > doc->ctx->limits.max_width ||
+        canvas_h > doc->ctx->limits.max_height ||
+        (uint64_t)canvas_w * (uint64_t)canvas_h > doc->ctx->limits.max_pixels) {
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                   "overlay canvas exceeds dimension/pixel limits");
+        return -1;
+    }
 
     if (heic_container_get_item(&doc->container, tile_ids[0], &first) != 0) return -1;
     if (first.hvcc) {
