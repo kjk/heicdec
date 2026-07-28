@@ -196,9 +196,12 @@
       ffmpeg (libde265 conceals “coded parameter out of range” and diverges —
       weak oracle). `DELTAQP_A_BRCM_4` still incomplete: matches ffmpeg through
       early frames, small Y drift at f7, CABAC desync by f13, CTU fail at f14.
+- [x] SLIST exact vs ffmpeg: scaling-list coeffs stored in raster order (like
+      ffmpeg); Raster ScalingFactor tables; apply scaled dequant for 4x4
+      transform_skip (`!(ts && log2>2)` per H.265/ffmpeg). libde265 diverges on
+      custom lists (weak oracle). FATE `SLIST_A–D_Sony_*` exact MD5 vs ffmpeg.
 - [ ] Remaining HEVC FATE gaps: DELTAQP_A (mid-stream desync);
-      SLIST exact MD5 (scaled dequant residual); PERSIST_RPARAM
-      (12-bit + persistent Rice).
+      PERSIST_RPARAM (12-bit + persistent Rice).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`

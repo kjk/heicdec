@@ -684,10 +684,15 @@ size_t   heic_bs_bits_left(const heic_bs *bs);
 /* ---- SPS/PPS (hevc_params.c) ---- */
 
 typedef struct {
-    /* Coefficients are stored in HEVC diagonal scan order. 16x16 and 32x32
-       matrices hold their signaled 8x8 coefficients plus a separate DC. */
+    /* Scan-order coefficients (syntax) plus DC for 16x16/32x32. */
     uint8_t coef[4][6][64];
     uint8_t dc_coef[2][6];
+    /* Raster ScalingFactor arrays (H.265 7.4.5 / libde265 fill_scaling_factor).
+       Size0: 4x4, Size1: 8x8, Size2: 16x16, Size3: 32x32. */
+    uint8_t factor4[6][4][4];
+    uint8_t factor8[6][8][8];
+    uint8_t factor16[6][16][16];
+    uint8_t factor32[6][32][32];
 } heic_scaling_list;
 
 typedef struct {

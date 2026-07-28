@@ -76,7 +76,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v38-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+deltaqp-ab+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+family-coverage";
+  "v39-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+deltaqp-ab+slist+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+family-coverage";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -126,6 +126,10 @@ const HEVC_SEQUENCE_SAMPLES = [
   "DELTAQP_A_BRCM_4.bit",
   "DELTAQP_B_SONY_3.bit",
   "DELTAQP_C_SONY_3.bit",
+  "SLIST_A_Sony_4.bit",
+  "SLIST_B_Sony_8.bit",
+  "SLIST_C_Sony_3.bit",
+  "SLIST_D_Sony_9.bit",
   "IPRED_A_docomo_2.bit",
   "IPRED_B_Nokia_3.bit",
   "IPRED_C_Mitsubishi_3.bit",

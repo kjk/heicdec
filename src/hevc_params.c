@@ -104,16 +104,97 @@ static const uint8_t HEIC_DEFAULT_INTER_8X8[64] = {
     28, 33, 33, 33, 33, 33, 41, 41, 41, 41, 54, 54, 54, 71, 71, 91
 };
 
+/* H.265 up-right diagonal scan (matches residual / libde265 / ffmpeg). */
+static const uint8_t HEIC_DIAG4_X[16] = {
+    0, 0, 1, 0, 1, 2, 0, 1, 2, 3, 1, 2, 3, 2, 3, 3
+};
+static const uint8_t HEIC_DIAG4_Y[16] = {
+    0, 1, 0, 2, 1, 0, 3, 2, 1, 0, 3, 2, 1, 3, 2, 3
+};
+static const uint8_t HEIC_DIAG8_X[64] = {
+    0, 0, 1, 0, 1, 2, 0, 1, 2, 3, 0, 1, 2, 3, 4, 0,
+    1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3,
+    4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 2, 3, 4, 5, 6,
+    7, 3, 4, 5, 6, 7, 4, 5, 6, 7, 5, 6, 7, 6, 7, 7
+};
+static const uint8_t HEIC_DIAG8_Y[64] = {
+    0, 1, 0, 2, 1, 0, 3, 2, 1, 0, 4, 3, 2, 1, 0, 5,
+    4, 3, 2, 1, 0, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4,
+    3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 7, 6, 5, 4, 3,
+    2, 7, 6, 5, 4, 3, 7, 6, 5, 4, 7, 6, 5, 7, 6, 7
+};
+
+/* Scatter scan-order Table 7-6 values into raster (ffmpeg/libavcodec style). */
+static void scatter_scan_to_raster(uint8_t *dst, const uint8_t *src, int size_id)
+{
+    int i, n = size_id == 0 ? 16 : 64;
+    if (size_id == 0) {
+        for (i = 0; i < n; i++)
+            dst[4 * HEIC_DIAG4_Y[i] + HEIC_DIAG4_X[i]] = src[i];
+    } else {
+        for (i = 0; i < n; i++)
+            dst[8 * HEIC_DIAG8_Y[i] + HEIC_DIAG8_X[i]] = src[i];
+    }
+}
+
+/* coef[][][] holds RASTER-order ScalingList (ffmpeg). factor* unused after this. */
+static void fill_scaling_factors(heic_scaling_list *out)
+{
+    int mid, i, dy, dx;
+    /* Build expanded ScalingFactor from raster coef + DC (libde265 layout). */
+    for (mid = 0; mid < 6; mid++) {
+        for (i = 0; i < 16; i++)
+            out->factor4[mid][i / 4][i % 4] = out->coef[0][mid][i];
+        for (i = 0; i < 64; i++)
+            out->factor8[mid][i / 8][i % 8] = out->coef[1][mid][i];
+        for (i = 0; i < 64; i++) {
+            int sx = i % 8, sy = i / 8;
+            uint8_t v = out->coef[2][mid][i];
+            for (dy = 0; dy < 2; dy++)
+                for (dx = 0; dx < 2; dx++)
+                    out->factor16[mid][sy * 2 + dy][sx * 2 + dx] = v;
+        }
+        out->factor16[mid][0][0] = out->dc_coef[0][mid];
+        for (i = 0; i < 64; i++) {
+            int sx = i % 8, sy = i / 8;
+            uint8_t v = out->coef[3][mid][i];
+            for (dy = 0; dy < 4; dy++)
+                for (dx = 0; dx < 4; dx++)
+                    out->factor32[mid][sy * 4 + dy][sx * 4 + dx] = v;
+        }
+        out->factor32[mid][0][0] = out->dc_coef[1][mid];
+    }
+    /* SizeId 3 only signals 0 and 3; chroma 32x32 from matching 8x8. */
+    for (mid = 0; mid < 6; mid++) {
+        if (mid == 0 || mid == 3) continue;
+        for (i = 0; i < 64; i++) {
+            int sx = i % 8, sy = i / 8;
+            uint8_t v = out->coef[1][mid][i];
+            for (dy = 0; dy < 4; dy++)
+                for (dx = 0; dx < 4; dx++)
+                    out->factor32[mid][sy * 4 + dy][sx * 4 + dx] = v;
+        }
+        out->factor32[mid][0][0] = out->coef[1][mid][0];
+    }
+}
+
 static void scaling_list_default(heic_scaling_list *out)
 {
     int size_id, matrix_id;
+    uint8_t tmp[64];
     memset(out, 16, sizeof(*out));
+    /* Defaults: Table 7-6 is scan-order; store raster like ffmpeg dequant expects. */
     for (size_id = 1; size_id < 4; size_id++) {
-        for (matrix_id = 0; matrix_id < 3; matrix_id++)
-            memcpy(out->coef[size_id][matrix_id], HEIC_DEFAULT_INTRA_8X8, 64);
-        for (matrix_id = 3; matrix_id < 6; matrix_id++)
-            memcpy(out->coef[size_id][matrix_id], HEIC_DEFAULT_INTER_8X8, 64);
+        for (matrix_id = 0; matrix_id < 3; matrix_id++) {
+            scatter_scan_to_raster(tmp, HEIC_DEFAULT_INTRA_8X8, size_id);
+            memcpy(out->coef[size_id][matrix_id], tmp, 64);
+        }
+        for (matrix_id = 3; matrix_id < 6; matrix_id++) {
+            scatter_scan_to_raster(tmp, HEIC_DEFAULT_INTER_8X8, size_id);
+            memcpy(out->coef[size_id][matrix_id], tmp, 64);
+        }
     }
+    fill_scaling_factors(out);
 }
 
 static int parse_scaling_list_data(heic_bs *bs, heic_scaling_list *out)
@@ -153,16 +234,23 @@ static int parse_scaling_list_data(heic_bs *bs, heic_scaling_list *out)
                 }
                 for (i = 0; i < coef_num; i++) {
                     int32_t delta = heic_bs_se(bs);
+                    int pos;
                     if (delta < -128 || delta > 127) {
                         bs->error = 1;
                         return -1;
                     }
                     next_coef = (next_coef + (int)delta + 256) & 255;
-                    out->coef[size_id][matrix_id][i] = (uint8_t)next_coef;
+                    /* Store in raster order (ffmpeg scaling_list_data). */
+                    if (size_id == 0)
+                        pos = 4 * HEIC_DIAG4_Y[i] + HEIC_DIAG4_X[i];
+                    else
+                        pos = 8 * HEIC_DIAG8_Y[i] + HEIC_DIAG8_X[i];
+                    out->coef[size_id][matrix_id][pos] = (uint8_t)next_coef;
                 }
             }
         }
     }
+    fill_scaling_factors(out);
     return bs->error ? -1 : 0;
 }
 

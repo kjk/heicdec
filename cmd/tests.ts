@@ -656,29 +656,30 @@ const HEVC_SEQUENCE_TESTS: readonly {
   },
   /* Scaling lists: multi-SPS/PPS by id + diagonal-scan dequant. Full decode;
      exact MD5 vs libde265 still open (residual scaled dequant). */
+  /* Scaling lists: exact vs ffmpeg (libde265 diverges on custom lists). */
   {
     name: "SLIST_A_Sony_4.bit",
     frames: 65,
     mse: 0,
-    md5: "5401d5e590213fe28306029ac1249236",
+    md5: "b00bc5362e6fad1a0e704aad8e69b863",
   },
   {
     name: "SLIST_B_Sony_8.bit",
     frames: 65,
     mse: 0,
-    md5: "91339fe14791a9bad2e4fcd8406c9c0d",
+    md5: "312b4ebb3e885587d5e12b78aa95977a",
   },
   {
     name: "SLIST_C_Sony_3.bit",
     frames: 65,
     mse: 0,
-    md5: "3f596a002972d987c035e90cb7d08e0a",
+    md5: "61024c25cbd60e9bf86dbe3bc5b9b48b",
   },
   {
     name: "SLIST_D_Sony_9.bit",
     frames: 65,
     mse: 0,
-    md5: "0859021ec0602cdca6a0fa6c469ea0a4",
+    md5: "8d38ce43b17627ff1f86e526bfb7ffc4",
   },
   /* NoRaslOutputFlag + multi-CVS (cvs_id, poc) sort; conformance crop. */
   {

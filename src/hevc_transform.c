@@ -448,17 +448,6 @@ void heic_dequantize_scaled(int16_t *coeffs, int n, int qp, int bit_depth,
                             uint8_t matrix_id)
 {
     static const int32_t LEVEL_SCALE[6] = {40, 45, 51, 57, 64, 72};
-    /* Inverse of H.265 diagonal scan: index = y*N+x → scan position.
-       Must match residual.c HEIC_INV_4X4_DIAG / HEIC_INV_8X8_SB_DIAG. */
-    static const uint8_t DIAG_INV_4X4[16] = {
-        0, 2, 5, 9, 1, 4, 8, 12, 3, 7, 11, 14, 6, 10, 13, 15
-    };
-    static const uint8_t DIAG_INV_8X8[64] = {
-         0,  2,  5,  9, 14, 20, 27, 35,  1,  4,  8, 13, 19, 26, 34, 42,
-         3,  7, 12, 18, 25, 33, 41, 48,  6, 11, 17, 24, 32, 40, 47, 53,
-        10, 16, 23, 31, 39, 46, 52, 57, 15, 22, 30, 38, 45, 51, 56, 60,
-        21, 29, 37, 44, 50, 55, 59, 62, 28, 36, 43, 49, 54, 58, 61, 63
-    };
     int size = 1 << log2_tr_size;
     int size_id = (int)log2_tr_size - 2;
     int qp_clamped = qp > 180 ? 180 : qp;
@@ -467,53 +456,46 @@ void heic_dequantize_scaled(int16_t *coeffs, int n, int qp, int bit_depth,
     int shift = bit_depth + (int)log2_tr_size - 5;
     int64_t qp_scale = 1LL << qp_per;
     int64_t add = shift > 0 ? 1LL << (shift - 1) : 0;
-    int i;
+    int i, x, y, level;
 
     if (!list || size_id < 0 || size_id > 3 || matrix_id > 5) {
         heic_dequantize(coeffs, n, qp, bit_depth, log2_tr_size);
         return;
     }
-    /* Raster walk with zero-skip: most residual positions are zero after
-     * CABAC, and scale lookup + 64-bit multiply dominate the old full loop. */
-    {
-        int x = 0, y = 0;
-        int level = LEVEL_SCALE[qp_rem];
-        for (i = 0; i < n; i++) {
-            uint8_t scale;
-            int64_t value;
-            int c = coeffs[i];
-            if (c == 0) {
-                if (++x == size) {
-                    x = 0;
-                    y++;
-                }
-                continue;
-            }
-            if (size_id == 0) {
-                scale = list->coef[0][matrix_id][DIAG_INV_4X4[i]];
-            } else if (size_id == 1) {
-                scale = list->coef[1][matrix_id][DIAG_INV_8X8[i]];
-            } else {
-                int divisor = size_id == 2 ? 2 : 4;
-                int sx = x / divisor, sy = y / divisor;
-                if (x == 0 && y == 0)
-                    scale = list->dc_coef[size_id - 2][matrix_id];
-                else
-                    scale = list->coef[size_id][matrix_id]
-                                      [DIAG_INV_8X8[sy * 8 + sx]];
-            }
-            value = (int64_t)c * scale * level * qp_scale;
-            if (shift >= 0)
-                value = (value + add) >> shift;
-            else
-                value <<= -shift;
-            if (value < -32768) value = -32768;
-            if (value > 32767) value = 32767;
-            coeffs[i] = (int16_t)value;
+    /* Raster ScalingFactor lookup (H.265 8.6.3 / ffmpeg). */
+    level = LEVEL_SCALE[qp_rem];
+    x = 0;
+    y = 0;
+    for (i = 0; i < n; i++) {
+        uint8_t scale;
+        int64_t value;
+        int c = coeffs[i];
+        if (c == 0) {
             if (++x == size) {
                 x = 0;
                 y++;
             }
+            continue;
+        }
+        if (size_id == 0)
+            scale = list->factor4[matrix_id][y][x];
+        else if (size_id == 1)
+            scale = list->factor8[matrix_id][y][x];
+        else if (size_id == 2)
+            scale = list->factor16[matrix_id][y][x];
+        else
+            scale = list->factor32[matrix_id][y][x];
+        value = (int64_t)c * scale * level * qp_scale;
+        if (shift >= 0)
+            value = (value + add) >> shift;
+        else
+            value <<= -shift;
+        if (value < -32768) value = -32768;
+        if (value > 32767) value = 32767;
+        coeffs[i] = (int16_t)value;
+        if (++x == size) {
+            x = 0;
+            y++;
         }
     }
 }
@@ -548,17 +530,6 @@ void heic_dequantize_scaled_extended(
     int max_transform_range, const heic_scaling_list *list, uint8_t matrix_id)
 {
     static const int32_t LEVEL_SCALE[6] = {40, 45, 51, 57, 64, 72};
-    /* Inverse of H.265 diagonal scan: index = y*N+x → scan position.
-       Must match residual.c HEIC_INV_4X4_DIAG / HEIC_INV_8X8_SB_DIAG. */
-    static const uint8_t DIAG_INV_4X4[16] = {
-        0, 2, 5, 9, 1, 4, 8, 12, 3, 7, 11, 14, 6, 10, 13, 15
-    };
-    static const uint8_t DIAG_INV_8X8[64] = {
-         0,  2,  5,  9, 14, 20, 27, 35,  1,  4,  8, 13, 19, 26, 34, 42,
-         3,  7, 12, 18, 25, 33, 41, 48,  6, 11, 17, 24, 32, 40, 47, 53,
-        10, 16, 23, 31, 39, 46, 52, 57, 15, 22, 30, 38, 45, 51, 56, 60,
-        21, 29, 37, 44, 50, 55, 59, 62, 28, 36, 43, 49, 54, 58, 61, 63
-    };
     int size = 1 << log2_tr_size;
     int size_id = (int)log2_tr_size - 2;
     int qp_clamped = qp > 180 ? 180 : qp;
@@ -578,19 +549,14 @@ void heic_dequantize_scaled_extended(
         int x = i % size, y = i / size;
         uint8_t scale;
         int64_t value;
-        if (size_id == 0) {
-            scale = list->coef[0][matrix_id][DIAG_INV_4X4[i]];
-        } else if (size_id == 1) {
-            scale = list->coef[1][matrix_id][DIAG_INV_8X8[i]];
-        } else {
-            int divisor = size_id == 2 ? 2 : 4;
-            int sx = x / divisor, sy = y / divisor;
-            if (x == 0 && y == 0)
-                scale = list->dc_coef[size_id - 2][matrix_id];
-            else
-                scale = list->coef[size_id][matrix_id]
-                                  [DIAG_INV_8X8[sy * 8 + sx]];
-        }
+        if (size_id == 0)
+            scale = list->factor4[matrix_id][y][x];
+        else if (size_id == 1)
+            scale = list->factor8[matrix_id][y][x];
+        else if (size_id == 2)
+            scale = list->factor16[matrix_id][y][x];
+        else
+            scale = list->factor32[matrix_id][y][x];
         value = (int64_t)coeffs[i] * scale * LEVEL_SCALE[qp_rem] * qp_scale;
         if (shift >= 0)
             value = (value + add) >> shift;

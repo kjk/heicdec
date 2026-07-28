@@ -1807,13 +1807,15 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         return 0;
     }
 
-    if (sc->sps->scaling_list_enabled_flag && !transform_skip) {
+    /* H.265 8.6.3 / ffmpeg: scaling lists apply unless transform_skip on
+       TU larger than 4x4 (flat m=16 for those skipped cases). */
+    if (sc->sps->scaling_list_enabled_flag
+        && !(transform_skip && log2_size > 2)) {
         const heic_scaling_list *list =
             sc->pps->pps_scaling_list_data_present_flag
                 ? &sc->pps->scaling_list
                 : &sc->sps->scaling_list;
-        /* H.265 8.6.3: matrixId = cIdx + (Intra ? 0 : 3). sizeId 3 stores the
-           Inter Y list at index 3 (syntax loop step), which matches +3. */
+        /* matrixId = cIdx + (Intra ? 0 : 3); sizeId 3 stores Inter Y at 3. */
         uint8_t matrix_id = (uint8_t)(
             c_idx + (sc->cu_pred_mode == HEIC_PRED_INTRA ? 0 : 3));
         if (extended) {
