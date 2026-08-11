@@ -124,8 +124,11 @@ bun cmd/verify-wasm.ts <file.heic>
   `fuzz/crashes/*`, expect exit 0), `-minimize` (`-merge=1` corpus shrink),
   `-max-len N`, `-no-deps`. Linux/macOS CI may set `HEIC_FUZZ_UBSAN=1` for
   ASan+UBSan+fuzzer.
-- GitHub Actions: `.github/workflows/ci.yml` (MSVC smoke, clang crash
-  regression, Linux amalgamation+UBSan, WASM).
+- GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
+  + amalgamation, Windows clang crash regression, Linux clang + full oracle +
+  amalgamation + UBSan crashes, macOS clang + full oracle + amalgamation, WASM
+  decode smoke). deps/ and oracle build trees under `out/*_build` are cached
+  per OS.
 - `bun cmd/fuzz-afl.ts` — same harness via **AFL++** (macOS/*nix;
   `brew install afl++`). Shares `fuzz/corpus/` with libFuzzer; AFL state in
   `fuzz/afl-out/` (gitignored). On exit (and with `-import`), queue/crashes
@@ -149,8 +152,10 @@ WASM: pure-C HEVC + unci only (no `HEIC_HAVE_DAV1D` / zlib / brotli).
 ### Amalgamation
 
 `bun cmd/build-dist.ts` → `dist/heic.h` + `dist/heic.c` (sqlite-style). Strip
-local `#include "heic.h"` / `"heic_internal.h"`. No two `.c` files may share a
-`static` symbol name. **Agents do not commit dist/**.
+local `#include "heic.h"` / `"heic_internal.h"`, remove comments, emit **LF
+only**, strip trailing whitespace, and keep at most one blank line in a row.
+No two `.c` files may share a `static` symbol name. **Agents do not commit
+dist/**.
 
 AV1 note: amalgamation is the **our** code (HEIF + HEVC + color + orchestration).
 dav1d stays a separate library the consumer links (or a separately vendored

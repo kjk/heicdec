@@ -59,14 +59,31 @@ function embedIncludes(text: string): string {
   return text;
 }
 
-function stripTrailingWhitespace(code: string): string {
-  return code
-    .split(/\r?\n/)
-    .map((line) => line.replace(/[ \t]+$/, ""))
-    .join("\n");
+/** LF only, strip trailing whitespace, at most one blank line in a row. */
+function normalizeSourceText(text: string): string {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const out: string[] = [];
+  let blank = false;
+  for (const raw of lines) {
+    const line = raw.replace(/[ \t]+$/, "");
+    if (line.length === 0) {
+      if (blank) continue;
+      blank = true;
+      out.push("");
+    } else {
+      blank = false;
+      out.push(line);
+    }
+  }
+  // Drop leading blank lines; keep a single trailing newline.
+  while (out.length > 0 && out[0] === "") out.shift();
+  while (out.length > 0 && out[out.length - 1] === "") out.pop();
+  return out.length === 0 ? "\n" : out.join("\n") + "\n";
 }
 
 function stripCComments(code: string): string {
+  // Normalize EOLs first so comment/blank handling never sees CRLF.
+  code = code.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   let out = "";
   let i = 0;
   const n = code.length;
@@ -123,7 +140,7 @@ function stripCComments(code: string): string {
     out += c;
     i++;
   }
-  return stripTrailingWhitespace(out).replace(/\n{3,}/g, "\n\n");
+  return normalizeSourceText(out);
 }
 
 async function runCmd(cmd: string, cwd?: string): Promise<number> {
@@ -136,29 +153,25 @@ async function runCmd(cmd: string, cwd?: string): Promise<number> {
 
 export async function buildDist(): Promise<void> {
   mkdirSync(DIST, { recursive: true });
-  const publicHeader = readFileSync(join(SRC, "heic.h"), "utf8");
+  const publicHeader = normalizeSourceText(readFileSync(join(SRC, "heic.h"), "utf8"));
   writeFileSync(DIST_H, publicHeader);
 
-  const parts: string[] = [];
-  parts.push(publicHeader.trimEnd() + "\n");
+  const parts: string[] = [publicHeader];
   const internal = readFileSync(join(SRC, "heic_internal.h"), "utf8");
-  parts.push(stripIncludes(internal, ["heic\\.h"]).trimEnd() + "\n");
+  parts.push(stripIncludes(internal, ["heic\\.h"]));
   /* Inline once: residual/ctu/cabac all #include this; embedding per .c would
    * redeclare static symbols in the amalgamation. */
   for (const name of ONCE_HEADERS) {
     const once = readFileSync(join(SRC, name), "utf8");
-    parts.push(
-      stripIncludes(once, ["heic_internal\\.h", "heic\\.h"]).trimEnd() + "\n",
-    );
+    parts.push(stripIncludes(once, ["heic_internal\\.h", "heic\\.h"]));
   }
 
   for (const name of DIST_MODULES) {
     const code = readFileSync(join(SRC, name), "utf8");
-    parts.push(
-      embedIncludes(stripIncludes(code, STRIP_LOCAL_HEADERS)).trimEnd() + "\n",
-    );
+    parts.push(embedIncludes(stripIncludes(code, STRIP_LOCAL_HEADERS)));
   }
 
+  // Final pass also collapses blank runs left at module boundaries.
   const amalgamated = stripCComments(parts.join("\n"));
   writeFileSync(DIST_C, amalgamated);
   console.log(`wrote dist/heic.h (${publicHeader.split("\n").length} lines)`);
