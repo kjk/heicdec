@@ -254,9 +254,10 @@
 - [x] Strengthen memory-safety automation:
       - `bun cmd/fuzz.ts -check-crashes` replays every `fuzz/crashes/*` under ASan
       - `HEIC_FUZZ_UBSAN=1` enables ASan+UBSan+fuzzer on Linux/macOS
-      - GitHub Actions `.github/workflows/ci.yml`: Windows MSVC release smoke,
-        Windows clang crash regression, Linux clang+UBSan crashes + amalgamation,
-        WASM decode smoke
+      - GitHub Actions `.github/workflows/ci.yml`: Windows MSVC + full oracle
+        tests + amalgamation, Windows clang crash regression, Linux clang + full
+        oracle + amalgamation + UBSan crashes, macOS clang + full oracle +
+        amalgamation, WASM decode smoke
 - [ ] Resume performance work after the correctness sweep. Profile the new
       4:2:2 and motion-vector streams plus the full HEIF corpus; then target
       measured hot paths with AVX2/ARM64 NEON and consider parallel decoding
