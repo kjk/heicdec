@@ -15,7 +15,7 @@
 //
 // Intentional bad inputs (ok-expect-fail if we fail as expected):
 //   broken containers; bad iovl version; oversize canvas.
-// Out-of-scope valid files (skip when neither decoder can produce pixels):
+// Out-of-scope valid files (skip even if libheif can produce pixels):
 //   multilayer HEVC stills, etc.
 import { existsSync, readFileSync, rmSync } from "fs";
 import { basename, join } from "path";
@@ -40,8 +40,8 @@ const EXPECT_FAIL = new Set([
 ]);
 
 /**
- * Valid HEIF that is out of library scope for now. When both our decoder and
- * libheif fail, count as [skip] rather than [ok] "not decodable".
+ * Valid HEIF that is out of library scope for now. Skip whether or not
+ * libheif can produce pixels (Nokia multilayer stills need VPS layers).
  */
 const OUT_OF_SCOPE = new Set([
   /* Multilayer HEVC stills (Nokia): need VPS layer / inter-layer refs. */
@@ -931,6 +931,13 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
   let fail = 0;
   for (const t of HEVC_SEQUENCE_TESTS) {
     const input = join(TESTIMAGES_DIR, "hevc_sequence", t.name);
+    if (!existsSync(input)) {
+      fail++;
+      console.log(
+        `[fail] HEVC sequence ${t.name} missing (get-deps did not install it)`,
+      );
+      continue;
+    }
     const stem = t.name.replace(/\.[^.]+$/, "");
     const ours = join(root, "out", `${stem}-ours.yuv`);
     const ref = join(root, "out", `${stem}-ref.yuv`);
@@ -1257,6 +1264,9 @@ async function main() {
       if (wantFail) {
         ok++;
         console.log(`[ok-expect-fail] ${f} (heic fail, libheif ok)`);
+      } else if (outOfScope(name)) {
+        skip++;
+        console.log(`[skip] ${f} out of scope (libheif ok)`);
       } else {
         fail++;
         console.log(`[fail] ${f} cannot decode (libheif ok)\n${out.slice(0, 300)}`);
