@@ -482,8 +482,8 @@
       synchronize presentation timelines, and compare every RGBA frame against
       libheif using libavif's alpha + EXIF/XMP sequence fixture
 - [ ] soft mse: example/hdr ~5–6 under mse≤8
-- [ ] iovl_negoff: oracle black (listed EXPECT_FAIL); ours keeps ISO negative offsets
-- [ ] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; libheif canvas black (oracle disagreement)
+- [x] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; current
+      libheif agrees, while older versions render the canvas black
 - [x] HEVC PCM: raw luma/chroma samples, CABAC restart, bit-depth scaling,
       and PCM loop-filter exclusion; official `ipcm_A/B/C_NEC_3` oracles mse=0
 - [x] HEVC dependent slice segments: inherit the owning independent header and
@@ -506,8 +506,9 @@
 
 ### iovl_negoff.heic
 - Positive-offset `iovl.heic` is mse=0 vs libheif.
-- `iovl_negoff` (offset −16): we produce a 96×96 overlay placement; libheif RGB is all-black.
-- Keep as known oracle disagreement; do not “fix” to match black.
+- `iovl_negoff` (offset −16): we produce the ISO/imazen 96×96 overlay placement.
+- Current libheif matches at mse=0; older versions render an all-black canvas,
+  so the harness accepts that specific historical oracle disagreement too.
 
 ### Nokia C021 / C013 (double `dimg` iref)
 - `iovl` item references the same `hvc1` id twice (`iref dimg … to [1002,1002]`).

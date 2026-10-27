@@ -35,7 +35,14 @@ const EXPECT_FAIL = new Set([
   "mini_size_zero.avif",
   "iovl_badver.heic",
   "iovl_huge_canvas.heic",
-  /* ours ISO-correct; libheif leaves canvas black for negative offsets */
+]);
+
+/**
+ * Valid files for which some libheif versions produce a known-wrong bitmap.
+ * A current libheif may fix the disagreement, so a matching bitmap must pass.
+ */
+const KNOWN_ORACLE_DIFFERENCE = new Set([
+  /* Older libheif versions leave the canvas black for negative offsets. */
   "iovl_negoff.heic",
 ]);
 
@@ -58,6 +65,10 @@ function expectFail(name: string): boolean {
 
 function outOfScope(name: string): boolean {
   return OUT_OF_SCOPE.has(name);
+}
+
+function knownOracleDifference(name: string): boolean {
+  return KNOWN_ORACLE_DIFFERENCE.has(name);
 }
 
 /** Valid no-oracle fixtures that our decoder must continue to decode. */
@@ -1320,6 +1331,12 @@ async function main() {
         ok++;
         console.log(
           `[ok-expect-fail] ${f} mse=${mse.toFixed(4)} > ${mseThreshold}`,
+        );
+      } else if (knownOracleDifference(name)) {
+        ok++;
+        console.log(
+          `[ok-known-oracle-difference] ${f} mse=${mse.toFixed(4)} ` +
+            `(threshold ${mseThreshold})`,
         );
       } else {
         fail++;
