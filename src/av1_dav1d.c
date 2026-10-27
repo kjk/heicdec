@@ -139,6 +139,8 @@ static Dav1dContext *ensure_dav1d(heic_ctx *ctx)
     settings.n_threads = 1;
     settings.apply_grain = 0;
     settings.max_frame_delay = 1;
+    /* Layered (progressive) AVIF: output only the highest spatial layer. */
+    settings.all_layers = 0;
     /* Mute dav1d's stderr logger (e.g. "Error parsing OBU data" on bad bits). */
     settings.logger.callback = NULL;
     if (ctx->limits.max_pixels)
@@ -168,6 +170,7 @@ heic_av1_sequence_state *heic_av1_sequence_new(heic_ctx *ctx)
     settings.n_threads = 1;
     settings.apply_grain = 0;
     settings.max_frame_delay = 1;
+    settings.all_layers = 0;
     settings.logger.callback = NULL;
     if (ctx->limits.max_pixels)
         settings.frame_size_limit = (unsigned)ctx->limits.max_pixels;
