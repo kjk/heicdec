@@ -12,18 +12,20 @@ up-front as an in-memory buffer (no incremental fetch). We provide:
 
 - probe primary image info (dimensions, bit depth, alpha, CICP, EXIF/XMP flags)
 - decode primary image to RGB / BGR / RGBA / BGRA (8-bit output)
-- extract EXIF (TIFF payload, HEIF 4-byte prefix stripped), XMP, ICC
-- optional thumbnail decode
+- extract EXIF (TIFF payload; HEIF offset header skipped), XMP, ICC
+- optional thumbnail decode, Apple HDR gain-map decode (no tone map)
+- HEVC/AV1 image sequences (timing, one-shot frame decode, stateful playback)
 
 No encoders. No writing HEIF.
 
-**SumatraPDF surface** (see `C:\Users\kjk\src\sumatrapdf\src\AvifReader.cpp`):
+**SumatraPDF surface** (see `sumatrapdf/src/shared/AvifReader.cpp` in the
+SumatraPDF repo):
 
 | Need | API |
 |------|-----|
 | size from buffer | `heic_doc_open` + `heic_doc_info` |
-| decode to BGRA-ish pixmap | `heic_doc_decode(HEIC_FORMAT_RGB)` then convert, or `HEIC_FORMAT_BGR` |
-| EXIF TIFF blob | `heic_doc_exif` (prefix already stripped) |
+| decode to BGRA pixmap | `heic_doc_decode(HEIC_FORMAT_BGRA)` |
+| EXIF TIFF blob | `heic_doc_exif` (HEIF offset header already skipped) |
 
 ## Architecture
 
@@ -32,11 +34,14 @@ src/
   heic.h              public API
   heic_internal.h     single internal header (all modules)
   core.c              ctx, alloc, limits, frame helpers
-  heif.c              ISOBMFF / HEIF container (port of imazen/heic src/heif/*)
+  heif.c              ISOBMFF / HEIF container + moov sequences (port of imazen/heic src/heif/*)
   document.c          heic_doc open/info/metadata
-  decode.c            primary-image orchestration (grid, alpha, transforms)
+  decode.c            primary-image + sequence orchestration (grid, iovl, alpha, transforms)
   color.c             YCbCr → RGB (BT.601/709/2020, limited/full)
-  hevc_*.c            pure-C HEVC I-frame decoder (port of imazen/heic src/hevc/*)
+  hevc_*.c            pure-C HEVC decoder: I/P/B slices, RExt (port of imazen/heic src/hevc/*)
+  hevc_inter.c        HEVC motion compensation / weighted prediction
+  hevc_simd.c         SSE4.1/SSSE3 kernels (runtime-selected; scalar fallback)
+  unci.c              ISO 23001-17 uncompressed images (optional zlib/brotli)
   av1_dav1d.c         thin wrapper: feed OBU/av1C into dav1d, fill heic_frame
 ```
 
@@ -44,16 +49,18 @@ src/
 
 | Codec | Source | Notes |
 |-------|--------|-------|
-| **HEVC** (`hvc1`) | Port of **imazen/heic** | Pure C. Still-image I-slices first; inter optional later |
-| **AV1** (`av01`) | **dav1d** C library | Link/vendor dav1d. Do **not** re-port rav1d or rav1d-safe |
-| JPEG / H.264 in HEIF | out of scope | Detect and error clearly |
+| **HEVC** (`hvc1`) | Port of **imazen/heic** | Pure C. Intra + inter (P/B), sequences, RExt |
+| **AV1** (`av01`) | **dav1d** C library | `HEIC_HAVE_DAV1D` + link dav1d. Do **not** re-port rav1d or rav1d-safe |
+| **unci** (`unci`) | `unci.c` | N-bit planar/pixel/row/tile-comp/YUV + block packing; zlib/deflate (`HEIC_HAVE_ZLIB`), brotli (`HEIC_HAVE_BROTLI`) |
+| JPEG / H.264 in HEIF | out of scope | Decode fails with generic "unsupported item type" |
 
 ### What we do NOT do
 
 - Port rav1d-safe (use dav1d C instead)
 - Native GPU backends (MediaFoundation, VideoToolbox, VA-API, …)
-- Encode paths (unci: zlib/deflate/brotli + N-bit planar/pixel/row/tile-comp/YUV + block packing supported)
+- Encode paths
 - PQ/HLG EOTF / tone-mapping (expose CICP; caller tone-maps)
+- Multilayer HEVC (inter-layer): open/info succeed, decode fails
 
 ## Reference checkouts (local) — corpus + oracles
 
@@ -82,7 +89,9 @@ Override with `HEIC_SPECS=<dir>`.
 
 ## Build & test
 
-Requires `clang` or MSVC `cl`, `bun`, `git`.
+Requires `clang` or MSVC `cl`, `bun`, `git`, `cmake`, `ninja` (zlib/brotli
+are auto-built on every `build.ts` run if missing); `meson` for dav1d.
+clang/gcc on x86 need `-msse4.1` for `hevc_simd.c` (also for `dist/heic.c`).
 
 The Windows harness vendors `test/winperf_control.h`, so a **winperf** checkout
 is not required to compile. To record profiles, first look for the private
@@ -151,8 +160,9 @@ WASM: pure-C HEVC + unci only (no `HEIC_HAVE_DAV1D` / zlib / brotli).
 
 ### Amalgamation
 
-`bun cmd/build-dist.ts` → `dist/heic.h` + `dist/heic.c` (sqlite-style). Strip
-local `#include "heic.h"` / `"heic_internal.h"`, remove comments, emit **LF
+`bun cmd/build-dist.ts` → `dist/heic.h` + `dist/heic.c` (sqlite-style).
+`dist/heic.h` is `src/heic.h` with whitespace normalized (comments kept). For
+`dist/heic.c`: strip local `#include "heic.h"` / `"heic_internal.h"`, remove comments, emit **LF
 only**, strip trailing whitespace, and keep at most one blank line in a row.
 No two `.c` files may share a `static` symbol name. **Agents do not commit
 dist/**.
@@ -191,11 +201,14 @@ Paths relative to `deps/heic/`.
 | `hevc_ctu.c` | `src/hevc/ctu.rs` |
 | `hevc_intra.c` | `src/hevc/intra.rs` |
 | `hevc_residual.c` | `src/hevc/residual.rs` |
-| `hevc_transform.c` | `src/hevc/transform.rs` (+ SIMD later) |
+| `hevc_transform.c` | `src/hevc/transform.rs` |
+| `hevc_simd.c` | `src/hevc/transform_simd.rs` (+ residual/color/deblock/intra/SAO kernels) |
+| `hevc_inter.c` | `src/hevc/inter.rs`, `src/hevc/mc.rs` |
 | `hevc_deblock.c` | `src/hevc/deblock.rs` |
 | `hevc_sao.c` | `src/hevc/sao.rs` |
-| `hevc_frame.c` | `heic-core/src/frame.rs` / picture |
+| `core.c` (frames) | `heic-core/src/frame.rs` / `src/hevc/picture.rs` |
 | `hevc_decode.c` | `src/hevc/mod.rs` entry (`decode_with_config`) |
+| `unci.c` | ISO 23001-17 unci decode (checked vs libheif's unc codec) |
 | `av1_dav1d.c` | **not** a port of rav1d-safe — wraps dav1d C API for still OBUs |
 
 Decode-only: skip all encoder paths.
@@ -220,8 +233,9 @@ Inspiration: dav1d `include/dav1d/dav1d.h`, tools; libheif `libheif/plugins/deco
 - **Alpha**: `auxl` + `auxC` URN; decode aux plane, attach as A.
 - **hvcC**: length_size + VPS/SPS/PPS NAL arrays; slices length-prefixed.
 - **av1C**: configOBUs prepended before sample OBUs for dav1d.
-- **EXIF**: item type `Exif`; first 4 bytes = TIFF offset within payload —
-  strip them before returning TIFF.
+- **EXIF**: item type `Exif`; first 4 bytes = BE TIFF header offset; TIFF
+  starts at `4 + offset`. Items without that header (raw `MM\0*`) are not
+  returned (known limitation; `has_exif` still 1).
 - **10-bit HEVC → 8-bit RGB**: right-shift `bit_depth-8` (no EOTF).
 
 ## Verification methodology
@@ -235,4 +249,5 @@ container is not a decode test. Drive all the way to pixels.
 
 ## Status
 
-Bootstrap in progress. See `PROGRESS.md`.
+Feature-complete for the scope above; remaining gaps and history are in
+`PROGRESS.md`.

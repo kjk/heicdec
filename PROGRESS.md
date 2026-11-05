@@ -6,7 +6,7 @@
 - **AV1**: use **dav1d C** (videolan). Do **not** port rav1d-safe.
 - **Oracle / tests**: libheif + dav1d; corpus from `deps/heic/testdata`.
 - **Style**: djvudec — single internal header, bun scripts, amalgamation.
-- **SumatraPDF**: size probe, RGB decode, EXIF extract from memory buffer.
+- **SumatraPDF**: size probe, BGRA decode, EXIF extract from memory buffer.
 
 ## Done
 
@@ -22,7 +22,7 @@
 - [x] HEVC full I-slice path (bitstream, params, cabac, slice, residual, transform, intra, CTU)
 - [x] WPP + tiles with entry-point CABAC reinit
 - [x] Pixels: `single.heic`, `grid.heic`, `example.heic` 1280×854
-- [x] features corpus: 25/25 -info ok; 23/25 full decode (2 intentional: bad iovl version, huge canvas)
+- [x] features corpus (early snapshot): 25/25 -info ok; 23/25 full decode (2 intentional: bad iovl version, huge canvas)
 - [x] Alpha plane from `auxl` (HEVC auxid:1 + CICP alpha URN) → `frame->a` / RGBA A channel
 - [x] `av1_dav1d.c` real dav1d path (`HEIC_HAVE_DAV1D`); `bun cmd/build.ts -dav1d`
 - [x] Static dav1d build under `out/dav1d_build` (meson; `enable_asm` when nasm present)
@@ -154,14 +154,7 @@
 
 ### Remaining priorities (ordered)
 
-- [x] Official motion-vector clipping/edge streams: `MVCLIP_A_qualcomm_3`
-      (5 frames) and `MVEDGE_A_qualcomm_3` (17 frames) install via get-deps
-      and match pinned reconstruction MD5s byte-for-byte vs libde265.
 - [x] `MVHEVCS_*` folded into multilayer out-of-scope (needs multilayer PPS).
-- [x] HEVC Main 4:2:2 / Main 4:2:2 10: dual vertical chroma CBF/TUs, SubHeightC=1
-      plane layout, and 4:2:2 chroma IntraPredModeC remapping (H.265 8.4.3).
-      Official `GENERAL_10b_422` sequences match pinned MD5s byte-for-byte;
-      `Main_422_10_A_RExt_Sony_2` (9 frames) matches libde265 at mse≈0.002.
 - [x] Strict corpus verdicts: `both_fail` is a real `[fail]` unless the file is
       in `EXPECT_FAIL` (malformed/intentional) or `OUT_OF_SCOPE` (skip). Nokia
       multilayer001–005 are out of scope; must-decode fixtures still fail hard.
@@ -258,9 +251,9 @@
         tests + amalgamation, Windows clang crash regression, Linux clang + full
         oracle + amalgamation + UBSan crashes, macOS clang + full oracle +
         amalgamation, WASM decode smoke
-- [ ] Resume performance work after the correctness sweep. Profile the new
-      4:2:2 and motion-vector streams plus the full HEIF corpus; then target
-      measured hot paths with AVX2/ARM64 NEON and consider parallel decoding
+- [x] Resume performance work after the correctness sweep (see the perf
+      entries below).
+- [ ] Remaining perf ideas: AVX2 / ARM64 NEON kernels and parallel decoding
       of independent grid tiles. Keep scalar output byte-identical.
 - [x] Perf restart (post-correctness): HDR `hdr-sample` 40.3ms → **37.2ms**
       (libheif ~34.6ms, +7.4%; was +19.6%). Wins: stack color LUTs (no per-frame
@@ -420,10 +413,11 @@
       frames match both HM and libde265 byte-for-byte.
 - [x] HEVC motion-vector clipping and edge cases: official
       `MVCLIP_A_qualcomm_3` (5 frames) and `MVEDGE_A_qualcomm_3` (17 frames)
-      match pinned reconstruction MD5s byte-for-byte.
-- [x] HEVC Main 4:2:2 10: dual vertical chroma CBF/TUs (SubHeightC=1),
-      4:2:2 chroma IntraPredModeC remap table, official `GENERAL_10b_422`
-      (exact MD5) and `Main_422_10_A_RExt_Sony_2` (9 frames, mse≈0.002)
+      install via get-deps and match pinned reconstruction MD5s byte-for-byte.
+- [x] HEVC Main 4:2:2 / Main 4:2:2 10: dual vertical chroma CBF/TUs
+      (SubHeightC=1), 4:2:2 chroma IntraPredModeC remapping (H.265 8.4.3);
+      official `GENERAL_10b_422` (exact MD5) and `Main_422_10_A_RExt_Sony_2`
+      (9 frames, mse≈0.002)
 - [x] HEVC parallel merge regions use one CU-wide candidate list for every
       sub-partition of an 8x8 coding unit when the signaled merge level is
       larger than 4x4. All eight frames of official `PMERGE_A` through
@@ -481,7 +475,13 @@
       `auxi` and `tref/auxl`, retain independent color/alpha dav1d state,
       synchronize presentation timelines, and compare every RGBA frame against
       libheif using libavif's alpha + EXIF/XMP sequence fixture
-- [ ] soft mse: example/hdr ~5–6 under mse≤8
+- [ ] Optional: bring `example.heic` / `hdr-sample.heic` (mse ~5–6 vs libheif,
+      within the mse≤8 gate) closer to exact.
+- [x] Layered (progressive) AVIF decodes the top spatial layer only: dav1d
+      `all_layers = 0`, as libheif does (commit 39e23d3; SumatraPDF issue
+      6383 decoded the 621x876 layer 0 instead of 2481x3503)
+- [x] Default `max_pixels` limit is 256*1024*1024 (268,435,456), matching
+      imazen/heic `Limits::server_defaults` (was 256,000,000)
 - [x] **iovl_negoff**: ours matches ISO/imazen signed-16 offsets; current
       libheif agrees, while older versions render the canvas black
 - [x] HEVC PCM: raw luma/chroma samples, CABAC restart, bit-depth scaling,

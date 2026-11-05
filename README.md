@@ -9,7 +9,8 @@ Decode-only library for [HEIC/HEIF](https://fileformats.dev/heic) and [AVIF](htt
 * HEVC and AV1 image sequences: presentation timing, edit-list loops, one-shot
   frame decode, and stateful playback with persistent codec state
 * Apple HDR auxiliary gain-map extraction (component decode only; no tone map)
-* simple drop-in amalgamation: `dist/heic.h` + `dist/heic.c` (+ link dav1d for AVIF)
+* simple drop-in amalgamation: `dist/heic.h` + `dist/heic.c` (see
+  [Using the amalgamation](#using-the-amalgamation) for flags and optional codecs)
 * verified against [libheif](https://github.com/strukturag/libheif)
 
 ## API
@@ -30,16 +31,37 @@ heic_doc_close(doc);
 heic_ctx_free(ctx);
 ```
 
+### Using the amalgamation
+
+Compile `dist/heic.c` as one C11 translation unit next to `dist/heic.h`.
+
+* **x86/x64 with clang or gcc:** add `-msse4.1`. The SIMD paths use SSE4.1
+  intrinsics and won't compile without it; the CPU is still checked at
+  runtime, and the code falls back to scalar without SSE4.1. MSVC needs no
+  flag.
+* **AVIF / AV1:** define `HEIC_HAVE_DAV1D`, put `dav1d/dav1d.h` on the include
+  path, and link libdav1d. Without it, AV1 items fail to decode with "AV1
+  decode requires dav1d (build with HEIC_HAVE_DAV1D)".
+* **Compressed unci:** define `HEIC_HAVE_ZLIB` (zlib/deflate; `zlib.h`, link
+  zlib) and/or `HEIC_HAVE_BROTLI` (`brotli/decode.h`, link brotlidec +
+  brotlicommon). Without them, uncompressed unci still decodes and compressed
+  unci fails with an error.
+
+```
+clang -std=c11 -O2 -msse4.1 -c dist/heic.c                    # HEVC + uncompressed unci
+clang -std=c11 -O2 -msse4.1 -DHEIC_HAVE_DAV1D -c dist/heic.c  # + AVIF (link libdav1d)
+```
+
 ### SumatraPDF surface
 
 [SumatraPDF](https://www.sumatrapdfreader.org/) uses this library as its
-HEIC/AVIF reader (`AvifReader.cpp`):
+HEIC/AVIF reader (`sumatrapdf/src/shared/AvifReader.cpp`):
 
 | Need | API |
 |------|-----|
 | size from buffer | `heic_doc_open` + `heic_doc_info` |
 | decode to BGRA pixmap | `heic_doc_decode(HEIC_FORMAT_BGRA)` |
-| EXIF TIFF blob | `heic_doc_exif` (4-byte HEIF prefix already stripped) |
+| EXIF TIFF blob | `heic_doc_exif` (HEIF offset header already skipped) |
 
 Smoke that path with `heic_test -sumatra file.heic` (or `bun cmd/verify-release.ts`).
 
@@ -48,31 +70,32 @@ Smoke that path with `heic_test -sumatra file.heic` (or `bun cmd/verify-release.
 | In scope | Notes |
 |----------|--------|
 | HEVC stills (`hvc1`/`heic`/`heix`/`mif1`) | I-frames, grids, tiles, WPP (entry points), P-item predictives |
-| AV1 stills (`av01`/`avif`) | via **dav1d** (link separately; not in amalgamation/WASM) |
-| unci (ISO 23001-17) | planar/pixel/row/tile; optional zlib/brotli |
+| AV1 stills (`av01`/`avif`) | via **dav1d** (`HEIC_HAVE_DAV1D` + link dav1d; not in amalgamation/WASM); layered AVIF decodes the top layer only |
+| unci (ISO 23001-17) | planar/pixel/row/tile; zlib/deflate with `HEIC_HAVE_ZLIB`, brotli with `HEIC_HAVE_BROTLI` |
 | Alpha | `auxl` HEVC/AVIF; AVIF alpha sequences |
-| EXIF / XMP / ICC / clap / irot / imir / iovl | EXIF returns TIFF only |
+| EXIF / XMP / ICC / clap / irot / imir / iovl | EXIF returns TIFF only; an Exif item without the HEIF offset header (raw TIFF) reports `has_exif=1` but `heic_doc_exif` returns 0 |
 | HEVC/AV1 image sequences | `moov` + public sequence API |
 | Apple HDR gain map | independent aux decode; **no** tone-map/EOTF |
 
 | Out of scope / limited | Notes |
 |------------------------|--------|
 | Encode / write HEIF | decode-only |
-| Multilayer HEVC (inter-layer) | classified skip |
-| JPEG / H.264 in HEIF | rejected clearly |
+| Multilayer HEVC (inter-layer) | not supported: open/info succeed, decode fails (e.g. "unsupported PPS extension") |
+| JPEG / H.264 in HEIF | not supported: open/info succeed, decode fails with "unsupported item type" |
 | PQ/HLG tone-mapping | CICP exposed; caller tone-maps |
 | GPU backends | CPU only |
 | DELTAQP_A / CCP residual polish | remaining FATE pin gaps (see `PROGRESS.md`) |
-| Negative-offset `iovl` vs libheif | ISO offsets; libheif may paint black |
+| Negative-offset `iovl` vs libheif | ISO signed offsets (current libheif agrees; older libheif painted black) |
 
 ## Build & test
 
-Requires `clang` or MSVC, `bun`, and `git`. For AVIF, also `meson` + `ninja`
-(to build static dav1d).
+Requires `clang` or MSVC, `bun`, `git`, `cmake`, and `ninja` (every
+`cmd/build.ts` run builds static zlib and brotli with cmake/ninja if they are
+missing). For AVIF, also `meson` (to build static dav1d).
 
 ```
 bun cmd/get-deps.ts              # clone deps + download/regenerate deps/testimages
-bun cmd/build.ts                 # HEVC harness (+ zlib/brotli for unci if present)
+bun cmd/build.ts                 # HEVC harness (+ zlib/brotli, built if missing)
 bun cmd/build.ts -dav1d          # also link dav1d (auto-builds if missing)
 bun cmd/build.ts -clang -dav1d
 bun cmd/tests.ts -all            # decode all corpus files; RGB mse vs libheif
@@ -82,13 +105,12 @@ bun cmd/bench.ts -rand 5         # compact best-of-3 timing vs libheif
 bun cmd/bench.ts -verbose -rand 5 # also show open/decode/close timing
 bun cmd/fuzz.ts                  # libFuzzer + ASan (seeded from deps corpus)
 bun cmd/fuzz.ts -check-crashes   # replay fuzz/crashes/* under ASan (CI)
-bun cmd/verify-release.ts        # Sumatra/API/memory-limit + amalgamation/WASM
 bun cmd/fuzz-afl.ts              # AFL++ on macOS (shares fuzz/corpus/)
 bun cmd/build-dist.ts            # amalgamation → dist/ (+ split JS/WASM demo)
 bun cmd/build-wasm.ts            # WebAssembly drop only (bootstraps emsdk if needed)
 bun cmd/run-wasm-demo.ts         # serve dist/wasm/demo.html on localhost:8000
 bun cmd/verify-wasm.ts single.heic
-bun cmd/verify-release.ts        # Sumatra surface + API + amalgamation + WASM
+bun cmd/verify-release.ts        # Sumatra/API/memory-limit + amalgamation + WASM
 ```
 
 Fuzzing notes: first run builds optional dav1d/zlib/brotli when missing, seeds
@@ -111,8 +133,8 @@ bun cmd/run-wasm-demo.ts
 
 `dist/wasm/heic.js` loads the separate `dist/wasm/heic.wasm` binary, so serve
 the directory over HTTP rather than opening the demo through `file://`. The
-browser drop is pure-C **HEVC + unci** (no dav1d); AVIF needs dav1d linked by
-the host, same as the amalgamation.
+browser drop is pure-C **HEVC + uncompressed unci** only: no AVIF (no dav1d)
+and no zlib/brotli unci.
 
 `heic_test` CLI:
 
@@ -121,12 +143,19 @@ heic_test -info in.heic
 heic_test -out out.ppm in.heic
 heic_test -rgba -out out.ppm in.heic   # decode RGBA (PPM still drops A)
 heic_test -thumbnail -out thumb.ppm in.heic
-heic_test -bench in.heic              # vs libheif (build with -libheif)
+heic_test -bench in.heic              # best-of-3 timing; + libheif with -libheif, + WIC on Windows
 heic_test -verify in.heic             # RGB MSE vs libheif (build with -libheif)
+heic_test -verify-gain-map in.heic    # gain map vs libheif aux decode (-libheif)
+heic_test -verify-sequence in.heic    # every sequence frame vs libheif (-libheif)
 heic_test -exif in.heic
-heic_test -sumatra in.heic        # size + BGRA + EXIF (SumatraPDF surface)
-heic_test -api in.heic            # custom allocator + abort
-heic_test -memory-limit           # max_memory_bytes regression
+heic_test -sumatra in.heic            # size + BGRA + EXIF (SumatraPDF surface)
+heic_test -api in.heic                # custom allocator + abort
+heic_test -memory-limit               # max_memory_bytes regression (no file)
+heic_test -sequence-info in.heic      # sequence timing + per-frame info
+heic_test -sequence-frame N [-rgba] [-out f.ppm] in.heic  # decode one sequence frame
+heic_test -hevc-sequence [-hevc-frames N] [-out f.yuv] in.bit  # raw Annex B HEVC stream
+heic_test -profile-heic N in.heic     # decode N times (winperf marks)
+heic_test -profile-libheif N in.heic  # same for libheif (-libheif)
 ```
 
 Oracle build (static, cmake/ninja, same idea as djvudec↔libdjvu):

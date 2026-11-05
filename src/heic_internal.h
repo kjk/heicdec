@@ -33,7 +33,7 @@
 /* Default resource limits (imazen/heic Limits::server_defaults). */
 #define HEIC_DEFAULT_MAX_WIDTH  16384u
 #define HEIC_DEFAULT_MAX_HEIGHT 16384u
-#define HEIC_DEFAULT_MAX_PIXELS ((uint64_t)256 * 1000 * 1000)
+#define HEIC_DEFAULT_MAX_PIXELS ((uint64_t)256 * 1024 * 1024)
 #define HEIC_DEFAULT_MAX_MEMORY ((size_t)1 * 1024 * 1024 * 1024)
 
 /* Parser resource caps (adversarial input). */
