@@ -1,6 +1,6 @@
 # heic — a plain-C HEIC/HEIF/AVIF decoder
 
-Decode-only library for HEIC/HEIF/AVIF still images, aimed at easy embedding
+Decode-only library for [HEIC/HEIF](https://fileformats.dev/heic) and [AVIF](https://fileformats.dev/avif) still images, aimed at easy embedding
 (e.g. [SumatraPDF](https://www.sumatrapdfreader.org/)):
 
 * plain C, jbig2dec-style API
