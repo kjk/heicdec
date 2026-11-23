@@ -106,6 +106,10 @@ reference decoder.
 
 Override with `HEIC_SPECS=<dir>`.
 
+**Script language:** all helper scripts, saved and temporary (one-off edit,
+analysis or fixture scripts included), are written in bun TypeScript — not
+Python, shell or PowerShell scripts.
+
 **Script convention:** every corpus script does nothing by default — prints usage
 + file count. Select with `file.heic …`, `-rand N`, or `-all`.
 
