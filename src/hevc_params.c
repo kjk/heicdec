@@ -164,17 +164,20 @@ static void fill_scaling_factors(heic_scaling_list *out)
         }
         out->factor32[mid][0][0] = out->dc_coef[1][mid];
     }
-    /* SizeId 3 only signals 0 and 3; chroma 32x32 from matching 8x8. */
+    /* SizeId 3 only signals matrixId 0 and 3. The 32x32 chroma factors
+       (4:4:4 only) come from the 16x16 lists: ScalingList[2][matrixId]
+       upsampled by 8, DC from scaling_list_dc_coef_minus8[0][matrixId]
+       (H.265 7.4.5), not from the 8x8 lists. */
     for (mid = 0; mid < 6; mid++) {
         if (mid == 0 || mid == 3) continue;
         for (i = 0; i < 64; i++) {
             int sx = i % 8, sy = i / 8;
-            uint8_t v = out->coef[1][mid][i];
+            uint8_t v = out->coef[2][mid][i];
             for (dy = 0; dy < 4; dy++)
                 for (dx = 0; dx < 4; dx++)
                     out->factor32[mid][sy * 4 + dy][sx * 4 + dx] = v;
         }
-        out->factor32[mid][0][0] = out->coef[1][mid][0];
+        out->factor32[mid][0][0] = out->dc_coef[0][mid];
     }
 }
 
