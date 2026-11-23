@@ -523,6 +523,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(root, "regress", "two_ipma_grid.heic")) &&
     existsSync(join(root, "regress", "iovl_red_fill.heic")) &&
     existsSync(join(root, "regress", "essential_unknown.heic")) &&
+    existsSync(join(root, "regress", "iovl_avif_red_fill.avif")) &&
     existsSync(join(root, "regress", "_info", "grid_no_ispe.heic")) &&
     existsSync(join(root, "regress", "_info", "aux_no_auxc.heic")) &&
     existsSync(join(unciDir, "mono_alpha_comp.heif")) &&

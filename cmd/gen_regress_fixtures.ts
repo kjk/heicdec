@@ -13,6 +13,7 @@
 //                            two ipma boxes; the second used to replace the
 //                            first.
 //   iovl_red_fill.heic       overlay whose canvas is filled with opaque red
+//   iovl_avif_red_fill.avif  the same with two overlapping AV1 inputs
 //                            around the image; the fill colour used to be
 //                            written as luma only.
 //   essential_unknown.heic   the image with an unknown essential property;
@@ -25,12 +26,14 @@
 //                            libheif rejects the file, so it sits in a
 //                            `_` directory the corpus walk skips; tests.ts
 //                            checks it directly.
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const DEFAULT_SOURCE = join(ROOT, "deps/heic/testdata/features/single.heic");
 const DEFAULT_OUT = join(ROOT, "deps/testimages/regress");
+/** A small single-image AVIF (256x256 coded, with a clap we do not copy). */
+const AVIF_SOURCE = join(ROOT, "deps/libheif/tests/data/clap_cropped.avif");
 
 function be16(n: number): Uint8Array {
   return new Uint8Array([(n >>> 8) & 0xff, n & 0xff]);
@@ -99,15 +102,17 @@ type Source = {
   height: number;
 };
 
-function readSource(path: string): Source {
+/** The primary item of a single-image file: its ispe, codec configuration
+ * box (`configType`, returned as `hvcC`) and coded data. */
+function readSource(path: string, configType = "hvcC"): Source {
   const d = new Uint8Array(readFileSync(path));
   const ipco = find(d, 0, d.length, ["meta", "iprp", "ipco"]);
   const props = new Map<string, Uint8Array>();
   for (const b of boxes(d, ipco.body, ipco.end))
     if (!props.has(b.type)) props.set(b.type, d.subarray(b.start, b.end));
   const ispe = props.get("ispe");
-  const hvcC = props.get("hvcC");
-  if (!ispe || !hvcC) throw new Error(`${path}: need ispe + hvcC`);
+  const hvcC = props.get(configType);
+  if (!ispe || !hvcC) throw new Error(`${path}: need ispe + ${configType}`);
 
   const primary = rb16(d, find(d, 0, d.length, ["meta", "pitm"]).body + 4);
   const iloc = find(d, 0, d.length, ["meta", "iloc"]);
@@ -232,7 +237,13 @@ function infe(id: number, type: string): Uint8Array {
  * in mdat; `idat` items (derived images) use construction_method 1.
  * Property indices are 1-based into `ipco`; every association is essential.
  */
-function assemble(items: Item[], ipco: Uint8Array[], iref: Uint8Array, payload: Uint8Array): Uint8Array {
+function assemble(
+  items: Item[],
+  ipco: Uint8Array[],
+  iref: Uint8Array,
+  payload: Uint8Array,
+  brand = "heic",
+): Uint8Array {
   const idatParts = items.filter((i) => i.idat).map((i) => i.idat!);
   const iloc = (mdatOffset: number): Uint8Array => {
     const entries: Uint8Array[] = [];
@@ -271,7 +282,7 @@ function assemble(items: Item[], ipco: Uint8Array[], iref: Uint8Array, payload: 
       hdlr, pitm, iloc(mdatOffset), iinf, iprp, iref,
       ...(idatParts.length ? [box("idat", concat(...idatParts))] : []),
     ));
-  const ftyp = box("ftyp", concat(ascii("heic"), be32(0), ascii("mif1"), ascii("heic")));
+  const ftyp = box("ftyp", concat(ascii(brand), be32(0), ascii("mif1"), ascii(brand)));
   const offset = ftyp.length + meta(0).length + 8;
   return concat(ftyp, meta(offset), box("mdat", payload));
 }
@@ -342,6 +353,34 @@ export function generateRegressFixtures(
       [src.ispe, src.hvcC, canvasIspe],
       fullbox("iref", 0, 0, box("dimg", concat(be16(1), be16(1), be16(2)))),
       src.payload,
+    ));
+  }
+
+  /* The same kind of overlay with AV1 inputs: two copies of an AVIF image,
+     overlapping, on a red canvas. The overlay code takes the canvas format
+     from the first decoded input, whatever the codec; only HEVC inputs were
+     covered. Skipped when the libheif checkout has no such file. */
+  if (existsSync(AVIF_SOURCE)) {
+    const av = readSource(AVIF_SOURCE, "av1C");
+    const cw = av.width + 96, ch = av.height + 64;
+    const iovl = concat(
+      new Uint8Array([0, 0]),
+      be16(0xffff), be16(0), be16(0), be16(0xffff),
+      be16(cw), be16(ch),
+      be16(16), be16(16),
+      be16(80), be16(48),
+    );
+    const canvasIspe = fullbox("ispe", 0, 0, concat(be32(cw), be32(ch)));
+    write(join(outDir, "iovl_avif_red_fill.avif"), assemble(
+      [
+        { id: 1, type: "iovl", props: [3], idat: iovl },
+        { id: 2, type: "av01", props: [1, 2] },
+        { id: 3, type: "av01", props: [1, 2] },
+      ],
+      [av.ispe, av.hvcC, canvasIspe],
+      fullbox("iref", 0, 0, box("dimg", concat(be16(1), be16(2), be16(2), be16(3)))),
+      av.payload,
+      "avif",
     ));
   }
 

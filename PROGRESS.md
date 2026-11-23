@@ -531,6 +531,13 @@
       scalar wide path when prediction dominates, 6% when residuals do. Two HM 18.0 encoded 16-bit 4:4:4 B-slice
       streams are checked in under `test/streams/` (one with extended
       precision + weighted prediction) and match HM's decoder MD5.
+- [x] Pictures mixing I and inter slices have a test:
+      `test/streams/MIXED_SLICES_HM18.bit` (intra slices of an all-intra HM
+      encode spliced into the inter encode) matches HM and ffmpeg; a build
+      from before the mixed-slice fix gets 7 of 9 frames wrong.
+- [x] Overlay with AV1 inputs has a fixture: generated
+      `regress/iovl_avif_red_fill.avif` (two overlapping copies of a libheif
+      test AVIF on a red canvas) matches libheif at maxdiff 1.
 
 ## Investigation notes
 
