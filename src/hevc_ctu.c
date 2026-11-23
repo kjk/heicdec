@@ -2130,7 +2130,10 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
             &sc->models[HEIC_CTX_CU_CHROMA_QP_OFFSET_FLAG]);
         int idx = 0;
         if (enabled && sc->pps->chroma_qp_offset_list_len > 1) {
-            while (idx < 5
+            /* Truncated unary with cMax = chroma_qp_offset_list_len_minus1
+               (H.265 9.3.3): the last index has no terminating 0 bin. A
+               fixed limit of 5 read one bin too many for shorter lists. */
+            while (idx < sc->pps->chroma_qp_offset_list_len - 1
                    && heic_cabac_decode_bin(
                        &sc->cabac,
                        &sc->models[HEIC_CTX_CU_CHROMA_QP_OFFSET_IDX]))
