@@ -120,6 +120,7 @@ bun cmd/build-dist.ts    # amalgamation → dist/heic.h + dist/heic.c (+ dist/wa
 bun cmd/build-wasm.ts    # WebAssembly drop only (deps/emsdk if emcc missing)
 bun cmd/run-wasm-demo.ts # serve dist/wasm/demo.html on localhost:8000
 bun cmd/verify-wasm.ts <file.heic>
+bun cmd/dump_heif.ts <file.heic>   # debug: print the ISOBMFF box tree
 ```
 
 ### Fuzzing (memory-safety)

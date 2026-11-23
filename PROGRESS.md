@@ -36,7 +36,7 @@
 - [x] Deblocking filter (`hevc_deblock.c`) I-slice bS=2; TU edges marked in CTU path; order deblock→SAO
 - [x] Clean aperture (`clap`) crop + display dims; grid tile layout uses post-clap size
 - [x] Intra PART_NxN PB edge marks for deblock
-- [x] Pixel oracle path: `heic_test -verify` vs native libheif (also `cmd/oracle_pixels.ts` optional)
+- [x] Pixel oracle path: `heic_test -verify` vs native libheif
 - [x] Known good vs libheif: lossless exact; lossy single-family mse≈100
 - [x] Native libheif oracle stack: `bun cmd/build.ts ref` → libde265 + dav1d + libheif static
 - [x] `cmd/bench.ts` + `heic_test -bench` (djvudec-style open/decode/close vs libheif)
