@@ -921,6 +921,9 @@ static int do_bench(const uint8_t *data, size_t len)
 /* Compare RGB pixels against libheif; print mse / maxdiff.
  * Exit: 0 both ok (+ mse line), 1 heic fail libheif ok, 2 size mismatch,
  *       3 both failed, 4 libheif fail heic ok. */
+static int verify_extras(heic_ctx *ctx, heic_doc *doc, const heic_image *img,
+                         const uint8_t *data, size_t len);
+
 static int do_verify(const uint8_t *data, size_t len)
 {
     heic_ctx *ctx = NULL;
@@ -984,8 +987,10 @@ static int do_verify(const uint8_t *data, size_t len)
         }
     }
     n = (size_t)rw * (size_t)rh * 3u;
-    printf("%dx%d mse=%.4f maxdiff=%d n_diff=%d\n", rw, rh, sse / (double)n, maxd, ndiff);
-    rc = 0;
+    printf("%dx%d mse=%.4f maxdiff=%d n_diff=%d", rw, rh, sse / (double)n, maxd, ndiff);
+    /* rc 5: the RGB bitmap is comparable but another API result is wrong. */
+    rc = verify_extras(ctx, doc, img, data, len) == 0 ? 0 : 5;
+    printf("\n");
 
 done:
     if (img) heic_image_destroy(ctx, img);
@@ -993,6 +998,180 @@ done:
     if (ctx) heic_ctx_free(ctx);
     free(ref);
     return rc;
+}
+
+/* mse / maxdiff of one channel between two packed 8-bit images. */
+static double channel_mse(const uint8_t *a, int a_stride, const uint8_t *b,
+                          int b_stride, int w, int h, int bpp, int first,
+                          int count, int *maxd)
+{
+    double sse = 0.0;
+    int x, y, c;
+    *maxd = 0;
+    for (y = 0; y < h; y++) {
+        const uint8_t *ra = a + (size_t)y * (size_t)a_stride;
+        const uint8_t *rb = b + (size_t)y * (size_t)b_stride;
+        for (x = 0; x < w; x++)
+            for (c = first; c < first + count; c++) {
+                int d = (int)ra[x * bpp + c] - (int)rb[x * bpp + c];
+                if (d < 0) d = -d;
+                if (d > *maxd) *maxd = d;
+                sse += (double)d * (double)d;
+            }
+    }
+    return sse / ((double)w * (double)h * (double)count);
+}
+
+static int meta_equal(const char *what, int ours_ok, const uint8_t *ours,
+                      size_t ours_len, int ref_ok, const uint8_t *ref,
+                      size_t ref_len)
+{
+    if (ours_ok != ref_ok) {
+        printf(" %s_presence(heic=%d,libheif=%d)", what, ours_ok, ref_ok);
+        return 0;
+    }
+    if (ours_ok && (ours_len != ref_len || memcmp(ours, ref, ref_len) != 0)) {
+        printf(" %s_differs(heic=%zu,libheif=%zu)", what, ours_len, ref_len);
+        return 0;
+    }
+    return 1;
+}
+
+/* Everything -verify checks besides the primary RGB bitmap. Prints extra
+   tokens on the current output line; returns 0 when all of it agrees with
+   libheif (pixel thresholds for alpha_mse / thumb_mse are applied by
+   tests.ts), 1 on a hard mismatch. */
+static int verify_extras(heic_ctx *ctx, heic_doc *doc, const heic_image *img,
+                         const uint8_t *data, size_t len)
+{
+    heic_libheif_extras ref;
+    heic_image_info info;
+    int ok = 1;
+
+    /* heic_doc_decode_into with a padded stride must give the same pixels as
+       heic_doc_decode and must not write into the padding. */
+    {
+        int stride = (int)img->width * 3 + 7;
+        size_t cap = (size_t)stride * img->height;
+        uint8_t *buf = (uint8_t *)malloc(cap);
+        uint32_t y;
+        int same = buf != NULL;
+        if (buf) {
+            memset(buf, 0xA5, cap);
+            same = heic_doc_decode_into(doc, HEIC_FORMAT_RGB, buf, cap,
+                                        stride) == 0;
+            for (y = 0; same && y < img->height; y++) {
+                const uint8_t *row = buf + (size_t)y * (size_t)stride;
+                int k;
+                if (memcmp(row, img->data + (size_t)y * (size_t)img->stride,
+                           (size_t)img->width * 3) != 0)
+                    same = 0;
+                for (k = 0; k < 7; k++)
+                    if (row[img->width * 3 + k] != 0xA5) same = 0;
+            }
+            free(buf);
+        }
+        if (same && heic_doc_output_size(doc, HEIC_FORMAT_RGB)
+                        != (size_t)img->width * img->height * 3)
+            same = 0;
+        if (!same) {
+            printf(" decode_into_mismatch");
+            ok = 0;
+        }
+    }
+
+    if (heic_doc_info(doc, &info) != 0) {
+        printf(" info_failed");
+        return 1;
+    }
+    if (heic_libheif_extras_load(data, len, &ref) != 0) {
+        printf(" extras_oracle_failed");
+        return 1;
+    }
+
+    if (info.has_alpha != ref.has_alpha) {
+        printf(" alpha_presence(heic=%d,libheif=%d)", info.has_alpha,
+               ref.has_alpha);
+        ok = 0;
+    } else if (ref.has_alpha && ref.rgba) {
+        heic_image *rgba = heic_doc_decode(doc, HEIC_FORMAT_RGBA);
+        if (!rgba || (int)rgba->width != ref.w || (int)rgba->height != ref.h) {
+            printf(" alpha_decode_mismatch");
+            ok = 0;
+        } else {
+            int maxd;
+            double mse = channel_mse(rgba->data, rgba->stride, ref.rgba,
+                                     ref.w * 4, ref.w, ref.h, 4, 3, 1, &maxd);
+            printf(" alpha_mse=%.4f alpha_maxdiff=%d", mse, maxd);
+        }
+        if (rgba) heic_image_destroy(ctx, rgba);
+    }
+
+    if (info.has_thumbnail != ref.has_thumb) {
+        printf(" thumb_presence(heic=%d,libheif=%d)", info.has_thumbnail,
+               ref.has_thumb);
+        ok = 0;
+    } else if (ref.has_thumb && ref.thumb_rgb) {
+        heic_image *th = heic_doc_decode_thumbnail(doc, HEIC_FORMAT_RGB);
+        if (!th || (int)th->width != ref.thumb_w
+            || (int)th->height != ref.thumb_h) {
+            printf(" thumb_decode_mismatch(heic=%ux%u,libheif=%dx%d)",
+                   th ? (unsigned)th->width : 0, th ? (unsigned)th->height : 0,
+                   ref.thumb_w, ref.thumb_h);
+            ok = 0;
+        } else {
+            int maxd;
+            double mse = channel_mse(th->data, th->stride, ref.thumb_rgb,
+                                     ref.thumb_w * 3, ref.thumb_w, ref.thumb_h,
+                                     3, 0, 3, &maxd);
+            printf(" thumb_mse=%.4f thumb_maxdiff=%d", mse, maxd);
+        }
+        if (th) heic_image_destroy(ctx, th);
+    }
+
+    {
+        uint8_t *m = NULL;
+        size_t n = 0;
+        int got;
+        /* libheif hands out the raw Exif item; ours skips the 4-byte offset
+           header plus the offset. A raw-TIFF item (no valid header) is a
+           documented case where heic_doc_exif returns nothing. */
+        const uint8_t *want = NULL;
+        size_t want_len = 0;
+        if (ref.exif && ref.exif_len >= 4) {
+            size_t off = ((size_t)ref.exif[0] << 24) | ((size_t)ref.exif[1] << 16)
+                         | ((size_t)ref.exif[2] << 8) | ref.exif[3];
+            if (off <= ref.exif_len - 4) {
+                want = ref.exif + 4 + off;
+                want_len = ref.exif_len - 4 - off;
+            }
+        }
+        got = heic_doc_exif(doc, &m, &n);
+        if (info.has_exif != ref.has_exif) {
+            printf(" exif_presence(heic=%d,libheif=%d)", info.has_exif,
+                   ref.has_exif);
+            ok = 0;
+        } else if (!meta_equal("exif", got, m, n, want != NULL, want, want_len))
+            ok = 0;
+        if (got) heic_free(ctx, m);
+
+        m = NULL;
+        n = 0;
+        got = heic_doc_xmp(doc, &m, &n);
+        if (!meta_equal("xmp", got, m, n, ref.xmp != NULL, ref.xmp, ref.xmp_len))
+            ok = 0;
+        if (got) heic_free(ctx, m);
+
+        m = NULL;
+        n = 0;
+        got = heic_doc_icc(doc, &m, &n);
+        if (!meta_equal("icc", got, m, n, ref.icc != NULL, ref.icc, ref.icc_len))
+            ok = 0;
+        if (got) heic_free(ctx, m);
+    }
+
+    heic_libheif_extras_free(&ref);
+    return ok ? 0 : 1;
 }
 
 static int do_verify_gain_map(const uint8_t *data, size_t len)
@@ -1168,6 +1347,27 @@ static int do_verify_sequence(const uint8_t *data, size_t len)
                     rw, rh, rstride, &sse, &compared, &ndiff, &maxd) != 0)
                 goto done;
             if (frame + 1 < 3) heic_sequence_decoder_reset(decoder);
+        }
+        /* The one-shot API must give exactly what the stateful decoder
+           gives for the same frame. */
+        for (frame = 0; frame < 3; frame++) {
+            heic_image *one = heic_doc_decode_sequence_frame(
+                doc, seek_order[frame], HEIC_FORMAT_RGBA);
+            heic_image *st;
+            int same;
+            heic_sequence_decoder_reset(decoder);
+            st = heic_sequence_decoder_decode_frame(decoder, seek_order[frame]);
+            same = one && st && one->width == st->width
+                   && one->height == st->height && one->stride == st->stride
+                   && memcmp(one->data, st->data,
+                             (size_t)one->stride * one->height) == 0;
+            if (one) heic_image_destroy(ctx, one);
+            if (st) heic_image_destroy(ctx, st);
+            if (!same) {
+                printf("one-shot sequence frame %u differs from stateful decode\n",
+                       (unsigned)seek_order[frame]);
+                goto done;
+            }
         }
     }
     {

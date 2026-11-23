@@ -188,6 +188,148 @@ int heic_libheif_decode_rgb(const uint8_t *data, size_t len,
     return decode_rgb_inner(data, len, out_rgb, out_w, out_h, out_stride, NULL);
 }
 
+/* Decode `handle` to a tightly packed 8-bit buffer with `bpp` 3 or 4. */
+static uint8_t *extras_decode(heif_image_handle *handle, int bpp, int *out_w,
+                              int *out_h)
+{
+    heif_image *image = NULL;
+    heif_decoding_options *opts = heif_decoding_options_alloc();
+    heif_error err;
+    const uint8_t *plane;
+    uint8_t *buf = NULL;
+    int stride = 0, w, h, y;
+
+    if (opts) opts->num_codec_threads = 1;
+    err = heif_decode_image(handle, &image, heif_colorspace_RGB,
+                            bpp == 4 ? heif_chroma_interleaved_RGBA
+                                     : heif_chroma_interleaved_RGB,
+                            opts);
+    if (opts) heif_decoding_options_free(opts);
+    if (err.code != heif_error_Ok || !image) return NULL;
+    w = heif_image_get_primary_width(image);
+    h = heif_image_get_primary_height(image);
+    plane = heif_image_get_plane_readonly(image, heif_channel_interleaved,
+                                          &stride);
+    if (plane && w > 0 && h > 0 && stride >= w * bpp)
+        buf = (uint8_t *)malloc((size_t)w * (size_t)h * (size_t)bpp);
+    if (buf) {
+        for (y = 0; y < h; y++)
+            memcpy(buf + (size_t)y * (size_t)w * (size_t)bpp,
+                   plane + (size_t)y * (size_t)stride,
+                   (size_t)w * (size_t)bpp);
+        *out_w = w;
+        *out_h = h;
+    }
+    heif_image_release(image);
+    return buf;
+}
+
+int heic_libheif_extras_load(const uint8_t *data, size_t len,
+                             heic_libheif_extras *out)
+{
+    heif_context *ctx = NULL;
+    heif_image_handle *handle = NULL;
+    heif_error err;
+    int rc = -1, n, i;
+
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!data || !len) return -1;
+    ctx = heif_context_alloc();
+    if (!ctx) return -1;
+    heif_context_set_max_decoding_threads(ctx, 1);
+    err = heif_context_read_from_memory_without_copy(ctx, data, len, NULL);
+    if (err.code != heif_error_Ok) goto done;
+    err = heif_context_get_primary_image_handle(ctx, &handle);
+    if (err.code != heif_error_Ok || !handle) goto done;
+
+    out->has_alpha = heif_image_handle_has_alpha_channel(handle) ? 1 : 0;
+    if (out->has_alpha)
+        out->rgba = extras_decode(handle, 4, &out->w, &out->h);
+
+    if (heif_image_handle_get_number_of_thumbnails(handle) > 0) {
+        heif_item_id id = 0;
+        heif_image_handle *thumb = NULL;
+        out->has_thumb = 1;
+        if (heif_image_handle_get_list_of_thumbnail_IDs(handle, &id, 1) == 1
+            && heif_image_handle_get_thumbnail(handle, id, &thumb).code
+                   == heif_error_Ok
+            && thumb) {
+            out->thumb_rgb =
+                extras_decode(thumb, 3, &out->thumb_w, &out->thumb_h);
+            heif_image_handle_release(thumb);
+        }
+    }
+
+    n = heif_image_handle_get_number_of_metadata_blocks(handle, NULL);
+    if (n > 0) {
+        heif_item_id *ids = (heif_item_id *)calloc((size_t)n, sizeof(*ids));
+        if (!ids) goto done;
+        n = heif_image_handle_get_list_of_metadata_block_IDs(handle, NULL, ids,
+                                                             n);
+        for (i = 0; i < n; i++) {
+            const char *type = heif_image_handle_get_metadata_type(handle, ids[i]);
+            const char *ct =
+                heif_image_handle_get_metadata_content_type(handle, ids[i]);
+            size_t sz = heif_image_handle_get_metadata_size(handle, ids[i]);
+            int is_exif = type && strcmp(type, "Exif") == 0;
+            int is_xmp = type && strcmp(type, "mime") == 0 && ct
+                         && strcmp(ct, "application/rdf+xml") == 0;
+            uint8_t *buf;
+            if ((is_exif && out->has_exif) || (is_xmp && out->has_xmp)
+                || (!is_exif && !is_xmp))
+                continue;
+            buf = (uint8_t *)malloc(sz ? sz : 1);
+            if (buf && heif_image_handle_get_metadata(handle, ids[i], buf).code
+                           != heif_error_Ok) {
+                free(buf);
+                buf = NULL;
+            }
+            if (is_exif) {
+                out->has_exif = 1;
+                out->exif = buf;
+                out->exif_len = buf ? sz : 0;
+            } else {
+                out->has_xmp = 1;
+                out->xmp = buf;
+                out->xmp_len = buf ? sz : 0;
+            }
+        }
+        free(ids);
+    }
+
+    {
+        size_t sz = heif_image_handle_get_raw_color_profile_size(handle);
+        if (sz > 0) {
+            out->has_icc = 1;
+            out->icc = (uint8_t *)malloc(sz);
+            if (out->icc
+                && heif_image_handle_get_raw_color_profile(handle, out->icc).code
+                       != heif_error_Ok) {
+                free(out->icc);
+                out->icc = NULL;
+            }
+            out->icc_len = out->icc ? sz : 0;
+        }
+    }
+    rc = 0;
+done:
+    if (handle) heif_image_handle_release(handle);
+    heif_context_free(ctx);
+    return rc;
+}
+
+void heic_libheif_extras_free(heic_libheif_extras *x)
+{
+    if (!x) return;
+    free(x->rgba);
+    free(x->thumb_rgb);
+    free(x->exif);
+    free(x->xmp);
+    free(x->icc);
+    memset(x, 0, sizeof(*x));
+}
+
 int heic_libheif_decode_gain_map_rgb(const uint8_t *data, size_t len,
                                      uint8_t **out_rgb, int *out_w, int *out_h,
                                      int *out_stride, char *error,

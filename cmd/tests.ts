@@ -1329,8 +1329,20 @@ async function main() {
             `[fail] expected fail but mse=${mse.toFixed(4)} <= ${mseThreshold}: ${f}`,
           );
         } else {
-          ok++;
-          console.log(`[ok] ${f} ${out}`);
+          /* -verify also reports the alpha plane and the thumbnail vs
+             libheif; they must clear the same threshold as the RGB. */
+          const over = [...out.matchAll(/(alpha|thumb)_mse=([\d.]+)/g)]
+            .filter((m) => parseFloat(m[2]) > mseThreshold)
+            .map((m) => m[1]);
+          if (over.length) {
+            fail++;
+            console.log(
+              `[fail] ${f} ${over.join("+")} differs: ${out} (threshold ${mseThreshold})`,
+            );
+          } else {
+            ok++;
+            console.log(`[ok] ${f} ${out}`);
+          }
         }
       } else if (wantFail) {
         fail++;

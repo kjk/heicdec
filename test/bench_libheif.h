@@ -33,6 +33,31 @@ int heic_bench_libheif_session(const uint8_t *data, size_t len, heic_bench_sessi
 int heic_libheif_decode_rgb(const uint8_t *data, size_t len,
                             uint8_t **out_rgb, int *out_w, int *out_h, int *out_stride);
 
+/* Everything -verify compares beyond the primary RGB bitmap. A NULL buffer
+   with its has_* flag set means libheif reports the thing but could not
+   produce it. Free with heic_libheif_extras_free. */
+typedef struct heic_libheif_extras {
+    int has_alpha;
+    uint8_t *rgba; /* primary as tightly packed RGBA8 (only when has_alpha) */
+    int w, h;
+    int has_thumb;
+    uint8_t *thumb_rgb; /* first thumbnail, tightly packed RGB8 */
+    int thumb_w, thumb_h;
+    int has_exif;
+    uint8_t *exif; /* raw Exif item: 4-byte BE offset header + payload */
+    size_t exif_len;
+    int has_xmp;
+    uint8_t *xmp;
+    size_t xmp_len;
+    int has_icc;
+    uint8_t *icc;
+    size_t icc_len;
+} heic_libheif_extras;
+
+int heic_libheif_extras_load(const uint8_t *data, size_t len,
+                             heic_libheif_extras *out);
+void heic_libheif_extras_free(heic_libheif_extras *x);
+
 /* Decode one unedited media pass of the first visual sequence track to
    concatenated tightly packed RGBA8 frames. Caller free()s *out_rgba. */
 int heic_libheif_decode_sequence_rgba(const uint8_t *data, size_t len,
