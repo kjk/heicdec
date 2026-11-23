@@ -1683,6 +1683,23 @@ static int apply_cross_component_only(heic_slice_ctx *sc, uint32_t x0,
     return 0;
 }
 
+/* Reverse the coefficient order (180 degree rotation of the block). */
+static void rotate_coeffs(heic_coeff_buf *coeff, int num, int extended)
+{
+    int i;
+    for (i = 0; i < num / 2; i++) {
+        if (extended) {
+            int32_t t = coeff->coeffs[i];
+            coeff->coeffs[i] = coeff->coeffs[num - 1 - i];
+            coeff->coeffs[num - 1 - i] = t;
+        } else {
+            int16_t t = coeff->narrow[i];
+            coeff->narrow[i] = coeff->narrow[num - 1 - i];
+            coeff->narrow[num - 1 - i] = t;
+        }
+    }
+}
+
 static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                                      uint8_t log2_size, uint8_t c_idx, int scan_order,
                                      uint8_t intra_mode, int res_scale)
@@ -1691,7 +1708,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     int transform_skip = 0;
     int rdpcm_mode = 0;
     int size, num, qp, bd, is_intra_4x4, max_val;
-    int extended, max_transform_range;
+    int extended, max_transform_range, rotate;
     uint16_t *plane;
     int stride, plane_w, plane_h;
 
@@ -1750,22 +1767,13 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     if (!plane) return 0;
     max_val = (1 << bd) - 1;
 
-    if (sc->sps->transform_skip_rotation_enabled_flag
-        && sc->cu_pred_mode == HEIC_PRED_INTRA && log2_size == 2
-        && (sc->cu_transquant_bypass || transform_skip)) {
-        int i;
-        for (i = 0; i < num / 2; i++) {
-            if (extended) {
-                int32_t t = coeff->coeffs[i];
-                coeff->coeffs[i] = coeff->coeffs[num - 1 - i];
-                coeff->coeffs[num - 1 - i] = t;
-            } else {
-                int16_t t = coeff->narrow[i];
-                coeff->narrow[i] = coeff->narrow[num - 1 - i];
-                coeff->narrow[num - 1 - i] = t;
-            }
-        }
-    }
+    /* Rotation of 4x4 intra transform-skip / bypass blocks (H.265 8.6.2).
+       Bypass rotates the levels themselves. */
+    rotate = sc->sps->transform_skip_rotation_enabled_flag
+             && sc->cu_pred_mode == HEIC_PRED_INTRA && log2_size == 2
+             && (sc->cu_transquant_bypass || transform_skip);
+    if (rotate && sc->cu_transquant_bypass)
+        rotate_coeffs(coeff, num, extended);
 
     if (sc->cu_transquant_bypass) {
         int py, px;
@@ -1848,6 +1856,12 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
             heic_dequantize(coeff->narrow, num, qp, bd, log2_size);
         }
     }
+
+    /* Transform skip rotates the *scaled* coefficients d[x][y] (8.6.4.2):
+       each level must be scaled with the factor of its own position first.
+       Rotating before dequantization picked the mirrored position's factor,
+       which only shows with non-flat scaling lists. */
+    if (rotate) rotate_coeffs(coeff, num, extended);
 
     if (transform_skip) {
         int bd_shift = HEIC_MAX(20 - bd, extended ? 11 : 0);
