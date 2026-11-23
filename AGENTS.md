@@ -116,7 +116,7 @@ bun cmd/tests.ts -info -all  # open/probe only
 bun cmd/bench.ts -rand 5
 bun cmd/fuzz.ts          # libFuzzer + ASan (seeds fuzz/corpus from deps/)
 bun cmd/fuzz-afl.ts      # AFL++ on macOS/*nix (shares fuzz/corpus with libFuzzer)
-bun cmd/build-dist.ts    # amalgamation → dist/heic.h + dist/heic.c (+ dist/wasm/)
+bun cmd/build-dist.ts    # amalgamation → dist/heic.h + dist/heic.c (+ dist/wasm/; -no-wasm skips it)
 bun cmd/build-wasm.ts    # WebAssembly drop only (deps/emsdk if emcc missing)
 bun cmd/run-wasm-demo.ts # serve dist/wasm/demo.html on localhost:8000
 bun cmd/verify-wasm.ts <file.heic>

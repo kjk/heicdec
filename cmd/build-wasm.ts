@@ -32,6 +32,9 @@ const WASM = path.join(ROOT, "dist", "wasm");
 export const WASM_JS = path.join(WASM, "heic.js");
 export const WASM_BINARY = path.join(WASM, "heic.wasm");
 const EMSDK = path.join(ROOT, "deps", "emsdk");
+/* Pinned: the committed dist/wasm output depends on the emscripten version.
+   Only applies to the bootstrap; an emcc already on PATH is used as is. */
+const EMSDK_VERSION = "6.0.4";
 const isWin = process.platform === "win32";
 const EMSDK_ENV = path.join(EMSDK, isWin ? "emsdk_env.bat" : "emsdk_env.sh");
 
@@ -117,8 +120,8 @@ function bootstrapEmsdk() {
     );
   }
   const emsdk = isWin ? q(path.join(EMSDK, "emsdk.bat")) : "./emsdk";
-  sh(`${emsdk} install latest`, { cwd: EMSDK });
-  sh(`${emsdk} activate latest`, { cwd: EMSDK });
+  sh(`${emsdk} install ${EMSDK_VERSION}`, { cwd: EMSDK });
+  sh(`${emsdk} activate ${EMSDK_VERSION}`, { cwd: EMSDK });
 }
 
 function ensureEmcc(): string {

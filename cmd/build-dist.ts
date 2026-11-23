@@ -1,6 +1,7 @@
 // build-dist.ts -- SQLite-style amalgamation in dist/.
 //
 //   bun cmd/build-dist.ts
+//   bun cmd/build-dist.ts -no-wasm   # amalgamation + compile check only
 //
 // Emits:
 //   dist/heic.h + dist/heic.c  — amalgamation (does NOT include dav1d)
@@ -151,7 +152,7 @@ async function runCmd(cmd: string, cwd?: string): Promise<number> {
   return r.exitCode ?? 1;
 }
 
-export async function buildDist(): Promise<void> {
+export async function buildDist(opts: { wasm?: boolean } = {}): Promise<void> {
   mkdirSync(DIST, { recursive: true });
   const publicHeader = normalizeSourceText(readFileSync(join(SRC, "heic.h"), "utf8"));
   writeFileSync(DIST_H, publicHeader);
@@ -206,9 +207,9 @@ export async function buildDist(): Promise<void> {
     console.log("amalgamation compiles cleanly (msvc) ✓");
   }
 
-  buildWasm({ useDist: true });
+  if (opts.wasm !== false) buildWasm({ useDist: true });
 }
 
 if (import.meta.main) {
-  await buildDist();
+  await buildDist({ wasm: !process.argv.includes("-no-wasm") });
 }

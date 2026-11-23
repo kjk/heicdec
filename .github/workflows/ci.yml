@@ -62,7 +62,8 @@ jobs:
       - name: Oracle tests (MSVC)
         run: bun cmd/tests.ts -all -msvc
       - name: Amalgamation
-        run: bun cmd/build-dist.ts
+        # WASM is built and verified in its own job.
+        run: bun cmd/build-dist.ts -no-wasm
 
   windows-clang-fuzz:
     name: Windows clang ASan crash regression
@@ -124,7 +125,8 @@ jobs:
       - name: Oracle tests (clang)
         run: bun cmd/tests.ts -all -clang
       - name: Amalgamation
-        run: bun cmd/build-dist.ts
+        # WASM is built and verified in its own job.
+        run: bun cmd/build-dist.ts -no-wasm
       - name: Fuzz crashes (ASan + UBSan)
         env:
           HEIC_FUZZ_UBSAN: "1"
@@ -161,7 +163,8 @@ jobs:
         # keep it explicit so this job stays parallel to linux.
         run: bun cmd/tests.ts -all -clang
       - name: Amalgamation
-        run: bun cmd/build-dist.ts
+        # WASM is built and verified in its own job.
+        run: bun cmd/build-dist.ts -no-wasm
 
   wasm:
     name: WASM decode smoke
