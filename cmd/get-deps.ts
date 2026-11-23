@@ -5,7 +5,9 @@
 //   bun cmd/get-deps.ts -skip-testimages    # repos only (CI smoke path)
 //   HEIC_SKIP_TESTIMAGES=1 bun cmd/get-deps.ts
 //
-// Clones into deps/ (skipped if present). deps/ is gitignored.
+// Checks out each repo in deps/ at the commit pinned in REPOS (an existing
+// checkout at another commit is moved to the pin, and the oracle builds made
+// from it under out/ are dropped). deps/ is gitignored.
 // Also fills deps/testimages/ with AVIF samples, official HEIF Mini samples,
 // HEVC FATE/ITU sequences, and regenerated grid/alpha + unci block fixtures
 // (no checked-in binaries). Downloads retry with backoff (FATE rate-limits).
@@ -15,6 +17,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "fs";
 import { join } from "path";
@@ -43,25 +46,98 @@ export const HEIF_CONFORMANCE_DIR = join(DEPS_DIR, "heif_conformance");
 /** Downloaded + generated test images (AVIF, HEIF Mini, unci block). */
 export const TESTIMAGES_DIR = join(DEPS_DIR, "testimages");
 
-const REPOS = [
+/**
+ * Every repo is pinned: the corpus, the oracles and the md5/mse pins in
+ * tests.ts all depend on the exact commit, so "whatever HEAD was at clone
+ * time" made results differ between machines and CI caches.
+ * To move a pin: put the new commit here, run `bun cmd/tests.ts -all`.
+ *   builds  = out/ directories built from this repo (dropped when it moves)
+ *   patched = files build.ts edits in place (restored before moving)
+ */
+type Repo = {
+  url: string;
+  dir: string;
+  rev: string;
+  builds?: string[];
+  patched?: string[];
+};
+const REPOS: Repo[] = [
   // Rust source being ported + primary test corpus (testdata/)
-  { url: "https://github.com/imazen/heic", dir: "heic" },
+  {
+    url: "https://github.com/imazen/heic",
+    dir: "heic",
+    rev: "ad3c10c585156c11755246098b2c3144e570c795",
+  },
   // AV1 decoder we link (C). Not re-ported.
-  { url: "https://code.videolan.org/videolan/dav1d.git", dir: "dav1d" },
+  {
+    url: "https://code.videolan.org/videolan/dav1d.git",
+    dir: "dav1d",
+    rev: "2a0775ca5ea055450bdfbfe81758a3c9e001f58a",
+    builds: ["dav1d_build", "libheif_build"],
+  },
   // Pixel/oracle + API inspiration (needs libde265 + dav1d)
-  { url: "https://github.com/strukturag/libheif", dir: "libheif" },
+  {
+    url: "https://github.com/strukturag/libheif",
+    dir: "libheif",
+    rev: "12a259a5882dd99d45ec5fc77e296a3b620d1e2e",
+    builds: ["libheif_build"],
+    patched: ["cmake/modules/FindBrotli.cmake"],
+  },
   // HEVC decoder plugin for libheif oracle
-  { url: "https://github.com/strukturag/libde265", dir: "libde265" },
+  {
+    url: "https://github.com/strukturag/libde265",
+    dir: "libde265",
+    rev: "4fb298ec1af0686211dc2def73f4f41c2ce19ce5",
+    builds: ["libde265_build", "libheif_build"],
+  },
   // unci zlib/deflate (ISO 23001-17 generic compression)
-  { url: "https://github.com/madler/zlib.git", dir: "zlib" },
+  {
+    url: "https://github.com/madler/zlib.git",
+    dir: "zlib",
+    rev: "617e19a81f38c15ff04de9f86882f42ad8a8ffd1",
+    builds: ["zlib_build", "libheif_build"],
+  },
   // unci brotli
-  { url: "https://github.com/google/brotli.git", dir: "brotli" },
+  {
+    url: "https://github.com/google/brotli.git",
+    dir: "brotli",
+    rev: "fed075f48eaffa447243a8e0452a88b103506118",
+    builds: ["brotli_build", "libheif_build"],
+  },
   // Nokia HEIF conformance candidates (C001.heic …) — HEVC-era HEIF
   {
     url: "https://github.com/nokiatech/heif_conformance.git",
     dir: "heif_conformance",
+    rev: "6ff1e33481d325296d8a787432453ef3fa91f591",
   },
 ];
+
+/** Check out `repo` at its pinned commit; returns true if the tree moved. */
+async function ensureRepo(repo: Repo): Promise<boolean> {
+  const path = join(DEPS_DIR, repo.dir);
+  if (!existsSync(join(path, ".git"))) {
+    console.log(`deps: fetching ${repo.url} @ ${repo.rev.slice(0, 12)}`);
+    mkdirSync(path, { recursive: true });
+    await $`git -C ${path} init -q`;
+    await $`git -C ${path} remote add origin ${repo.url}`;
+  } else {
+    const head = (await $`git -C ${path} rev-parse HEAD`.nothrow().quiet())
+      .stdout.toString().trim();
+    if (head === repo.rev) return false;
+    console.log(
+      `deps: ${repo.dir} ${head.slice(0, 12)} -> pinned ${repo.rev.slice(0, 12)}`,
+    );
+    for (const f of repo.patched ?? [])
+      await $`git -C ${path} checkout -q -- ${f}`.nothrow().quiet();
+  }
+  await $`git -C ${path} fetch -q --depth 1 origin ${repo.rev}`;
+  /* No -f: local edits that conflict with the pinned tree must stop here
+     with git's own message instead of being thrown away. */
+  await $`git -C ${path} checkout -q --detach FETCH_HEAD`;
+  for (const b of repo.builds ?? [])
+    rmSync(join(ROOT, "out", b), { recursive: true, force: true });
+  return true;
+}
 
 const FOX_BASE =
   "https://raw.githubusercontent.com/link-u/avif-sample-images/master";
@@ -600,12 +676,7 @@ export async function getDeps(
   opts: { forceTestImages?: boolean; skipTestImages?: boolean } = {},
 ): Promise<void> {
   mkdirSync(DEPS_DIR, { recursive: true });
-  for (const { url, dir } of REPOS) {
-    const path = join(DEPS_DIR, dir);
-    if (existsSync(path)) continue;
-    console.log(`deps: cloning ${url}`);
-    await $`git clone --depth 1 ${url} ${path}`;
-  }
+  for (const repo of REPOS) await ensureRepo(repo);
   const skip =
     opts.skipTestImages
     || process.env.HEIC_SKIP_TESTIMAGES === "1"

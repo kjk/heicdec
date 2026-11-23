@@ -66,7 +66,10 @@ src/
 
 ## Reference checkouts (local) — corpus + oracles
 
-`bun cmd/get-deps.ts` clones into `deps/` (gitignored):
+`bun cmd/get-deps.ts` checks out into `deps/` (gitignored), each repo at the
+commit pinned in `REPOS` (an existing checkout at another commit is moved to
+the pin and its oracle build under `out/` is dropped). To move a pin, edit the
+`rev` and run `bun cmd/tests.ts -all`:
 
 | Path | Repo | Role |
 |------|------|------|
