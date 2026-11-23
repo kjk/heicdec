@@ -69,7 +69,10 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
     int_y = (int)y + ((int)mv.y >> 2);
     frac_x = (int)mv.x & 3;
     frac_y = (int)mv.y & 3;
+    /* H.265 8.5.3.3.3: shift1 = Min(4, BitDepth - 8), shift3 =
+       Max(2, 14 - BitDepth). */
     shift1 = ref->bit_depth - 8;
+    if (shift1 > 4) shift1 = 4;
     shift3 = 14 - ref->bit_depth;
     if (shift3 < 2) shift3 = 2;
 
@@ -158,7 +161,7 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
     int int_x = (int)cx + (cmv_x >> 3);
     int int_y = (int)cy + (cmv_y >> 3);
     int frac_x = cmv_x & 7, frac_y = cmv_y & 7;
-    int shift1 = ref->chroma_bit_depth - 8;
+    int shift1 = ref->chroma_bit_depth > 12 ? 4 : ref->chroma_bit_depth - 8;
     int shift3 = 14 - ref->chroma_bit_depth;
     uint32_t i, j;
     if (!cw || !ch) return 0;
