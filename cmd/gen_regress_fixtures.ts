@@ -12,6 +12,9 @@
 //   two_ipma_grid.heic       the same grid with its property associations in
 //                            two ipma boxes; the second used to replace the
 //                            first.
+//   iovl_red_fill.heic       overlay whose canvas is filled with opaque red
+//                            around the image; the fill colour used to be
+//                            written as luma only.
 //   _info/grid_no_ispe.heic  the grid without an ispe property on the grid item;
 //                            its size must come from the grid descriptor.
 //   _info/aux_no_auxc.heic   the image plus a copy referenced as `auxl` with
@@ -313,6 +316,29 @@ export function generateRegressFixtures(
       ],
       [src.ispe, src.hvcC, gridIspe],
       fullbox("iref", 0, 0, box("dimg", concat(be16(1), be16(2), be16(2), be16(3)))),
+      src.payload,
+    ));
+  }
+
+  /* Overlay with a saturated background: the image at (16,16) on a canvas
+     32 larger, filled with opaque red. The fill used to put R into luma
+     with neutral chroma, so red came out as white. */
+  {
+    const cw = src.width + 32, ch = src.height + 32;
+    const iovl = concat(
+      new Uint8Array([0, 0]),
+      be16(0xffff), be16(0), be16(0), be16(0xffff),
+      be16(cw), be16(ch),
+      be16(16), be16(16),
+    );
+    const canvasIspe = fullbox("ispe", 0, 0, concat(be32(cw), be32(ch)));
+    write(join(outDir, "iovl_red_fill.heic"), assemble(
+      [
+        { id: 1, type: "iovl", props: [3], idat: iovl },
+        { id: 2, type: "hvc1", props: [1, 2] },
+      ],
+      [src.ispe, src.hvcC, canvasIspe],
+      fullbox("iref", 0, 0, box("dimg", concat(be16(1), be16(1), be16(2)))),
       src.payload,
     ));
   }

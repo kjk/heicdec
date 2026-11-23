@@ -688,6 +688,58 @@ static void blit_overlay(heic_frame *out, const heic_frame *tile, int32_t off_x,
     }
 }
 
+/* Fill the overlay canvas with the item's background colour. `fill` is
+   16-bit R, G, B, A; the canvas is in the first input image's Y'CbCr, so the
+   colour is converted with that matrix and range (it used to put R straight
+   into luma with neutral chroma, so only grey came out right, and only for
+   full range). The canvas has no alpha plane; A is not used. */
+static void overlay_fill_canvas(heic_frame *out, const uint16_t fill[4])
+{
+    double r = fill[0] / 65535.0, g = fill[1] / 65535.0, b = fill[2] / 65535.0;
+    double kr, kb, yv, cbv, crv;
+    int bd = out->bit_depth, cbd = out->chroma_bit_depth ? out->chroma_bit_depth : bd;
+    int matrix = out->matrix_coeffs;
+    uint16_t fy, fcb, fcr;
+    size_t k, n;
+
+    if (matrix == 0 && out->chroma_format == 3) {
+        /* GBR identity: planes are G, B, R. */
+        fy = (uint16_t)(g * ((1 << bd) - 1) + 0.5);
+        fcb = (uint16_t)(b * ((1 << cbd) - 1) + 0.5);
+        fcr = (uint16_t)(r * ((1 << cbd) - 1) + 0.5);
+    } else {
+        /* Same matrix choice as the YCbCr -> RGB conversion in color.c. */
+        if (matrix == 1) { kr = 0.2126; kb = 0.0722; }
+        else if (matrix == 9) { kr = 0.2627; kb = 0.0593; }
+        else { kr = 0.299; kb = 0.114; }
+        yv = kr * r + (1.0 - kr - kb) * g + kb * b;
+        cbv = (b - yv) / (2.0 * (1.0 - kb));
+        crv = (r - yv) / (2.0 * (1.0 - kr));
+        if (out->full_range) {
+            fy = (uint16_t)(yv * ((1 << bd) - 1) + 0.5);
+            fcb = (uint16_t)(cbv * ((1 << cbd) - 1) + (1 << (cbd - 1)) + 0.5);
+            fcr = (uint16_t)(crv * ((1 << cbd) - 1) + (1 << (cbd - 1)) + 0.5);
+        } else {
+            fy = (uint16_t)((16.0 + 219.0 * yv) * (1 << (bd - 8)) + 0.5);
+            fcb = (uint16_t)((128.0 + 224.0 * cbv) * (1 << (cbd - 8)) + 0.5);
+            fcr = (uint16_t)((128.0 + 224.0 * crv) * (1 << (cbd - 8)) + 0.5);
+        }
+    }
+    /* Full-scale chroma (0.5 * max + half) rounds one above the range. */
+    if (fy > (1 << bd) - 1) fy = (uint16_t)((1 << bd) - 1);
+    if (fcb > (1 << cbd) - 1) fcb = (uint16_t)((1 << cbd) - 1);
+    if (fcr > (1 << cbd) - 1) fcr = (uint16_t)((1 << cbd) - 1);
+    n = (size_t)out->y_stride * (size_t)out->height;
+    for (k = 0; k < n; k++) out->y[k] = fy;
+    if (out->cb && out->cr) {
+        n = (size_t)out->c_stride * (size_t)out->c_height;
+        for (k = 0; k < n; k++) {
+            out->cb[k] = fcb;
+            out->cr[k] = fcr;
+        }
+    }
+}
+
 static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *out,
                        const heic_abort *ab, int depth)
 {
@@ -702,10 +754,7 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
     size_t pos;
     uint32_t canvas_w, canvas_h;
     int32_t offsets[64][2];
-    heic_item first;
-    int bit_depth, chroma_bit_depth, chroma;
-    uint16_t fill_y, fill_cb, fill_cr;
-    size_t n;
+    int have_canvas = 0;
 
     if (heic_container_item_data(&doc->container, iovl_item->id, &data, &len, &owned) != 0)
         return -1;
@@ -781,66 +830,49 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
         return -1;
     }
 
-    if (heic_container_get_item(&doc->container, tile_ids[0], &first) != 0) return -1;
-    if (first.hvcc) {
-        bit_depth = 8 + first.hvcc->bit_depth_luma_minus8;
-        chroma_bit_depth = 8 + first.hvcc->bit_depth_chroma_minus8;
-        chroma = first.hvcc->chroma_format;
-    } else {
-        bit_depth = 8;
-        chroma_bit_depth = 8;
-        chroma = 1;
-    }
-    if (heic_frame_alloc(doc->ctx, out, (int)canvas_w, (int)canvas_h, bit_depth, chroma) != 0)
-        return -1;
-    out->chroma_bit_depth = chroma ? chroma_bit_depth : 0;
-
-    /* Fill canvas: use high 8 bits of R/G/B as crude Y fill (preview-quality).
-       Proper RGB→YCbCr can wait; stills use solid fills. */
-    fill_y = (uint16_t)((fill[0] >> 8) << (bit_depth > 8 ? bit_depth - 8 : 0));
-    fill_cb = (uint16_t)(128 << (chroma_bit_depth > 8
-                                     ? chroma_bit_depth - 8 : 0));
-    fill_cr = fill_cb;
-    n = (size_t)out->width * (size_t)out->height;
-    {
-        size_t k;
-        for (k = 0; k < n; k++) out->y[k] = fill_y;
-    }
-    if (out->cb) {
-        size_t cn = (size_t)out->c_width * (size_t)out->c_height;
-        size_t k;
-        for (k = 0; k < cn; k++) {
-            out->cb[k] = fill_cb;
-            out->cr[k] = fill_cr;
-        }
-    }
-
+    /* The canvas takes its sample format and colour description from the
+       first input image as decoded, whatever its codec (it used to assume
+       8-bit 4:2:0 for anything but HEVC). */
     for (i = 0; i < n_tiles; i++) {
         heic_item tile_item;
         heic_frame tile;
-        if (heic_abort_check(ab)) {
-            heic_frame_free(doc->ctx, out);
-            return -1;
-        }
-        if (heic_container_get_item(&doc->container, tile_ids[i], &tile_item) != 0) {
-            heic_frame_free(doc->ctx, out);
-            return -1;
-        }
+        if (heic_abort_check(ab)) goto fail;
+        if (heic_container_get_item(&doc->container, tile_ids[i], &tile_item) != 0)
+            goto fail;
         memset(&tile, 0, sizeof(tile));
         if (decode_item(doc, &tile_item, &tile, ab, depth + 1) != 0) {
             heic_frame_free(doc->ctx, &tile);
-            heic_frame_free(doc->ctx, out);
-            return -1;
+            goto fail;
         }
         if (i == 0) {
+            if (heic_frame_alloc(doc->ctx, out, (int)canvas_w, (int)canvas_h,
+                                 tile.bit_depth, tile.chroma_format) != 0) {
+                heic_frame_free(doc->ctx, &tile);
+                return -1;
+            }
+            have_canvas = 1;
+            out->chroma_bit_depth = tile.chroma_bit_depth;
             out->full_range = tile.full_range;
             out->matrix_coeffs = tile.matrix_coeffs;
+            out->color_primaries = tile.color_primaries;
+            out->transfer_characteristics = tile.transfer_characteristics;
+            overlay_fill_canvas(out, fill);
+        } else if (tile.bit_depth != out->bit_depth
+                   || tile.chroma_bit_depth != out->chroma_bit_depth
+                   || tile.chroma_format != out->chroma_format) {
+            heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                       "overlay inputs differ in sample format");
+            heic_frame_free(doc->ctx, &tile);
+            goto fail;
         }
         blit_overlay(out, &tile, offsets[i][0], offsets[i][1]);
         heic_frame_free(doc->ctx, &tile);
     }
     out->crop_left = out->crop_right = out->crop_top = out->crop_bottom = 0;
     return 0;
+fail:
+    if (have_canvas) heic_frame_free(doc->ctx, out);
+    return -1;
 }
 
 /* ---- per-item decode ---- */
@@ -958,6 +990,13 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
             owned = 0;
         }
         rc = decode_iovl(doc, item, frame, ab, depth);
+        if (rc == 0 && item->colr && item->colr->kind == HEIC_COLR_NCLX) {
+            frame->color_primaries = (uint8_t)item->colr->color_primaries;
+            frame->transfer_characteristics =
+                (uint8_t)item->colr->transfer_characteristics;
+            frame->matrix_coeffs = (uint8_t)item->colr->matrix_coefficients;
+            frame->full_range = item->colr->full_range;
+        }
         if (rc == 0) rc = apply_transforms(doc->ctx, frame, item);
         return rc;
     } else {
