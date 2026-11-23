@@ -1224,6 +1224,96 @@ int heic_simd_sao_edge_v_row(const uint16_t *src, uint16_t *dst, int stride, int
     return 1;
 }
 
+/* Motion-compensation interpolation: an N-tap (4 or 8) filter along one
+   direction. src and out are in int16 units; tap k of output (x, y) reads
+   src[y * row_step + x + k * tap_step]. The result is (sum >> shift)
+   truncated to 16 bits, exactly like the scalar code. Inputs must fit in
+   int16 (reference samples of at most 15 bits, or first-pass output). */
+int heic_simd_mc_filter(const void *src, ptrdiff_t tap_step, ptrdiff_t row_step,
+                        const int16_t *coef, int taps, int w, int h, int shift,
+                        int16_t *out, ptrdiff_t out_stride)
+{
+    const __m128i lo16 = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13,
+                                       -1, -1, -1, -1, -1, -1, -1, -1);
+    __m128i c[4], sh;
+    int pairs = taps >> 1, k, x, y;
+    if (!g_simd || (taps != 4 && taps != 8) || w < 4) return 0;
+    for (k = 0; k < pairs; k++)
+        c[k] = _mm_set1_epi32((int)(((uint32_t)(uint16_t)coef[2 * k + 1] << 16)
+                                    | (uint16_t)coef[2 * k]));
+    sh = _mm_cvtsi32_si128(shift);
+    for (y = 0; y < h; y++) {
+        const int16_t *s = (const int16_t *)src + y * row_step;
+        int16_t *o = out + y * out_stride;
+        for (x = 0; x + 8 <= w; x += 8) {
+            __m128i lo = _mm_setzero_si128(), hi = _mm_setzero_si128();
+            for (k = 0; k < pairs; k++) {
+                __m128i a = _mm_loadu_si128(
+                    (const __m128i *)(s + x + (2 * k) * tap_step));
+                __m128i b = _mm_loadu_si128(
+                    (const __m128i *)(s + x + (2 * k + 1) * tap_step));
+                lo = _mm_add_epi32(
+                    lo, _mm_madd_epi16(_mm_unpacklo_epi16(a, b), c[k]));
+                hi = _mm_add_epi32(
+                    hi, _mm_madd_epi16(_mm_unpackhi_epi16(a, b), c[k]));
+            }
+            lo = _mm_shuffle_epi8(_mm_sra_epi32(lo, sh), lo16);
+            hi = _mm_shuffle_epi8(_mm_sra_epi32(hi, sh), lo16);
+            _mm_storeu_si128((__m128i *)(o + x), _mm_unpacklo_epi64(lo, hi));
+        }
+        if (x + 4 <= w) {
+            __m128i lo = _mm_setzero_si128();
+            for (k = 0; k < pairs; k++) {
+                __m128i a = _mm_loadl_epi64(
+                    (const __m128i *)(s + x + (2 * k) * tap_step));
+                __m128i b = _mm_loadl_epi64(
+                    (const __m128i *)(s + x + (2 * k + 1) * tap_step));
+                lo = _mm_add_epi32(
+                    lo, _mm_madd_epi16(_mm_unpacklo_epi16(a, b), c[k]));
+            }
+            lo = _mm_shuffle_epi8(_mm_sra_epi32(lo, sh), lo16);
+            _mm_storel_epi64((__m128i *)(o + x), lo);
+            x += 4;
+        }
+        for (; x < w; x++) {
+            int sum = 0;
+            for (k = 0; k < taps; k++) sum += s[x + k * tap_step] * coef[k];
+            o[x] = (int16_t)(sum >> shift);
+        }
+    }
+    return 1;
+}
+
+/* One row of prediction output: dst[i] = clip((a[i] + b[i] + round) >> shift,
+   0, max_val); b may be NULL (uni-prediction). */
+int heic_simd_mc_put_row(const int16_t *a, const int16_t *b, int n, int shift,
+                         int max_val, uint16_t *dst)
+{
+    __m128i rnd, sh, mx;
+    int i;
+    if (!g_simd || n < 8 || shift < 1 || max_val > 0x7FFF) return 0;
+    rnd = _mm_set1_epi32(1 << (shift - 1));
+    sh = _mm_cvtsi32_si128(shift);
+    mx = _mm_set1_epi16((short)max_val);
+    for (i = 0; i < n; i += 8) {
+        __m128i va, lo, hi;
+        if (i + 8 > n) i = n - 8; /* overlap the last full vector */
+        va = _mm_loadu_si128((const __m128i *)(a + i));
+        lo = _mm_cvtepi16_epi32(va);
+        hi = _mm_cvtepi16_epi32(_mm_srli_si128(va, 8));
+        if (b) {
+            __m128i vb = _mm_loadu_si128((const __m128i *)(b + i));
+            lo = _mm_add_epi32(lo, _mm_cvtepi16_epi32(vb));
+            hi = _mm_add_epi32(hi, _mm_cvtepi16_epi32(_mm_srli_si128(vb, 8)));
+        }
+        lo = _mm_sra_epi32(_mm_add_epi32(lo, rnd), sh);
+        hi = _mm_sra_epi32(_mm_add_epi32(hi, rnd), sh);
+        _mm_storeu_si128((__m128i *)(dst + i),
+                         _mm_min_epu16(_mm_packus_epi32(lo, hi), mx));
+    }
+    return 1;
+}
+
 #else /* !HEIC_X86 */
 
 int heic_simd_idct8(const int16_t *c, int16_t *o, int bd)
@@ -1393,4 +1483,31 @@ int heic_simd_sao_edge_v_row(const uint16_t *s, uint16_t *d, int st, int y, int 
     return 0;
 }
 
+int heic_simd_mc_filter(const void *src, ptrdiff_t tap_step, ptrdiff_t row_step,
+                        const int16_t *coef, int taps, int w, int h, int shift,
+                        int16_t *out, ptrdiff_t out_stride)
+{
+    (void)src;
+    (void)tap_step;
+    (void)row_step;
+    (void)coef;
+    (void)taps;
+    (void)w;
+    (void)h;
+    (void)shift;
+    (void)out;
+    (void)out_stride;
+    return 0;
+}
+int heic_simd_mc_put_row(const int16_t *a, const int16_t *b, int n, int shift,
+                         int max_val, uint16_t *dst)
+{
+    (void)a;
+    (void)b;
+    (void)n;
+    (void)shift;
+    (void)max_val;
+    (void)dst;
+    return 0;
+}
 #endif /* HEIC_X86 */

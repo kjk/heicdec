@@ -1239,6 +1239,12 @@ static int predict_internal_from_list(heic_slice_ctx *sc, const heic_pu *pu,
     return 0;
 }
 
+/* Samples of a prediction row that lie inside the picture (x0 < limit). */
+static uint32_t mc_row_len(uint32_t x0, uint32_t w, uint32_t limit)
+{
+    return w < limit - x0 ? w : limit - x0;
+}
+
 /* H.265 8.5.3.3.4.2 / libde265 put_unweighted_pred: intermediate → sample. */
 static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
                                     int list)
@@ -1250,7 +1256,15 @@ static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
     int max_y = (1 << bd_y) - 1;
     if (shift_y < 2) shift_y = 2;
     for (y = 0; y < pu->h
-                && pu->y + y < (uint32_t)sc->frame->height; y++)
+                && pu->y + y < (uint32_t)sc->frame->height; y++) {
+        if (pu->x < (uint32_t)sc->frame->width
+            && heic_simd_mc_put_row(
+                   pred + y * 64u, NULL,
+                   (int)mc_row_len(pu->x, pu->w, (uint32_t)sc->frame->width),
+                   shift_y, max_y,
+                   sc->frame->y + (size_t)(pu->y + y) * sc->frame->y_stride
+                       + pu->x))
+            continue;
         for (x = 0; x < pu->w
                     && pu->x + x < (uint32_t)sc->frame->width; x++) {
             size_t pos =
@@ -1258,6 +1272,7 @@ static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
             int v = (pred[y * 64u + x] + (1 << (shift_y - 1))) >> shift_y;
             sc->frame->y[pos] = (uint16_t)clip_int(v, 0, max_y);
         }
+    }
     if (sc->frame->chroma_format != 0) {
         int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
         int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
@@ -1274,7 +1289,16 @@ static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
         for (c = 0; c < 2; c++) {
             int16_t *src = pred + (size_t)(c + 1) * 64u * 64u;
             for (y = 0; y < ch
-                        && cy + y < (uint32_t)sc->frame->c_height; y++)
+                        && cy + y < (uint32_t)sc->frame->c_height; y++) {
+                if (cx < (uint32_t)sc->frame->c_width
+                    && heic_simd_mc_put_row(
+                           src + y * 64u, NULL,
+                           (int)mc_row_len(cx, cw,
+                                           (uint32_t)sc->frame->c_width),
+                           shift_c, max_c,
+                           planes[c] + (size_t)(cy + y) * sc->frame->c_stride
+                               + cx))
+                    continue;
                 for (x = 0; x < cw
                             && cx + x < (uint32_t)sc->frame->c_width; x++) {
                     size_t pos =
@@ -1283,6 +1307,7 @@ static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
                             >> shift_c;
                     planes[c][pos] = (uint16_t)clip_int(v, 0, max_c);
                 }
+            }
         }
     }
 }
@@ -1296,7 +1321,15 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
     int max_y = (1 << bit_depth_y(sc->sps)) - 1;
     if (shift_y < 3) shift_y = 3;
     for (y = 0; y < pu->h
-                && pu->y + y < (uint32_t)sc->frame->height; y++)
+                && pu->y + y < (uint32_t)sc->frame->height; y++) {
+        if (pu->x < (uint32_t)sc->frame->width
+            && heic_simd_mc_put_row(
+                   p0 + y * 64u, p1 + y * 64u,
+                   (int)mc_row_len(pu->x, pu->w, (uint32_t)sc->frame->width),
+                   shift_y, max_y,
+                   sc->frame->y + (size_t)(pu->y + y) * sc->frame->y_stride
+                       + pu->x))
+            continue;
         for (x = 0; x < pu->w
                     && pu->x + x < (uint32_t)sc->frame->width; x++) {
             size_t pos =
@@ -1305,6 +1338,7 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
                      + (1 << (shift_y - 1))) >> shift_y;
             sc->frame->y[pos] = (uint16_t)clip_int(v, 0, max_y);
         }
+    }
     if (sc->frame->chroma_format != 0) {
         int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
         int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
@@ -1321,7 +1355,16 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
             int16_t *a = p0 + (size_t)(c + 1) * 64u * 64u;
             int16_t *b = p1 + (size_t)(c + 1) * 64u * 64u;
             for (y = 0; y < ch
-                        && cy + y < (uint32_t)sc->frame->c_height; y++)
+                        && cy + y < (uint32_t)sc->frame->c_height; y++) {
+                if (cx < (uint32_t)sc->frame->c_width
+                    && heic_simd_mc_put_row(
+                           a + y * 64u, b + y * 64u,
+                           (int)mc_row_len(cx, cw,
+                                           (uint32_t)sc->frame->c_width),
+                           shift_c, max_c,
+                           planes[c] + (size_t)(cy + y) * sc->frame->c_stride
+                               + cx))
+                    continue;
                 for (x = 0; x < cw
                             && cx + x < (uint32_t)sc->frame->c_width; x++) {
                     size_t pos =
@@ -1330,6 +1373,7 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
                              + (1 << (shift_c - 1))) >> shift_c;
                     planes[c][pos] = (uint16_t)clip_int(v, 0, max_c);
                 }
+            }
         }
     }
 }

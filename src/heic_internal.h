@@ -1066,6 +1066,14 @@ int  heic_simd_chroma_edge4(uint16_t *plane, int stride, size_t base_q0, int acr
 int  heic_simd_luma_filter4(uint16_t *plane, size_t base_p, size_t base_q,
                             size_t step_along, size_t step_across, int strong,
                             int d_ep, int d_eq, int tc, int max_val);
+/* MC interpolation: N-tap filter (4 or 8) along tap_step, int16 in and out,
+   (sum >> shift) truncated to 16 bits. Inputs must fit in int16. */
+int  heic_simd_mc_filter(const void *src, ptrdiff_t tap_step, ptrdiff_t row_step,
+                         const int16_t *coef, int taps, int w, int h, int shift,
+                         int16_t *out, ptrdiff_t out_stride);
+/* dst[i] = clip((a[i] + (b ? b[i] : 0) + round) >> shift, 0, max_val). */
+int  heic_simd_mc_put_row(const int16_t *a, const int16_t *b, int n, int shift,
+                          int max_val, uint16_t *dst);
 /* Dequant common path (combined fits int32, shift>=0). */
 int  heic_simd_dequant(int16_t *coeffs, int n, int32_t combined, int shift);
 /* Angular row: pred[i] = ((a*ref[i] + b*ref[i+1] + 16)>>5) clipped, i=0..n-1. */
