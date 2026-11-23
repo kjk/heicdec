@@ -60,17 +60,17 @@ static void br_byte_align(unci_br *br)
 /* Big-endian bit read (MSB first), matches libheif BitReader::get_bits. */
 static int br_get_bits(unci_br *br, int n)
 {
-    int v = 0, i;
+    size_t byte = br->bit_pos >> 3;
+    unsigned skip = (unsigned)(br->bit_pos & 7);
+    uint32_t acc = 0;
+    int i;
     if (n <= 0 || n > 16) return 0;
-    for (i = 0; i < n; i++) {
-        size_t byte = br->bit_pos >> 3;
-        int bit = 7 - (int)(br->bit_pos & 7);
-        int b = 0;
-        if (byte < br->len) b = (br->data[byte] >> bit) & 1;
-        v = (v << 1) | b;
-        br->bit_pos++;
-    }
-    return v;
+    /* Up to 7 + 16 bits: three bytes always cover the field. Bytes past the
+       end read as zero, like the bit-at-a-time loop this replaces. */
+    for (i = 0; i < 3; i++)
+        acc = (acc << 8) | (byte + (size_t)i < br->len ? br->data[byte + i] : 0u);
+    br->bit_pos += (size_t)n;
+    return (int)((acc >> (24u - skip - (unsigned)n)) & ((1u << n) - 1u));
 }
 
 static void br_skip_bytes(unci_br *br, size_t n)
@@ -411,8 +411,12 @@ static int copy_pixel8_row(unci_br *br, heic_frame *out, const int *plane_map,
     return 1;
 }
 
+/* One row of a byte-aligned component: `step` bytes per sample (1 for
+   8-bit, 2 for big-endian 16-bit, of which the high byte is kept). Returns 0
+   with nothing consumed when the row cannot be taken this way. */
 static int copy_component8_row(unci_br *br, heic_frame *out, int plane,
-                               uint32_t x, uint32_t y, uint32_t n)
+                               uint32_t x, uint32_t y, uint32_t n,
+                               size_t step)
 {
     const uint8_t *src;
     uint16_t *dst;
@@ -422,10 +426,10 @@ static int copy_component8_row(unci_br *br, heic_frame *out, int plane,
     if ((br->bit_pos & 7) != 0)
         return 0;
     pos = br->bit_pos >> 3;
-    if (pos > br->len || (size_t)n > br->len - pos)
+    if (step == 0 || pos > br->len || (size_t)n > (br->len - pos) / step)
         return 0;
     if (plane < 0) {
-        br->bit_pos += (size_t)n * 8;
+        br->bit_pos += (size_t)n * step * 8;
         return 1;
     }
     if (plane == 0) {
@@ -449,10 +453,22 @@ static int copy_component8_row(unci_br *br, heic_frame *out, int plane,
     }
 
     src = br->data + pos;
-    for (i = 0; i < n; i++)
-        dst[i] = src[i];
-    br->bit_pos += (size_t)n * 8;
+    if (step == 1) {
+        for (i = 0; i < n; i++) dst[i] = src[i];
+    } else {
+        for (i = 0; i < n; i++) dst[i] = src[(size_t)i * step];
+    }
+    br->bit_pos += (size_t)n * step * 8;
     return 1;
+}
+
+/* Bytes per sample for copy_component8_row, or 0 for the general path. */
+static size_t component_row_step(int bit_depth, uint8_t align)
+{
+    if (align != 0) return 0;
+    if (bit_depth == 8) return 1;
+    if (bit_depth == 16) return 2; /* expand8 keeps the high byte */
+    return 0;
 }
 
 /* Luma tile size → chroma tile size for sampling_type (0=444, 1=422, 2=420). */
@@ -910,8 +926,9 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
                     tile_start_bytes = br.bit_pos >> 3;
                     for (y = 0; y < pth; y++) {
                         size_t row_start = br.bit_pos >> 3;
-                        if (bit_depth[i] != 8 || align[i] != 0 ||
-                            !copy_component8_row(&br, out, plane, ox, oy + y, ptw)) {
+                        if (!copy_component8_row(
+                                &br, out, plane, ox, oy + y, ptw,
+                                component_row_step(bit_depth[i], align[i]))) {
                             for (x = 0; x < ptw; x++) {
                                 int val = read_comp_sample(&br, bit_depth[i], align[i]);
                                 uint16_t v8 = expand8(val, bit_depth[i]);
@@ -957,8 +974,9 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
                     oy = ty * pth;
                     for (y = 0; y < pth; y++) {
                         size_t row_start = br.bit_pos >> 3;
-                        if (bit_depth[i] != 8 || align[i] != 0 ||
-                            !copy_component8_row(&br, out, plane, ox, oy + y, ptw)) {
+                        if (!copy_component8_row(
+                                &br, out, plane, ox, oy + y, ptw,
+                                component_row_step(bit_depth[i], align[i]))) {
                             for (x = 0; x < ptw; x++) {
                                 int val = read_comp_sample(&br, bit_depth[i], align[i]);
                                 uint16_t v8 = expand8(val, bit_depth[i]);
