@@ -1135,7 +1135,7 @@ async function runRextConformanceTests(
       return { kind: "fail", line: `[fail] RExt ${name} has no reference MD5` };
     const out = join(root, "out", `rext-${name}.yuv`);
     rmSync(out, { force: true });
-    const p = await Bun.$`${exe} -hevc-sequence -hevc-frames 512 -out ${out} ${bit}`
+    const p = await Bun.$`${exe} -hevc-sequence -out ${out} ${bit}`
       .nothrow()
       .quiet();
     let got = "";

@@ -328,8 +328,7 @@ async function download(
  * The JCT-VC range-extensions conformance streams (HEVC_REXT_BASE). Every zip
  * carries the MD5 of the reference decoder's output next to the bitstream;
  * tests.ts decodes each stream and compares against that MD5, so nothing is
- * pinned by hand. ExplicitRdpcm_A_BBC_1 is left out: 600 frames, more than
- * the harness keeps.
+ * pinned by hand.
  */
 export const HEVC_REXT_CONFORMANCE = [
   "ADJUST_IPRED_ANGLE_A_RExt_Mitsubishi_2",
@@ -346,6 +345,7 @@ export const HEVC_REXT_CONFORMANCE = [
   "EXTPREC_MAIN_444_16_INTRA_12BIT_RExt_Sony_1",
   "EXTPREC_MAIN_444_16_INTRA_16BIT_RExt_Sony_1",
   "EXTPREC_MAIN_444_16_INTRA_8BIT_RExt_Sony_1",
+  "ExplicitRdpcm_A_BBC_1",
   "ExplicitRdpcm_B_BBC_2",
   "GENERAL_10b_420_RExt_Sony_1",
   "GENERAL_10b_422_RExt_Sony_1",
