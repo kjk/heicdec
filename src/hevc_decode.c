@@ -131,20 +131,6 @@ static int ref_is_available(const heic_frame *f, int managed)
     return f->dpb_mark == HEIC_DPB_SHORT || f->dpb_mark == HEIC_DPB_LONG;
 }
 
-/* slice_pic_parameter_set_id of a slice NAL, or -1. */
-static int slice_nal_pps_id(const heic_nal *nal)
-{
-    heic_bs sb;
-    uint32_t id;
-    heic_bs_init(&sb, nal->payload, nal->payload_len);
-    (void)heic_bs_bit(&sb); /* first_slice_segment_in_pic_flag */
-    if (nal->type >= HEIC_NAL_BLA_W_LP && nal->type <= HEIC_NAL_CRA)
-        (void)heic_bs_bit(&sb); /* no_output_of_prior_pics_flag (IRAP) */
-    id = heic_bs_ue(&sb);
-    if (sb.error || id >= HEIC_PARAM_MAX_PPS) return -1;
-    return (int)id;
-}
-
 static int nal_is_reference(uint8_t nal_type)
 {
     if (nal_type >= HEIC_NAL_BLA_W_LP && nal_type <= HEIC_NAL_CRA)
@@ -482,11 +468,17 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
        PPS in one hvcC they picked different ones for the first and the later
        tiles of a grid, so one of the two always failed. */
     for (i = 0; i < n_nals; i++) {
-        int id;
+        heic_bs sb;
+        uint32_t id;
         if (!heic_nal_is_slice(nals[i].type) || nals[i].nuh_layer_id != 0)
             continue;
-        id = slice_nal_pps_id(&nals[i]);
-        if (id >= 0 && pc->pps_valid[id]) active_pps_id = id;
+        heic_bs_init(&sb, nals[i].payload, nals[i].payload_len);
+        (void)heic_bs_bit(&sb); /* first_slice_segment_in_pic_flag */
+        if (nals[i].type >= HEIC_NAL_BLA_W_LP && nals[i].type <= HEIC_NAL_CRA)
+            (void)heic_bs_bit(&sb); /* no_output_of_prior_pics_flag (IRAP) */
+        id = heic_bs_ue(&sb);
+        if (!sb.error && id < HEIC_PARAM_MAX_PPS && pc->pps_valid[id])
+            active_pps_id = (int)id;
         break;
     }
     if (active_pps_id < 0) {
@@ -572,7 +564,6 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
             const heic_frame *l0[HEIC_MAX_REF_PICS] = {0};
             const heic_frame *l1[HEIC_MAX_REF_PICS] = {0};
             uint32_t *eps = NULL;
-            const heic_pps *slice_pps;
             size_t slice_len;
             int n_l0 = 0, n_l1 = 0;
             int ne = 0, e;
@@ -587,22 +578,8 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 failed = 1;
                 break;
             }
-            /* Each slice names its own PPS (H.265 7.4.7.1); all of them
-               must belong to the picture's SPS. */
-            {
-                int id = slice_nal_pps_id(&nals[i]);
-                if (id < 0 || !pc->pps_valid[id]
-                    || pc->pps_set[id].pps_seq_parameter_set_id
-                           != pps->pps_seq_parameter_set_id) {
-                    heic_error(ctx, HEIC_SEVERITY_ERROR,
-                               "slice refers to an unavailable PPS");
-                    failed = 1;
-                    break;
-                }
-                slice_pps = &pc->pps_set[id];
-            }
             if (heic_parse_slice_header(
-                    ctx, &nals[i], sps, slice_pps,
+                    ctx, &nals[i], sps, pps,
                     have_independent ? &independent : NULL, &sh) != 0) {
                 failed = 1;
                 break;
@@ -709,8 +686,7 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
             }
             if (!failed
                 && heic_hevc_picture_decode_segment(
-                       picture, slice_pps, &sh, slice_data, slice_len,
-                       eps, ne,
+                       picture, &sh, slice_data, slice_len, eps, ne,
                        l0, n_l0, l1, n_l1, ab) != 0)
                 failed = 1;
             heic_free_buf(ctx, eps);
