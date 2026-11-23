@@ -570,8 +570,12 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
                     }
                     first_remaining = 0;
                 }
-                if (sum > (1 << max_transform_range) - 1)
-                    sum = (1 << max_transform_range) - 1;
+                /* The magnitude may be 2^range: CoeffMin is -2^range (-32768).
+                   Clamping it to 2^range - 1 before the sign lost that value
+                   and flipped the parity sign-data hiding is derived from.
+                   Anything larger is outside the legal range anyway. */
+                if (sum > (1 << max_transform_range))
+                    sum = 1 << max_transform_range;
                 v = sum;
             }
             if (sign_bits & sign_mask)
@@ -580,6 +584,8 @@ int heic_decode_residual(heic_cabac *cabac, heic_ctx_model *ctx,
             sum_abs_level += v;
             if (i == n_sig - 1 && sign_hidden && (sum_abs_level & 1) != 0)
                 v = -v;
+            if (v > (1 << max_transform_range) - 1)
+                v = (1 << max_transform_range) - 1; /* CoeffMax */
             {
                 int x = (int)sb_x * 4 + scan_pos[pos][0];
                 int y = (int)sb_y * 4 + scan_pos[pos][1];
