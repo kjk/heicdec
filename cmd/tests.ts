@@ -617,6 +617,17 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "1ceef83183197fd1f21472c17b53cbff",
   },
+  /* Two slices per picture; the second reverses L0 with
+   * ref_pic_list_modification, so the slices of a picture use different
+   * reference lists (deblocking across the slice edge, collocated MVs).
+   * HM 18.0 stream rewritten by test/streams/rewrite_slices.py; MD5 is the
+   * output of HM's decoder, which ffmpeg reproduces. */
+  {
+    name: "SLICE_REFLIST_MOD_HM18.bit",
+    frames: 9,
+    mse: 0,
+    md5: "0825554eb37ffc8aae1c794998db4ca2",
+  },
   /* 16-bit 4:4:4 inter (B slices, fractional MVs, bright content), encoded
    * with HM 18.0 built with HIGH_BITDEPTH; MD5 is HM's decoder output. The
    * only streams that take prediction intermediates past 16 bits; checked in

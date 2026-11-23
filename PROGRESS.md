@@ -514,12 +514,15 @@
       2351 ms with unchanged hashes. Above 12 bits the scalar path is used.
 - [x] HEVC reference lists are per slice: each distinct list pair of a
       picture is a table on the frame, with a per-PU index once a second one
-      appears (deblocking boundary strength, collocated MVs). No stream in the
-      suite has such a picture; verified as a non-regression only.
-- [x] HEVC slices of one picture may name different PPS, as long as these
-      agree on tile layout, entropy sync, chroma QP offsets and tile-edge
-      filtering (otherwise the decode fails with a clear error). No stream in
-      the suite does this; verified as a non-regression only.
+      appears (deblocking boundary strength, collocated MVs).
+      `test/streams/SLICE_REFLIST_MOD_HM18.bit` (HM stream whose second slice
+      of each picture reverses L0 by list modification) matches HM and ffmpeg;
+      before the fix 7 of 9 frames differed.
+- [x] Slices of one picture naming different PPS: not a feature. H.265
+      7.4.7.1 requires slice_pic_parameter_set_id to be the same in all slice
+      segments of a picture; HM and ffmpeg both reject such a stream. A change
+      that accepted it was reverted; the decode fails with "slice PPS id
+      mismatch" as before.
 - [x] HEVC inter prediction above 12 bits: the internal-precision samples
       were int16 and overflowed (a 16-bit sample << 2 needs 18 bits), so every
       inter picture was wrong. They are int32 above 12 bits now (scalar path;
