@@ -88,6 +88,27 @@ static int mc_filter_simd(const uint16_t *p, int ps, int bit_depth,
                                out, (ptrdiff_t)out_stride);
 }
 
+/* mc_filter_simd for bit depths above 12 (int32 output). */
+static int mc_filter_simd_wide(const uint16_t *p, int ps,
+                               const int16_t *fx, const int16_t *fy, int taps,
+                               int frac_x, int frac_y, int w, int h,
+                               int shift1, int32_t *out, uint32_t out_stride)
+{
+    int32_t mid[(64 + 7) * 64];
+    if (w < 4) return 0;
+    if (frac_y == 0)
+        return heic_simd_mc_filter_u16_wide(p, 1, ps, fx, taps, w, h, shift1,
+                                            out, (ptrdiff_t)out_stride);
+    if (frac_x == 0)
+        return heic_simd_mc_filter_u16_wide(p, ps, ps, fy, taps, w, h, shift1,
+                                            out, (ptrdiff_t)out_stride);
+    if (!heic_simd_mc_filter_u16_wide(p, 1, ps, fx, taps, w, h + taps - 1,
+                                      shift1, mid, w))
+        return 0;
+    return heic_simd_mc_filter_i32_wide(mid, w, w, fy, taps, w, h, 6,
+                                        out, (ptrdiff_t)out_stride);
+}
+
 int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
                           uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                           void *out_v, int wide, uint32_t out_stride,
@@ -130,6 +151,12 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
                 for (i = 0; i < w; i++) o[i] = (int16_t)(s[i] << shift3);
             }
         }
+    } else if (wide
+               && mc_filter_simd_wide(p, ps, LUMA_FILTER[frac_x],
+                                      LUMA_FILTER[frac_y], 8, frac_x, frac_y,
+                                      (int)w, (int)h, shift1, out32,
+                                      out_stride)) {
+        /* done */
     } else if (!wide
                && mc_filter_simd(p, ps, ref->bit_depth, LUMA_FILTER[frac_x],
                               LUMA_FILTER[frac_y], 8, frac_x, frac_y,
@@ -234,6 +261,12 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
                 for (i = 0; i < cw; i++) o[i] = (int16_t)(s[i] << shift3);
             }
         }
+    } else if (wide
+               && mc_filter_simd_wide(p, ps, CHROMA_FILTER[frac_x],
+                                      CHROMA_FILTER[frac_y], 4, frac_x,
+                                      frac_y, (int)cw, (int)ch, shift1, out32,
+                                      out_stride)) {
+        /* done */
     } else if (!wide
                && mc_filter_simd(p, ps, ref->chroma_bit_depth,
                               CHROMA_FILTER[frac_x], CHROMA_FILTER[frac_y], 4,

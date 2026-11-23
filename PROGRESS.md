@@ -525,8 +525,10 @@
       mismatch" as before.
 - [x] HEVC inter prediction above 12 bits: the internal-precision samples
       were int16 and overflowed (a 16-bit sample << 2 needs 18 bits), so every
-      inter picture was wrong. They are int32 above 12 bits now (scalar path;
-      SIMD stays for 8-12 bits). Two HM 18.0 encoded 16-bit 4:4:4 B-slice
+      inter picture was wrong. They are int32 above 12 bits now, with their
+      own SSE4.1 interpolation and write-out kernels (weighted prediction is
+      scalar); a 416x240 16-bit stream decodes about 20% faster than with the
+      scalar wide path when prediction dominates, 6% when residuals do. Two HM 18.0 encoded 16-bit 4:4:4 B-slice
       streams are checked in under `test/streams/` (one with extended
       precision + weighted prediction) and match HM's decoder MD5.
 

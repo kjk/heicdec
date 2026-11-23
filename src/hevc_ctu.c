@@ -1567,7 +1567,16 @@ static int apply_motion_wide(heic_slice_ctx *sc, const heic_pu *pu,
             o1 = ref1 >= 0 ? sh->chroma_offset[1][ref1][plane - 1] : 0;
             denom = sh->chroma_log2_weight_denom;
         }
-        for (y = 0; y < h && y0 + y < ph; y++)
+        for (y = 0; y < h && y0 + y < ph; y++) {
+            if (!weighted && x0 < pw
+                && heic_simd_mc_put_row_wide(
+                       (bi ? a : src) + (size_t)y * 64u,
+                       bi ? b + (size_t)y * 64u : NULL,
+                       (int)mc_row_len(x0, w, pw),
+                       bi ? 1 << shift : 1 << (shift - 1),
+                       bi ? shift + 1 : shift, max_val,
+                       dst + (size_t)(y0 + y) * (size_t)stride + x0))
+                continue;
             for (x = 0; x < w && x0 + x < pw; x++) {
                 size_t i = (size_t)y * 64u + x;
                 int64_t v;
@@ -1588,6 +1597,7 @@ static int apply_motion_wide(heic_slice_ctx *sc, const heic_pu *pu,
                 if (v > max_val) v = max_val;
                 dst[(size_t)(y0 + y) * (size_t)stride + x0 + x] = (uint16_t)v;
             }
+        }
     }
     return 0;
 }
