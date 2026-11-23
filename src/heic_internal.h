@@ -1094,7 +1094,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint32_t pic_width_in_ctbs, uint32_t ctb_size,
                        const heic_ctb_filter_info *filter_map,
                        const uint8_t *pred_mode_map, uint32_t pred_mode_stride,
-                       size_t pred_mode_n, uint32_t pred_mode_min_pu);
+                       size_t pred_mode_n, uint32_t pred_mode_min_pu,
+                       int disable_boundary_filter);
 
 /* ---- SAO filter (hevc_sao.c) ---- */
 

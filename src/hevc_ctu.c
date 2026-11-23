@@ -103,7 +103,10 @@ static int predict_intra_block(heic_slice_ctx *sc, uint32_t x, uint32_t y,
         sc->sh->slice_address, sc->sps->pic_width_in_ctbs,
         ctb_size_px(sc->sps), sc->filter_map,
         pred_mode_map, sc->intra_mode_stride,
-        sc->intra_mode_n, min_pu_size(sc->sps));
+        sc->intra_mode_n, min_pu_size(sc->sps),
+        /* H.265 8.4.4.2.6 disableIntraBoundaryFilter: the vertical /
+           horizontal edge filter would break the lossless RDPCM chain. */
+        sc->sps->implicit_rdpcm_enabled_flag && sc->cu_transquant_bypass);
 }
 
 /* H.265 8.6.1: Table 8-10 only for ChromaArrayType==1 (4:2:0).

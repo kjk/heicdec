@@ -441,7 +441,8 @@ static void predict_dc(uint16_t *plane, int stride, uint32_t x, uint32_t y,
 
 static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
                             uint32_t size, uint8_t c_idx, uint8_t mode, int max_val,
-                            const int32_t *border, int center)
+                            const int32_t *border, int center,
+                            int disable_boundary_filter)
 {
     int n = (int)size;
     int32_t angle = HEIC_INTRA_ANGLE[mode];
@@ -492,7 +493,7 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
                 dst[px] = (uint16_t)pred;
             }
         }
-        if (mode == 26 && c_idx == 0 && size < 32) {
+        if (mode == 26 && c_idx == 0 && size < 32 && !disable_boundary_filter) {
             for (py = 0; py < n; py++) {
                 int32_t pred = border[center + 1]
                                + ((border[center - 1 - py] - border[center]) >> 1);
@@ -538,7 +539,7 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
                 dst[px] = (uint16_t)pred;
             }
         }
-        if (mode == 10 && c_idx == 0 && size < 32) {
+        if (mode == 10 && c_idx == 0 && size < 32 && !disable_boundary_filter) {
             for (px = 0; px < n; px++) {
                 int32_t pred = border[center - 1]
                                + ((border[center + 1 + px] - border[center]) >> 1);
@@ -556,7 +557,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint32_t pic_width_in_ctbs, uint32_t ctb_size,
                        const heic_ctb_filter_info *filter_map,
                        const uint8_t *pred_mode_map, uint32_t pred_mode_stride,
-                       size_t pred_mode_n, uint32_t pred_mode_min_pu)
+                       size_t pred_mode_n, uint32_t pred_mode_min_pu,
+                       int disable_boundary_filter)
 {
     uint32_t size;
     int32_t border[HEIC_BORDER_N];
@@ -602,6 +604,7 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
     else if (mode == 1)
         predict_dc(plane, stride, x, y, size, log2_size, c_idx, max_val, border, center);
     else
-        predict_angular(plane, stride, x, y, size, c_idx, mode, max_val, border, center);
+        predict_angular(plane, stride, x, y, size, c_idx, mode, max_val, border, center,
+                        disable_boundary_filter);
     return 0;
 }
