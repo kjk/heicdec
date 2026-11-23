@@ -609,6 +609,14 @@ const HEVC_SEQUENCE_TESTS: readonly {
     md5: "100ccd06cdfabd48cae4217850c9f18e",
   },
   /* Feature-family coverage (FATE hevc-conformance; exact vs libde265). */
+  /* DELTAQP_A: 1920x1088 stress stream with levels and MVDs at the 16-bit
+   * limits; exact vs ffmpeg/HM. */
+  {
+    name: "DELTAQP_A_BRCM_4.bit",
+    frames: 96,
+    mse: 0,
+    md5: "1ceef83183197fd1f21472c17b53cbff",
+  },
   /* DELTAQP_B: exact vs ffmpeg/HM; libde265 conceals and diverges (weak oracle). */
   {
     name: "DELTAQP_B_SONY_3.bit",
