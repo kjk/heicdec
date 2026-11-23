@@ -1080,6 +1080,37 @@ static int verify_extras(heic_ctx *ctx, heic_doc *doc, const heic_image *img,
         }
     }
 
+    /* BGRA (the SumatraPDF format) and BGR take a different conversion path
+       from RGB; the colour bytes must be the same ones, reordered. */
+    {
+        heic_image *bgra = heic_doc_decode(doc, HEIC_FORMAT_BGRA);
+        heic_image *bgr = heic_doc_decode(doc, HEIC_FORMAT_BGR);
+        int same = bgra && bgr && bgra->width == img->width
+                   && bgra->height == img->height && bgr->width == img->width
+                   && bgr->height == img->height;
+        uint32_t x, y;
+        for (y = 0; same && y < img->height; y++) {
+            const uint8_t *a = img->data + (size_t)y * (size_t)img->stride;
+            const uint8_t *b = bgra->data + (size_t)y * (size_t)bgra->stride;
+            const uint8_t *c = bgr->data + (size_t)y * (size_t)bgr->stride;
+            for (x = 0; x < img->width; x++) {
+                if (a[x * 3] != b[x * 4 + 2] || a[x * 3 + 1] != b[x * 4 + 1]
+                    || a[x * 3 + 2] != b[x * 4]
+                    || a[x * 3] != c[x * 3 + 2] || a[x * 3 + 1] != c[x * 3 + 1]
+                    || a[x * 3 + 2] != c[x * 3]) {
+                    same = 0;
+                    break;
+                }
+            }
+        }
+        if (bgra) heic_image_destroy(ctx, bgra);
+        if (bgr) heic_image_destroy(ctx, bgr);
+        if (!same) {
+            printf(" bgr_bgra_mismatch");
+            ok = 0;
+        }
+    }
+
     if (heic_doc_info(doc, &info) != 0) {
         printf(" info_failed");
         return 1;
@@ -1413,7 +1444,8 @@ done:
 
 /* Loop open/decode/close N times with winperf section marks around decode.
  * One heic_ctx is reused so cached backends (dav1d) stay warm across loops. */
-static int do_profile_heic(const uint8_t *data, size_t len, int loops)
+static int do_profile_heic(const uint8_t *data, size_t len, int loops,
+                           heic_format fmt)
 {
     int i;
     double t0, total = 0.0;
@@ -1434,7 +1466,7 @@ static int do_profile_heic(const uint8_t *data, size_t len, int loops)
         }
         winperf_profile_start();
         t0 = bench_now_ms();
-        img = heic_doc_decode(doc, HEIC_FORMAT_RGB);
+        img = heic_doc_decode(doc, fmt);
         total += bench_now_ms() - t0;
         winperf_profile_stop();
         if (!img) {
@@ -1747,7 +1779,7 @@ int main(int argc, char **argv)
     int do_memory_limit = 0, do_sumatra = 0, do_api = 0;
     int profile_heic_loops = 0, profile_libheif_loops = 0;
     int hevc_sequence_frames = 512;
-    int want_rgba = 0;
+    int want_rgba = 0, want_bgra = 0;
     int i;
     uint8_t *data = NULL;
     size_t len = 0;
@@ -1760,6 +1792,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-exif") == 0) do_exif = 1;
         else if (strcmp(argv[i], "-thumbnail") == 0) do_thumbnail = 1;
         else if (strcmp(argv[i], "-rgba") == 0) want_rgba = 1;
+        else if (strcmp(argv[i], "-bgra") == 0) want_bgra = 1;
         else if (strcmp(argv[i], "-bench") == 0) do_bench_mode = 1;
         else if (strcmp(argv[i], "-verify") == 0) do_verify_mode = 1;
         else if (strcmp(argv[i], "-verify-gain-map") == 0)
@@ -1816,7 +1849,7 @@ int main(int argc, char **argv)
          && !profile_heic_loops && !profile_libheif_loops
          && !do_sumatra && !do_api)) {
         fprintf(stderr,
-                "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bench] [-verify] "
+                "usage: heic_test [-info] [-exif] [-thumbnail] [-rgba] [-bgra] [-bench] [-verify] "
                 "[-verify-gain-map] [-verify-sequence] [-memory-limit] "
                 "[-sumatra] [-api] "
                 "[-sequence-info] [-sequence-frame N] "
@@ -1852,7 +1885,9 @@ int main(int argc, char **argv)
     }
 
     if (profile_heic_loops) {
-        rc = do_profile_heic(data, len, profile_heic_loops);
+        rc = do_profile_heic(data, len, profile_heic_loops,
+                             want_bgra ? HEIC_FORMAT_BGRA
+                             : want_rgba ? HEIC_FORMAT_RGBA : HEIC_FORMAT_RGB);
         free(data);
         return rc;
     }
