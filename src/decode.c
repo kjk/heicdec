@@ -24,6 +24,11 @@ static int decode_hevc_reference(heic_doc *doc, const heic_item *item,
                    "invalid HEVC predictive reference chain");
         return -1;
     }
+    if (++doc->item_decodes > HEIC_MAX_ITEM_DECODES) {
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                   "too many item decodes for one image");
+        return -1;
+    }
     if (heic_container_item_data(&doc->container, item->id, &data, &len,
                                  &owned) != 0)
         return -1;
@@ -853,6 +858,11 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
         heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "derived item recursion too deep");
         return -1;
     }
+    if (++doc->item_decodes > HEIC_MAX_ITEM_DECODES) {
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                   "too many item decodes for one image");
+        return -1;
+    }
     if (heic_abort_check(ab)) return -1;
 
     if (item->item_type == HEIC_TYPE_GRID) {
@@ -1074,6 +1084,7 @@ int heic_decode_primary(heic_doc *doc, heic_format format,
     bpp = (format == HEIC_FORMAT_RGBA || format == HEIC_FORMAT_BGRA) ? 4 : 3;
 
     if (heic_abort_check(ab)) return -1;
+    doc->item_decodes = 0;
     rc = decode_item(doc, &item, &frame, ab, 0);
     if (rc != 0) {
         heic_frame_free(doc->ctx, &frame);
@@ -1488,6 +1499,7 @@ static heic_image *decode_item_to_image(heic_doc *doc, const heic_item *item,
     int w, h;
 
     memset(&frame, 0, sizeof(frame));
+    doc->item_decodes = 0;
     if (decode_item(doc, item, &frame, ab, 0) != 0) {
         heic_frame_free(doc->ctx, &frame);
         return NULL;

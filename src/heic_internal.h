@@ -37,6 +37,11 @@
 
 /* Parser resource caps (adversarial input). */
 #define HEIC_MAX_ITEMS            65536u
+/* Item decodes one top-level decode call may start. Derived items nest
+   (grid of grids, iovl of grids, pred chains) and references are not
+   deduplicated, so depth alone allows ~512^4 tile decodes from a file of a
+   few KB. A full 512-tile grid with a 512-tile alpha grid needs 1026. */
+#define HEIC_MAX_ITEM_DECODES     4096u
 #define HEIC_MAX_PROPERTIES       65536u
 #define HEIC_MAX_EXTENTS_PER_ITEM 1024u
 #define HEIC_MAX_REFERENCES       65536u
@@ -582,6 +587,9 @@ struct heic_doc {
     const uint8_t  *data;
     heic_container  container;
     heic_kind       kind;
+    /* Item decodes started by the current top-level decode call (see
+       HEIC_MAX_ITEM_DECODES). */
+    uint32_t        item_decodes;
 };
 
 /* ---- NAL / bitstream helpers (hevc_bitstream.c) ---- */
