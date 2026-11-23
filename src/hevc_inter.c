@@ -123,7 +123,12 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
         for (j = 0; j < h; j++) {
             const uint16_t *s = p + (size_t)j * (size_t)ps;
             size_t orow = (size_t)j * out_stride;
-            for (i = 0; i < w; i++) MC_STORE(orow + i, s[i] << shift3);
+            if (out32) {
+                for (i = 0; i < w; i++) out32[orow + i] = s[i] << shift3;
+            } else {
+                int16_t *o = out + orow;
+                for (i = 0; i < w; i++) o[i] = (int16_t)(s[i] << shift3);
+            }
         }
     } else if (!wide
                && mc_filter_simd(p, ps, ref->bit_depth, LUMA_FILTER[frac_x],
@@ -222,7 +227,12 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
         for (j = 0; j < ch; j++) {
             const uint16_t *s = p + (size_t)j * (size_t)ps;
             size_t orow = (size_t)j * out_stride;
-            for (i = 0; i < cw; i++) MC_STORE(orow + i, s[i] << shift3);
+            if (out32) {
+                for (i = 0; i < cw; i++) out32[orow + i] = s[i] << shift3;
+            } else {
+                int16_t *o = out + orow;
+                for (i = 0; i < cw; i++) o[i] = (int16_t)(s[i] << shift3);
+            }
         }
     } else if (!wide
                && mc_filter_simd(p, ps, ref->chroma_bit_depth,
