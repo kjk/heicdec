@@ -1190,8 +1190,16 @@ typedef struct {
     uint32_t sample_count;
     uint32_t cache_start;
     uint32_t next_sample;
+    /* Pictures of samples below this index may have been freed. */
+    uint32_t evict_floor;
     int initialized;
 } heic_sequence_cache;
+
+/* Decoded pictures kept behind the newest one. Output can lag decode order
+   by at most 16 pictures (HEVC sps_max_num_reorder_pics <= 15), so playback
+   in presentation order always finds its picture in this window; anything
+   older is re-decoded from the previous sync sample when asked for. */
+#define HEIC_SEQ_KEEP_PICTURES 17u
 
 struct heic_sequence_decoder {
     heic_doc *doc;
@@ -1214,6 +1222,7 @@ static void sequence_cache_clear(heic_sequence_decoder *decoder,
     }
     cache->cache_start = 0;
     cache->next_sample = 0;
+    cache->evict_floor = 0;
     cache->initialized = 0;
     heic_av1_sequence_destroy(cache->av1);
     cache->av1 = NULL;
@@ -1301,6 +1310,39 @@ static void sequence_apply_color(const heic_item *item, heic_frame *decoded)
     decoded->full_range = item->colr->full_range;
 }
 
+/* Free pictures that fell out of the window behind `newest`. Without this
+   every picture since the last sync sample stayed allocated, so a
+   single-keyframe 1080p animation hit the 1 GiB limit after ~165 frames.
+   HEVC pictures double as references: one is only freed once no later
+   picture can reference it, and the newest POC anchor is always kept. dav1d
+   keeps its own references, so AV1 pictures only need the window. */
+static void sequence_cache_evict(heic_sequence_decoder *decoder,
+                                 heic_sequence_cache *cache, uint32_t newest,
+                                 int is_hevc)
+{
+    heic_ctx *ctx = decoder->doc->ctx;
+    uint32_t floor, j;
+    int anchor_seen = 0;
+    if (newest < HEIC_SEQ_KEEP_PICTURES) return;
+    floor = newest - HEIC_SEQ_KEEP_PICTURES + 1;
+    if (floor <= cache->cache_start) return;
+    for (j = newest + 1; j-- > cache->cache_start;) {
+        heic_frame *p = &cache->pictures[j];
+        int anchor;
+        if (!cache->picture_ready[j]) continue;
+        anchor = is_hevc && heic_hevc_frame_is_poc_anchor(p);
+        if (j < floor
+            && (!is_hevc
+                || (heic_hevc_frame_unreferenced(p)
+                    && (!anchor || anchor_seen)))) {
+            heic_frame_free(ctx, p);
+            cache->picture_ready[j] = 0;
+        }
+        if (anchor) anchor_seen = 1;
+    }
+    if (floor > cache->evict_floor) cache->evict_floor = floor;
+}
+
 static int sequence_store_av1_picture(heic_sequence_decoder *decoder,
                                       heic_sequence_cache *cache,
                                       const heic_item *item,
@@ -1320,6 +1362,7 @@ static int sequence_store_av1_picture(heic_sequence_decoder *decoder,
     cache->pictures[sample] = *picture;
     memset(picture, 0, sizeof(*picture));
     cache->picture_ready[sample] = 1;
+    sequence_cache_evict(decoder, cache, sample, 0);
     return 0;
 }
 
@@ -1339,7 +1382,10 @@ static heic_frame *sequence_decode_track(
     target = seq->frame_samples[frame_index];
     if (target >= seq->sample_count) return NULL;
 
-    if (!cache->initialized || target < cache->cache_start) {
+    /* Restart from the previous sync sample for a first decode, a seek
+       before the cached run, or a picture that was already evicted. */
+    if (!cache->initialized || target < cache->cache_start
+        || (target < cache->evict_floor && !cache->picture_ready[target])) {
         sequence_cache_clear(decoder, cache);
         start = target;
         while (start > 0 && !seq->samples[start].is_sync) start--;
@@ -1364,11 +1410,12 @@ static heic_frame *sequence_decode_track(
             decoded = &cache->pictures[i];
             memset(decoded, 0, sizeof(*decoded));
             if (item.hvcc) {
-                uint32_t n_refs = i - cache->cache_start;
-                for (j = 0; j < n_refs; j++) {
-                    if (!cache->picture_ready[i - 1 - j]) return NULL;
-                    cache->refs[j] = &cache->pictures[i - 1 - j];
-                }
+                /* Every picture still held since the sync sample, newest
+                   first; evicted ones can no longer be referenced. */
+                uint32_t n_refs = 0;
+                for (j = i; j-- > cache->cache_start;)
+                    if (cache->picture_ready[j])
+                        cache->refs[n_refs++] = &cache->pictures[j];
                 if (heic_hevc_decode_refs(
                         doc->ctx, item.hvcc,
                         doc->data + sample->offset, sample->size,
@@ -1380,6 +1427,8 @@ static heic_frame *sequence_decode_track(
                 sequence_apply_color(&item, decoded);
                 cache->picture_ready[i] = 1;
                 cache->next_sample = i + 1;
+                /* Never drop the picture this call is about to return. */
+                if (i <= target) sequence_cache_evict(decoder, cache, i, 1);
             } else {
                 heic_frame picture;
                 uint32_t output_sample = 0;
@@ -1393,9 +1442,11 @@ static heic_frame *sequence_decode_track(
                     doc->data + sample->offset, sample->size, i,
                     &picture, &output_sample, ab);
                 if (got < 0) {
-                    heic_av1_sequence_destroy(cache->av1);
-                    cache->av1 = NULL;
-                    cache->next_sample = i;
+                    /* dav1d's state is gone: forget the run so the next call
+                       restarts at the sync sample. Resuming at sample i with
+                       a fresh decoder fed it an inter frame with no
+                       references, and every later call failed the same way. */
+                    sequence_cache_clear(decoder, cache);
                     return NULL;
                 }
                 cache->next_sample = i + 1;

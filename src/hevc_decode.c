@@ -88,6 +88,19 @@ static const heic_frame *find_prev_tid0(const heic_frame *const *refs,
     return NULL;
 }
 
+/* A decoded picture no later picture can reference: the last RPS that saw
+   it left it out (H.265 8.3.2 never brings a picture back). */
+int heic_hevc_frame_unreferenced(const heic_frame *f)
+{
+    return f && f->dpb_mark == 1; /* HEIC_DPB_UNUSED */
+}
+
+/* Could `f` be prevTid0Pic (the POC anchor of 8.3.1) for a later picture? */
+int heic_hevc_frame_is_poc_anchor(const heic_frame *f)
+{
+    return find_prev_tid0(&f, 1) != NULL;
+}
+
 /* DPB marks on heic_frame (see heic_internal.h). */
 #define HEIC_DPB_UNMANAGED 0
 #define HEIC_DPB_UNUSED    1

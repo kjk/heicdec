@@ -546,6 +546,9 @@ int  heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab);
+/* Reference bookkeeping for callers that hold decoded pictures (sequences). */
+int heic_hevc_frame_unreferenced(const heic_frame *f);
+int heic_hevc_frame_is_poc_anchor(const heic_frame *f);
 int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,
                           const uint8_t *data, size_t len,
                           const heic_frame *const *refs, int n_refs,
