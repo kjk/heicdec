@@ -1,9 +1,10 @@
 /* fuzz_target.c -- libFuzzer / AFL++ entry point for the HEIC/HEIF/AVIF decoder.
  *
  * Each input is treated as a whole .heic/.heif/.avif file: open it, probe
- * info, decode primary + thumbnail/sequence frame, pull EXIF/XMP/ICC so
- * malformed bytes reach the container, HEVC, unci, and (when linked) dav1d
- * paths.
+ * info, decode primary (heic_doc_decode or heic_doc_decode_into) + thumbnail
+ * + gain map + sequence frames, pull EXIF/XMP/ICC so malformed bytes reach
+ * the container, HEVC, unci, and (when linked) dav1d paths. Every input must
+ * also leave the context allocator balanced.
  *
  * Drivers (same LLVMFuzzerTestOneInput, shared fuzz/corpus/):
  *   bun cmd/fuzz.ts      clang -fsanitize=address,fuzzer (libFuzzer main)
@@ -17,7 +18,9 @@
 /* Budgeted allocator: crafted ispe/grid can declare huge canvases; bound live
  * bytes so those inputs fail cleanly via the library's alloc-failure paths
  * (fuzzing those too) instead of tripping libFuzzer's RSS limit. Each block
- * stores its size in a 16-byte header (keeps malloc alignment). */
+ * stores its size in a 16-byte header (keeps malloc alignment).
+ * Covers the library's own allocations only: dav1d, zlib and brotli use the
+ * C allocator directly. */
 #define FUZZ_MEM_BUDGET ((size_t)256 << 20) /* 256 MB live per input */
 
 static size_t fuzz_live;
@@ -79,29 +82,46 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     doc = heic_doc_open(ctx, data, size);
     if (!doc) {
         heic_ctx_free(ctx);
+        if (fuzz_live != 0) abort(); /* failed open must not leak either */
         return 0;
     }
 
     (void)heic_doc_kind(doc);
-    if (heic_doc_info(doc, &info) != 0) {
-        heic_doc_close(doc);
-        heic_ctx_free(ctx);
-        return 0;
+    /* A failed probe (e.g. primary without ispe) must not hide the rest:
+       thumbnail, gain map, sequences and metadata do not depend on it. */
+    if (heic_doc_info(doc, &info) != 0) memset(&info, 0, sizeof(info));
+
+    {
+        /* RGB is the common path; RGBA hits alpha attach when present. The
+           last input byte picks the output order and the API: half the
+           inputs go through heic_doc_decode_into with a padded stride. */
+        int sel = data[size - 1];
+        heic_format fmt = info.has_alpha
+            ? ((sel & 2) ? HEIC_FORMAT_BGRA : HEIC_FORMAT_RGBA)
+            : ((sel & 2) ? HEIC_FORMAT_BGR : HEIC_FORMAT_RGB);
+        size_t tight = heic_doc_output_size(doc, fmt);
+        /* heic_doc_output_size reports the declared ispe size, which is not
+           bounded by the limits; keep the caller buffer within budget. */
+        if ((sel & 1) && tight && info.height &&
+            tight <= FUZZ_MEM_BUDGET / 2) {
+            int stride = (int)(tight / info.height) + 5;
+            size_t cap = (size_t)stride * info.height;
+            uint8_t *buf = (uint8_t *)malloc(cap);
+            if (buf) {
+                (void)heic_doc_decode_into(doc, fmt, buf, cap, stride);
+                free(buf);
+            }
+        } else {
+            img = heic_doc_decode(doc, fmt);
+            if (img) heic_image_destroy(ctx, img);
+        }
     }
 
-    /* RGB is the common path; RGBA hits alpha attach when present. */
-    img = heic_doc_decode(doc, info.has_alpha ? HEIC_FORMAT_RGBA : HEIC_FORMAT_RGB);
+    img = heic_doc_decode_thumbnail(doc, HEIC_FORMAT_RGB);
     if (img) heic_image_destroy(ctx, img);
 
-    if (info.has_thumbnail) {
-        img = heic_doc_decode_thumbnail(doc, HEIC_FORMAT_RGB);
-        if (img) heic_image_destroy(ctx, img);
-    }
-
-    if (info.has_gain_map) {
-        img = heic_doc_decode_gain_map(doc, HEIC_FORMAT_RGB);
-        if (img) heic_image_destroy(ctx, img);
-    }
+    img = heic_doc_decode_gain_map(doc, HEIC_FORMAT_RGB);
+    if (img) heic_image_destroy(ctx, img);
 
     if (heic_doc_sequence_info(doc, &seq) == 0 && seq.frame_count) {
         uint32_t frame = seq.frame_count <= 32 ? seq.frame_count - 1 : 0;
@@ -123,21 +143,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         }
     }
 
-    if (info.has_exif) {
-        meta = NULL;
-        meta_len = 0;
-        if (heic_doc_exif(doc, &meta, &meta_len) && meta) heic_free(ctx, meta);
-    }
-    if (info.has_xmp) {
-        meta = NULL;
-        meta_len = 0;
-        if (heic_doc_xmp(doc, &meta, &meta_len) && meta) heic_free(ctx, meta);
-    }
+    meta = NULL;
+    meta_len = 0;
+    if (heic_doc_exif(doc, &meta, &meta_len) && meta) heic_free(ctx, meta);
+    meta = NULL;
+    meta_len = 0;
+    if (heic_doc_xmp(doc, &meta, &meta_len) && meta) heic_free(ctx, meta);
     meta = NULL;
     meta_len = 0;
     if (heic_doc_icc(doc, &meta, &meta_len) && meta) heic_free(ctx, meta);
 
     heic_doc_close(doc);
     heic_ctx_free(ctx);
+    /* Everything is closed: a non-zero balance is a leak in the library
+       (ASan has no leak detection on Windows, so check it here). */
+    if (fuzz_live != 0) abort();
     return 0;
 }
