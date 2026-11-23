@@ -6,6 +6,7 @@
 // Default outDir: deps/testimages/unci_block
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
+import { deflateSync } from "zlib";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const DEFAULT_OUT = join(ROOT, "deps", "testimages", "unci_block");
@@ -147,12 +148,17 @@ function writeHeif(
   sample: Uint8Array,
   w: number,
   h: number,
+  extraProps: Uint8Array[] = [],
 ): void {
   let ipcoParts = concat(ispe(w, h), uncc);
   const props = [0x81, 0x82];
   if (cmpd) {
     ipcoParts = concat(ipcoParts, cmpd);
     props.push(3);
+  }
+  for (const p of extraProps) {
+    ipcoParts = concat(ipcoParts, p);
+    props.push(0x80 | (props.length + 1));
   }
   const ipco = box("ipco", ipcoParts);
   const ipma = ipmaOne(1, props);
@@ -336,6 +342,26 @@ function generateUnciBugFixtures(outDir: string): void {
     new Uint8Array(10).fill(200),
     100,
     100,
+  );
+  /* 8x8 RGB8 (192 bytes of samples) whose zlib payload inflates to 16 MB.
+     Decompression used to run to the context memory limit; it must stop
+     once the output exceeds what the image can consume (EXPECT_FAIL). */
+  writeHeif(
+    join(outDir, "rgb8_zlib_bomb.heif"),
+    unccBox({
+      ncomp: 3,
+      depths: [8, 8, 8],
+      sampling: 0,
+      interleave: 1,
+      blockSize: 0,
+      flags: 0,
+      pixelSize: 0,
+    }),
+    cmpdBox([4, 5, 6]),
+    new Uint8Array(deflateSync(new Uint8Array(16 << 20))),
+    8,
+    8,
+    [fullbox("cmpC", 0, 0, concat(new TextEncoder().encode("zlib"), new Uint8Array([0])))],
   );
 }
 

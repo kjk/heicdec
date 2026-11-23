@@ -180,6 +180,9 @@ struct heic_ctx {
     size_t        sao_orig_y_n;
     size_t        sao_orig_cb_n;
     size_t        sao_orig_cr_n;
+    /* Most bytes the unci image being decoded can consume; decompression
+       stops beyond it (0 = no cap). */
+    uint64_t      unci_max_decompressed;
 };
 
 void heic_hevc_param_cache_free(heic_ctx *ctx);

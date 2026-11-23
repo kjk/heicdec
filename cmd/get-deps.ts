@@ -522,6 +522,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
     existsSync(join(root, "regress", "_info", "aux_no_auxc.heic")) &&
     existsSync(join(unciDir, "mono_alpha_comp.heif")) &&
     existsSync(join(unciDir, "rgb8_truncated.heif")) &&
+    existsSync(join(unciDir, "rgb8_zlib_bomb.heif")) &&
     existsSync(join(avifDir, "grid_2x2.avif")) &&
     existsSync(join(avifDir, "alpha.avif")) &&
     existsSync(join(avifDir, "sequence_inter.avif")) &&

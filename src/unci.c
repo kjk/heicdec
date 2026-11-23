@@ -129,6 +129,11 @@ static int unci_append_bytes(heic_ctx *ctx, uint8_t **dst, size_t *dst_len, size
     if (!n) return 0;
     need = *dst_len + n;
     if (need < *dst_len) return -1;
+    if (ctx->unci_max_decompressed && need > ctx->unci_max_decompressed) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "unci: compressed data expands beyond the image size");
+        return -1;
+    }
     if (need > *dst_cap) {
         size_t ncap = *dst_cap ? *dst_cap : 4096;
         while (ncap < need) {
@@ -818,8 +823,28 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
     pix = data;
     pix_len = len;
     if (cmpc) {
-        if (unci_decompress_payload(ctx, cmpc, icef, data, len, &owned, &pix_len) != 0)
-            return -1;
+        /* Upper bound on what this image can read: the samples themselves
+           (two bytes each at most, a whole pixel_size per pixel, a whole
+           block per sample) plus the row / tile alignment padding the box
+           asks for. A small image whose compressed data inflates past that
+           is a decompression bomb; stop instead of growing the buffer up to
+           the context memory limit. */
+        uint64_t tiles = (uint64_t)tile_cols * tile_rows;
+        uint64_t px = (uint64_t)tile_w * tile_h * tiles;
+        uint64_t per_px = (uint64_t)ncomp * 2;
+        uint64_t rows = (uint64_t)ncomp * tile_h * tiles;
+        uint64_t bound;
+        int rc;
+        if (uncc->pixel_size > per_px) per_px = uncc->pixel_size;
+        if (uncc->block_size)
+            per_px = HEIC_MAX(per_px, (uint64_t)ncomp * uncc->block_size);
+        bound = px * per_px + rows * ((uint64_t)uncc->row_align_size + 1)
+                + tiles * ncomp * ((uint64_t)uncc->tile_align_size + 1) + 64;
+        ctx->unci_max_decompressed = bound;
+        rc = unci_decompress_payload(ctx, cmpc, icef, data, len, &owned,
+                                     &pix_len);
+        ctx->unci_max_decompressed = 0;
+        if (rc != 0) return -1;
         pix = owned;
     }
 
