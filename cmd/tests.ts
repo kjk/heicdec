@@ -1390,7 +1390,36 @@ async function main() {
         );
       }
     }
-    extra = HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 2;
+    /* Public API surface that -verify does not touch: BGRA/EXIF as used by
+       SumatraPDF, and custom allocator + abort with a strict alloc/free
+       balance. Previously only run by verify-release.ts, never in CI. */
+    const root = join(import.meta.dir, "..");
+    const sample = join(
+      root, "deps/heic/testdata/libheif-examples/example.heic");
+    const surface: [string, string[]][] = [
+      ["sumatra example.heic", ["-sumatra", sample]],
+      [
+        "sumatra hdr-sample.heic",
+        ["-sumatra", join(root, "deps/heic/testdata/apple-hdr/hdr-sample.heic")],
+      ],
+      ["api allocator+abort", ["-api", sample]],
+    ];
+    for (const [label, args] of surface) {
+      const sp = await Bun.$`${exe} ${args}`.nothrow().quiet();
+      if (sp.exitCode === 0) {
+        ok++;
+        console.log(`[ok] ${label} ${sp.stdout.toString().trim()}`);
+      } else {
+        fail++;
+        console.log(
+          `[fail] ${label}\n` +
+            (sp.stdout.toString() + sp.stderr.toString()).slice(0, 300),
+        );
+      }
+    }
+    extra =
+      HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 2
+      + surface.length;
   }
 
   console.log(
