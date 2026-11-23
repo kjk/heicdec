@@ -86,14 +86,17 @@ static int mv_diff_ge4(heic_mv a, heic_mv b)
            iabs((int)a.y - (int)b.y) >= 4;
 }
 
-static int resolve_ref_poc(const int ref_poc[2][HEIC_MAX_REF_PICS],
+static int resolve_ref_poc(const heic_ref_lookup *refs, size_t pu_idx,
                            heic_pb_motion motion, int list)
 {
     int ref = motion.ref_idx[list];
-    if (!motion.pred_flag[list] || !ref_poc ||
+    int table;
+    if (!motion.pred_flag[list] || !refs ||
         ref < 0 || ref >= HEIC_MAX_REF_PICS)
         return INT_MIN;
-    return ref_poc[list][ref];
+    table = refs->map ? refs->map[pu_idx] : 0;
+    if (table >= refs->n_tables) return INT_MIN;
+    return refs->tables[table].poc[list][ref];
 }
 
 static int compute_bs(uint32_t x, uint32_t y, int vertical,
@@ -101,7 +104,7 @@ static int compute_bs(uint32_t x, uint32_t y, int vertical,
                       const heic_pb_motion *mv_info, uint32_t pu_stride,
                       uint32_t min_pu, const uint8_t *cbf_map,
                       uint32_t cbf_stride,
-                      const int ref_poc[2][HEIC_MAX_REF_PICS])
+                      const heic_ref_lookup *ref_poc)
 {
     uint32_t px = vertical ? x - 1 : x;
     uint32_t py = vertical ? y : y - 1;
@@ -127,10 +130,10 @@ static int compute_bs(uint32_t x, uint32_t y, int vertical,
     count_q = mq.pred_flag[0] + mq.pred_flag[1];
     if (count_p != count_q) return 1;
 
-    rp0 = resolve_ref_poc(ref_poc, mp, 0);
-    rp1 = resolve_ref_poc(ref_poc, mp, 1);
-    rq0 = resolve_ref_poc(ref_poc, mq, 0);
-    rq1 = resolve_ref_poc(ref_poc, mq, 1);
+    rp0 = resolve_ref_poc(ref_poc, pi, mp, 0);
+    rp1 = resolve_ref_poc(ref_poc, pi, mp, 1);
+    rq0 = resolve_ref_poc(ref_poc, qi, mq, 0);
+    rq1 = resolve_ref_poc(ref_poc, qi, mq, 1);
     if (!((rp0 == rq0 && rp1 == rq1) ||
           (rp0 == rq1 && rp1 == rq0)))
         return 1;
@@ -318,7 +321,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                                     const heic_pb_motion *mv_info,
                                     uint32_t pu_stride, uint32_t min_pu,
                                     const uint8_t *cbf_map,
-                                    const int ref_poc[2][HEIC_MAX_REF_PICS],
+                                    const heic_ref_lookup *ref_poc,
                                     const uint8_t *pcm_map)
 {
     int w = frame->width, h = frame->height;
@@ -503,7 +506,7 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         const uint8_t *pred_mode,
                         const heic_pb_motion *mv_info, uint32_t pu_stride,
                         uint32_t min_pu, const uint8_t *cbf_map,
-                        const int ref_poc[2][HEIC_MAX_REF_PICS],
+                        const heic_ref_lookup *ref_poc,
                         const uint8_t *pcm_map)
 {
     uint32_t w, h, x, y;

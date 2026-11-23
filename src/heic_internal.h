@@ -500,6 +500,20 @@ int  heic_container_find_thumbs(const heic_container *c, uint32_t target_id,
 /* ---- HEVC (hevc_*.c) ---- */
 
 #define HEIC_MAX_REF_PICS 16
+
+/* The active reference lists of a slice: POC (INT_MIN = none) and long-term
+   mark of each entry. */
+typedef struct {
+    int poc[2][HEIC_MAX_REF_PICS];
+    uint8_t long_term[2][HEIC_MAX_REF_PICS];
+} heic_ref_table;
+
+/* Resolves the ref_idx of the PU at motion-field index i to a picture. */
+typedef struct {
+    const heic_ref_table *tables;
+    int n_tables;
+    const uint8_t *map; /* per PU table index; NULL = table 0 */
+} heic_ref_lookup;
 #define HEIC_MAX_ST_RPS 64
 #define HEIC_MAX_LT_REF_PICS_SPS 32
 
@@ -543,8 +557,13 @@ typedef struct {
     size_t motion_n;
     uint32_t motion_stride;
     uint32_t motion_min_pu;
-    int ref_poc[2][HEIC_MAX_REF_PICS];
-    uint8_t ref_long_term[2][HEIC_MAX_REF_PICS];
+    /* What ref_idx in `motion` means. Slices of one picture may use
+       different reference lists, so there is one table per distinct list
+       pair and motion_ref_table says which one each PU uses (NULL when the
+       whole picture uses table 0, the usual case). */
+    heic_ref_table *ref_tables;
+    int n_ref_tables;
+    uint8_t *motion_ref_table;
 } heic_frame;
 
 void heic_frame_free(heic_ctx *ctx, heic_frame *f);
@@ -1151,7 +1170,7 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         const uint8_t *pred_mode, const heic_pb_motion *mv_info,
                         uint32_t pu_stride, uint32_t min_pu,
                         const uint8_t *cbf_map,
-                        const int ref_poc[2][HEIC_MAX_REF_PICS],
+                        const heic_ref_lookup *ref_poc,
                         const uint8_t *pcm_map);
 
 /* ---- inter prediction / CTU decode (hevc_inter.c, hevc_ctu.c) ---- */

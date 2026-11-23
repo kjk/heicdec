@@ -211,6 +211,8 @@ void heic_frame_free(heic_ctx *ctx, heic_frame *f)
     heic_free_buf(ctx, f->a);
     heic_free_buf(ctx, f->motion);
     heic_free_buf(ctx, f->motion_pred_mode);
+    heic_free_buf(ctx, f->ref_tables);
+    heic_free_buf(ctx, f->motion_ref_table);
     memset(f, 0, sizeof(*f));
 }
 
@@ -291,9 +293,14 @@ int heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
         heic_free_buf(ctx, f->a);
         heic_free_buf(ctx, f->motion);
         heic_free_buf(ctx, f->motion_pred_mode);
+        heic_free_buf(ctx, f->ref_tables);
+        heic_free_buf(ctx, f->motion_ref_table);
         f->a = NULL;
         f->motion = NULL;
         f->motion_pred_mode = NULL;
+        f->ref_tables = NULL;
+        f->n_ref_tables = 0;
+        f->motion_ref_table = NULL;
         f->motion_n = 0;
         f->motion_stride = 0;
         f->motion_min_pu = 0;

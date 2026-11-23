@@ -32,6 +32,12 @@ typedef struct {
     uint8_t *intra_chroma_mode_map;
     uint8_t *pred_mode_map;
     heic_pb_motion *mv_info;
+    /* Reference tables of the picture's slices (see heic_frame); handed to
+       the frame with mv_info. ref_table_id is the current slice's. */
+    heic_ref_table *ref_tables;
+    int n_ref_tables;
+    int ref_table_id;
+    uint8_t *mv_ref_table;
     uint32_t intra_mode_stride;
     size_t   intra_mode_n;
     const heic_frame *refs[2][HEIC_MAX_REF_PICS];
@@ -254,7 +260,11 @@ static void store_motion(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     for (dy = 0; dy < ny; dy++)
         for (dx = 0; dx < nx; dx++) {
             size_t idx = (size_t)(sy + dy) * sc->intra_mode_stride + sx + dx;
-            if (idx < sc->intra_mode_n) sc->mv_info[idx] = motion;
+            if (idx < sc->intra_mode_n) {
+                sc->mv_info[idx] = motion;
+                if (sc->mv_ref_table)
+                    sc->mv_ref_table[idx] = (uint8_t)sc->ref_table_id;
+            }
         }
 }
 
@@ -892,9 +902,14 @@ static int derive_temporal_mv(const heic_slice_ctx *sc, const heic_pu *pu,
         else list = sc->sh->collocated_from_l0_flag ? 1 : 0;
         ref_idx = m.ref_idx[list];
         if (ref_idx < 0 || ref_idx >= HEIC_MAX_REF_PICS) continue;
-        col_ref_poc = col->ref_poc[list][ref_idx];
+        {
+            int table = col->motion_ref_table ? col->motion_ref_table[idx] : 0;
+            if (table >= col->n_ref_tables) continue;
+            col_ref_poc = col->ref_tables[table].poc[list][ref_idx];
+            col_long_term =
+                col->ref_tables[table].long_term[list][ref_idx] != 0;
+        }
         target_ref_poc = sc->refs[target_list][target_ref_idx]->poc;
-        col_long_term = col->ref_long_term[list][ref_idx] != 0;
         target_long_term =
             active_ref_is_long_term(sc, target_list, target_ref_idx);
         if (col_long_term != target_long_term) continue;
@@ -3043,6 +3058,12 @@ static int slice_ctx_reset(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sp
     sc->pps = pps;
     sc->sh = sh;
     sc->frame = frame;
+    heic_free_buf(ctx, sc->ref_tables);
+    heic_free_buf(ctx, sc->mv_ref_table);
+    sc->ref_tables = NULL;
+    sc->mv_ref_table = NULL;
+    sc->n_ref_tables = 0;
+    sc->ref_table_id = 0;
     slice_ctx_set_refs(sc, l0, n_l0, l1, n_l1);
     sc->current_qg_x = -1;
     sc->current_qg_y = -1;
@@ -3108,6 +3129,8 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->intra_chroma_mode_map);
     heic_free_buf(sc->hctx, sc->pred_mode_map);
     heic_free_buf(sc->hctx, sc->mv_info);
+    heic_free_buf(sc->hctx, sc->ref_tables);
+    heic_free_buf(sc->hctx, sc->mv_ref_table);
     heic_free_buf(sc->hctx, sc->qp_map);
     heic_free_buf(sc->hctx, sc->sao_map);
     heic_free_buf(sc->hctx, sc->filter_map);
@@ -3140,6 +3163,51 @@ static void slice_ctx_set_refs(
     sc->n_refs[1] = n_l1;
     for (i = 0; l0 && i < n_l0; i++) sc->refs[0][i] = l0[i];
     for (i = 0; l1 && i < n_l1; i++) sc->refs[1][i] = l1[i];
+}
+
+/* Record what the current slice's ref_idx values refer to, for deblocking
+   and for later pictures that use this one as collocated. Slices with the
+   same lists share a table; the per-PU map is only allocated once a second
+   table appears. */
+static int slice_register_ref_table(heic_slice_ctx *sc)
+{
+    heic_ref_table t, *grown;
+    int list, i;
+    memset(&t, 0, sizeof(t));
+    for (list = 0; list < 2; list++) {
+        for (i = 0; i < HEIC_MAX_REF_PICS; i++) t.poc[list][i] = INT_MIN;
+        for (i = 0; i < sc->n_refs[list] && i < HEIC_MAX_REF_PICS; i++)
+            if (sc->refs[list][i] && sc->refs[list][i]->poc_valid) {
+                t.poc[list][i] = sc->refs[list][i]->poc;
+                t.long_term[list][i] =
+                    (uint8_t)active_ref_is_long_term(sc, list, i);
+            }
+    }
+    for (i = 0; i < sc->n_ref_tables; i++)
+        if (memcmp(&sc->ref_tables[i], &t, sizeof(t)) == 0) {
+            sc->ref_table_id = i;
+            return 0;
+        }
+    if (sc->n_ref_tables >= 256) {
+        heic_error(sc->hctx, HEIC_SEVERITY_ERROR,
+                   "more than 256 distinct reference lists in one picture");
+        return -1;
+    }
+    if (sc->n_ref_tables >= 1 && !sc->mv_ref_table) {
+        sc->mv_ref_table = (uint8_t *)heic_zalloc(sc->hctx, sc->intra_mode_n);
+        if (!sc->mv_ref_table) return -1;
+    }
+    grown = (heic_ref_table *)heic_zalloc(
+        sc->hctx, (size_t)(sc->n_ref_tables + 1) * sizeof(*grown));
+    if (!grown) return -1;
+    if (sc->n_ref_tables)
+        memcpy(grown, sc->ref_tables,
+               (size_t)sc->n_ref_tables * sizeof(*grown));
+    grown[sc->n_ref_tables] = t;
+    heic_free_buf(sc->hctx, sc->ref_tables);
+    sc->ref_tables = grown;
+    sc->ref_table_id = sc->n_ref_tables++;
+    return 0;
 }
 
 /* Map EBSP offset within slice_data to RBSP offset using EP positions. */
@@ -3435,6 +3503,8 @@ int heic_hevc_picture_decode_segment(
        picture-level deblocking and motion export still need. */
     if (sh->slice_type != HEIC_SLICE_I || !sc->mv_info)
         slice_ctx_set_refs(sc, l0, n_l0, l1, n_l1);
+    if (sh->slice_type != HEIC_SLICE_I && slice_register_ref_table(sc) != 0)
+        return -1;
     if (heic_cabac_new(&sc->cabac, data, len) != 0) return -1;
 
     pic_w = sps->pic_width_in_ctbs;
@@ -3704,7 +3774,8 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
     heic_frame *out;
     heic_ctx *ctx;
     uint32_t ctb_sz;
-    int i, has_inter;
+    heic_ref_lookup ref_lookup;
+    int has_inter;
     if (!picture) return -1;
     work = &picture->work;
     sc = &work->sc;
@@ -3726,19 +3797,9 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
        picture, not of its last slice: an I slice at the end used to make
        the whole picture deblock as intra and drop its motion field. */
     has_inter = sc->mv_info != NULL && sc->pred_mode_map != NULL;
-    if (has_inter) {
-        int list;
-        for (list = 0; list < 2; list++) {
-            for (i = 0; i < HEIC_MAX_REF_PICS; i++)
-                out->ref_poc[list][i] = INT_MIN;
-            for (i = 0; i < sc->n_refs[list] && i < HEIC_MAX_REF_PICS; i++)
-                if (sc->refs[list][i] && sc->refs[list][i]->poc_valid) {
-                    out->ref_poc[list][i] = sc->refs[list][i]->poc;
-                    out->ref_long_term[list][i] =
-                        (uint8_t)active_ref_is_long_term(sc, list, i);
-                }
-        }
-    }
+    ref_lookup.tables = sc->ref_tables;
+    ref_lookup.n_tables = sc->n_ref_tables;
+    ref_lookup.map = sc->mv_ref_table;
 
     ctb_sz = ctb_size_px(sps);
     /* -DHEIC_DEBUG_SKIP_LF: skip deblock+SAO for residual isolation. */
@@ -3753,7 +3814,7 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
             has_inter ? sc->mv_info : NULL,
             sc->intra_mode_stride, min_pu_size(sps),
             has_inter ? sc->cbf_map : NULL,
-            has_inter ? out->ref_poc : NULL,
+            has_inter ? &ref_lookup : NULL,
             sc->has_filter_exclusions ? sc->pcm_map : NULL);
     }
     if (sps->sample_adaptive_offset_enabled_flag && sc->sao_map) {
@@ -3772,8 +3833,16 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
         out->motion_n = sc->intra_mode_n;
         out->motion_stride = sc->intra_mode_stride;
         out->motion_min_pu = min_pu_size(sps);
+        heic_free_buf(ctx, out->ref_tables);
+        heic_free_buf(ctx, out->motion_ref_table);
+        out->ref_tables = sc->ref_tables;
+        out->n_ref_tables = sc->n_ref_tables;
+        out->motion_ref_table = sc->mv_ref_table;
         sc->mv_info = NULL;
         sc->pred_mode_map = NULL;
+        sc->ref_tables = NULL;
+        sc->mv_ref_table = NULL;
+        sc->n_ref_tables = 0;
     }
     work->finished = 1;
     return 0;
