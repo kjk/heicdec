@@ -489,6 +489,8 @@ typedef enum {
 
 typedef struct {
     heic_prop_kind kind;
+    heic_fourcc box_type;
+    uint8_t essential_ok;
     heic_ispe ispe;
     heic_hvcc hvcc;
     heic_av1c av1c;
@@ -586,6 +588,8 @@ typedef struct {
     const heic_icef   *icef;
     heic_xform         transforms[8];
     int                n_transforms;
+
+    heic_fourcc        unsupported_essential;
 } heic_item;
 
 int  heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
@@ -605,6 +609,17 @@ int  heic_container_find_thumbs(const heic_container *c, uint32_t target_id,
                                 uint32_t *out_ids, int max_out);
 
 #define HEIC_MAX_REF_PICS 16
+
+typedef struct {
+    int poc[2][HEIC_MAX_REF_PICS];
+    uint8_t long_term[2][HEIC_MAX_REF_PICS];
+} heic_ref_table;
+
+typedef struct {
+    const heic_ref_table *tables;
+    int n_tables;
+    const uint8_t *map;
+} heic_ref_lookup;
 #define HEIC_MAX_ST_RPS 64
 #define HEIC_MAX_LT_REF_PICS_SPS 32
 
@@ -645,8 +660,10 @@ typedef struct {
     size_t motion_n;
     uint32_t motion_stride;
     uint32_t motion_min_pu;
-    int ref_poc[2][HEIC_MAX_REF_PICS];
-    uint8_t ref_long_term[2][HEIC_MAX_REF_PICS];
+
+    heic_ref_table *ref_tables;
+    int n_ref_tables;
+    uint8_t *motion_ref_table;
 } heic_frame;
 
 void heic_frame_free(heic_ctx *ctx, heic_frame *f);
@@ -1143,6 +1160,13 @@ int  heic_simd_luma_filter4(uint16_t *plane, size_t base_p, size_t base_q,
                             size_t step_along, size_t step_across, int strong,
                             int d_ep, int d_eq, int tc, int max_val);
 
+int  heic_simd_mc_filter(const void *src, ptrdiff_t tap_step, ptrdiff_t row_step,
+                         const int16_t *coef, int taps, int w, int h, int shift,
+                         int16_t *out, ptrdiff_t out_stride);
+
+int  heic_simd_mc_put_row(const int16_t *a, const int16_t *b, int n, int shift,
+                          int max_val, uint16_t *dst);
+
 int  heic_simd_dequant(int16_t *coeffs, int n, int32_t combined, int shift);
 
 int  heic_simd_intra_ang_row(uint16_t *dst, const int32_t *ref, int n, int a, int b,
@@ -1213,7 +1237,7 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         const uint8_t *pred_mode, const heic_pb_motion *mv_info,
                         uint32_t pu_stride, uint32_t min_pu,
                         const uint8_t *cbf_map,
-                        const int ref_poc[2][HEIC_MAX_REF_PICS],
+                        const heic_ref_lookup *ref_poc,
                         const uint8_t *pcm_map);
 
 int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
@@ -1234,7 +1258,8 @@ heic_hevc_picture *heic_hevc_picture_new(
     const heic_frame *const *l0, int n_l0,
     const heic_frame *const *l1, int n_l1, heic_frame *out);
 int heic_hevc_picture_decode_segment(
-    heic_hevc_picture *picture, const heic_slice_header *sh,
+    heic_hevc_picture *picture, const heic_pps *slice_pps,
+    const heic_slice_header *sh,
     const uint8_t *data, size_t len,
     const uint32_t *ep_positions, int n_ep,
     const heic_frame *const *l0, int n_l0,
@@ -1614,6 +1639,8 @@ void heic_frame_free(heic_ctx *ctx, heic_frame *f)
     heic_free_buf(ctx, f->a);
     heic_free_buf(ctx, f->motion);
     heic_free_buf(ctx, f->motion_pred_mode);
+    heic_free_buf(ctx, f->ref_tables);
+    heic_free_buf(ctx, f->motion_ref_table);
     memset(f, 0, sizeof(*f));
 }
 
@@ -1692,9 +1719,14 @@ int heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
         heic_free_buf(ctx, f->a);
         heic_free_buf(ctx, f->motion);
         heic_free_buf(ctx, f->motion_pred_mode);
+        heic_free_buf(ctx, f->ref_tables);
+        heic_free_buf(ctx, f->motion_ref_table);
         f->a = NULL;
         f->motion = NULL;
         f->motion_pred_mode = NULL;
+        f->ref_tables = NULL;
+        f->n_ref_tables = 0;
+        f->motion_ref_table = NULL;
         f->motion_n = 0;
         f->motion_stride = 0;
         f->motion_min_pu = 0;
@@ -2930,6 +2962,26 @@ static int parse_cmpd(heic_ctx *ctx, const heic_box *b, heic_cmpd *out)
     return 0;
 }
 
+static int essential_property_ok(const heic_box *b)
+{
+    if (b->type == HEIC_FCC('p', 'i', 'x', 'i') ||
+        b->type == HEIC_FCC('a', '1', 'o', 'p') ||
+        b->type == HEIC_FCC('a', '1', 'l', 'x'))
+        return 1;
+    if (b->type == HEIC_FCC('r', 'r', 'e', 'f')) {
+
+        size_t i, n;
+        if (b->content_len < 5) return 0;
+        n = b->content[4];
+        if (b->content_len < 5 + n * 4) return 0;
+        for (i = 0; i < n; i++)
+            if (heic_read_fcc(b->content + 5 + i * 4) != HEIC_REF_PRED)
+                return 0;
+        return 1;
+    }
+    return 0;
+}
+
 static int parse_ipco(heic_ctx *ctx, const heic_box *b, heic_container *c,
                       const heic_abort *ab)
 {
@@ -2945,6 +2997,8 @@ static int parse_ipco(heic_ctx *ctx, const heic_box *b, heic_container *c,
         if ((uint32_t)n >= HEIC_MAX_PROPERTIES) goto fail;
         memset(&prop, 0, sizeof(prop));
         prop.kind = HEIC_PROP_UNKNOWN;
+        prop.box_type = child.type;
+        prop.essential_ok = (uint8_t)essential_property_ok(&child);
         if (child.type == HEIC_BOX_ISPE) {
             if (parse_ispe(&child, &prop.ispe) == 0) prop.kind = HEIC_PROP_ISPE;
         } else if (child.type == HEIC_BOX_HVCC || child.type == HEIC_BOX_HVCB) {
@@ -4475,6 +4529,11 @@ int heic_container_get_item(const heic_container *c, uint32_t item_id, heic_item
         const heic_property *p;
         if (idx == 0 || idx > (uint16_t)c->n_properties) continue;
         p = &c->properties[idx - 1];
+
+        if (p->kind == HEIC_PROP_UNKNOWN && assoc->essential
+            && assoc->essential[j] && !out->unsupported_essential
+            && !p->essential_ok)
+            out->unsupported_essential = p->box_type ? p->box_type : 1;
         switch (p->kind) {
         case HEIC_PROP_ISPE:
             out->has_dims = 1;
@@ -5967,6 +6026,14 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
 
     if (depth > 4) {
         heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "derived item recursion too deep");
+        return -1;
+    }
+    if (item->unsupported_essential) {
+        uint32_t t = item->unsupported_essential;
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                   "item %u has an unsupported essential property '%c%c%c%c'",
+                   (unsigned)item->id, (int)(t & 0xff), (int)((t >> 8) & 0xff),
+                   (int)((t >> 16) & 0xff), (int)((t >> 24) & 0xff));
         return -1;
     }
     if (++doc->item_decodes > HEIC_MAX_ITEM_DECODES) {
@@ -11586,6 +11653,89 @@ int heic_simd_sao_edge_v_row(const uint16_t *src, uint16_t *dst, int stride, int
     return 1;
 }
 
+int heic_simd_mc_filter(const void *src, ptrdiff_t tap_step, ptrdiff_t row_step,
+                        const int16_t *coef, int taps, int w, int h, int shift,
+                        int16_t *out, ptrdiff_t out_stride)
+{
+    const __m128i lo16 = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13,
+                                       -1, -1, -1, -1, -1, -1, -1, -1);
+    __m128i c[4], sh;
+    int pairs = taps >> 1, k, x, y;
+    if (!g_simd || (taps != 4 && taps != 8) || w < 4) return 0;
+    for (k = 0; k < pairs; k++)
+        c[k] = _mm_set1_epi32((int)(((uint32_t)(uint16_t)coef[2 * k + 1] << 16)
+                                    | (uint16_t)coef[2 * k]));
+    sh = _mm_cvtsi32_si128(shift);
+    for (y = 0; y < h; y++) {
+        const int16_t *s = (const int16_t *)src + y * row_step;
+        int16_t *o = out + y * out_stride;
+        for (x = 0; x + 8 <= w; x += 8) {
+            __m128i lo = _mm_setzero_si128(), hi = _mm_setzero_si128();
+            for (k = 0; k < pairs; k++) {
+                __m128i a = _mm_loadu_si128(
+                    (const __m128i *)(s + x + (2 * k) * tap_step));
+                __m128i b = _mm_loadu_si128(
+                    (const __m128i *)(s + x + (2 * k + 1) * tap_step));
+                lo = _mm_add_epi32(
+                    lo, _mm_madd_epi16(_mm_unpacklo_epi16(a, b), c[k]));
+                hi = _mm_add_epi32(
+                    hi, _mm_madd_epi16(_mm_unpackhi_epi16(a, b), c[k]));
+            }
+            lo = _mm_shuffle_epi8(_mm_sra_epi32(lo, sh), lo16);
+            hi = _mm_shuffle_epi8(_mm_sra_epi32(hi, sh), lo16);
+            _mm_storeu_si128((__m128i *)(o + x), _mm_unpacklo_epi64(lo, hi));
+        }
+        if (x + 4 <= w) {
+            __m128i lo = _mm_setzero_si128();
+            for (k = 0; k < pairs; k++) {
+                __m128i a = _mm_loadl_epi64(
+                    (const __m128i *)(s + x + (2 * k) * tap_step));
+                __m128i b = _mm_loadl_epi64(
+                    (const __m128i *)(s + x + (2 * k + 1) * tap_step));
+                lo = _mm_add_epi32(
+                    lo, _mm_madd_epi16(_mm_unpacklo_epi16(a, b), c[k]));
+            }
+            lo = _mm_shuffle_epi8(_mm_sra_epi32(lo, sh), lo16);
+            _mm_storel_epi64((__m128i *)(o + x), lo);
+            x += 4;
+        }
+        for (; x < w; x++) {
+            int sum = 0;
+            for (k = 0; k < taps; k++) sum += s[x + k * tap_step] * coef[k];
+            o[x] = (int16_t)(sum >> shift);
+        }
+    }
+    return 1;
+}
+
+int heic_simd_mc_put_row(const int16_t *a, const int16_t *b, int n, int shift,
+                         int max_val, uint16_t *dst)
+{
+    __m128i rnd, sh, mx;
+    int i;
+    if (!g_simd || n < 8 || shift < 1 || max_val > 0x7FFF) return 0;
+    rnd = _mm_set1_epi32(1 << (shift - 1));
+    sh = _mm_cvtsi32_si128(shift);
+    mx = _mm_set1_epi16((short)max_val);
+    for (i = 0; i < n; i += 8) {
+        __m128i va, lo, hi;
+        if (i + 8 > n) i = n - 8;
+        va = _mm_loadu_si128((const __m128i *)(a + i));
+        lo = _mm_cvtepi16_epi32(va);
+        hi = _mm_cvtepi16_epi32(_mm_srli_si128(va, 8));
+        if (b) {
+            __m128i vb = _mm_loadu_si128((const __m128i *)(b + i));
+            lo = _mm_add_epi32(lo, _mm_cvtepi16_epi32(vb));
+            hi = _mm_add_epi32(hi, _mm_cvtepi16_epi32(_mm_srli_si128(vb, 8)));
+        }
+        lo = _mm_sra_epi32(_mm_add_epi32(lo, rnd), sh);
+        hi = _mm_sra_epi32(_mm_add_epi32(hi, rnd), sh);
+        _mm_storeu_si128((__m128i *)(dst + i),
+                         _mm_min_epu16(_mm_packus_epi32(lo, hi), mx));
+    }
+    return 1;
+}
+
 #else
 
 int heic_simd_idct8(const int16_t *c, int16_t *o, int bd)
@@ -11755,6 +11905,33 @@ int heic_simd_sao_edge_v_row(const uint16_t *s, uint16_t *d, int st, int y, int 
     return 0;
 }
 
+int heic_simd_mc_filter(const void *src, ptrdiff_t tap_step, ptrdiff_t row_step,
+                        const int16_t *coef, int taps, int w, int h, int shift,
+                        int16_t *out, ptrdiff_t out_stride)
+{
+    (void)src;
+    (void)tap_step;
+    (void)row_step;
+    (void)coef;
+    (void)taps;
+    (void)w;
+    (void)h;
+    (void)shift;
+    (void)out;
+    (void)out_stride;
+    return 0;
+}
+int heic_simd_mc_put_row(const int16_t *a, const int16_t *b, int n, int shift,
+                         int max_val, uint16_t *dst)
+{
+    (void)a;
+    (void)b;
+    (void)n;
+    (void)shift;
+    (void)max_val;
+    (void)dst;
+    return 0;
+}
 #endif
 
 #define HEIC_MAX_INTRA 32
@@ -12465,6 +12642,26 @@ static const uint16_t *mc_ref_block(const uint16_t *plane, int stride, int pw,
     return tmp;
 }
 
+static int mc_filter_simd(const uint16_t *p, int ps, int bit_depth,
+                          const int16_t *fx, const int16_t *fy, int taps,
+                          int frac_x, int frac_y, int w, int h, int shift1,
+                          int16_t *out, uint32_t out_stride)
+{
+    int16_t mid[(64 + 7) * 64];
+    if (bit_depth > 12 || w < 4) return 0;
+    if (frac_y == 0)
+        return heic_simd_mc_filter(p, 1, ps, fx, taps, w, h, shift1,
+                                   out, (ptrdiff_t)out_stride);
+    if (frac_x == 0)
+        return heic_simd_mc_filter(p, ps, ps, fy, taps, w, h, shift1,
+                                   out, (ptrdiff_t)out_stride);
+    if (!heic_simd_mc_filter(p, 1, ps, fx, taps, w, h + taps - 1, shift1,
+                             mid, w))
+        return 0;
+    return heic_simd_mc_filter(mid, w, w, fy, taps, w, h, 6,
+                               out, (ptrdiff_t)out_stride);
+}
+
 int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
                           uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                           int16_t *out, uint32_t out_stride,
@@ -12498,6 +12695,10 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
             int16_t *o = out + (size_t)j * out_stride;
             for (i = 0; i < w; i++) o[i] = (int16_t)(s[i] << shift3);
         }
+    } else if (mc_filter_simd(p, ps, ref->bit_depth, LUMA_FILTER[frac_x],
+                              LUMA_FILTER[frac_y], 8, frac_x, frac_y,
+                              (int)w, (int)h, shift1, out, out_stride)) {
+
     } else if (frac_y == 0) {
         const int16_t *c = LUMA_FILTER[frac_x];
         for (j = 0; j < h; j++) {
@@ -12589,6 +12790,11 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
             int16_t *o = out + (size_t)j * out_stride;
             for (i = 0; i < cw; i++) o[i] = (int16_t)(s[i] << shift3);
         }
+    } else if (mc_filter_simd(p, ps, ref->chroma_bit_depth,
+                              CHROMA_FILTER[frac_x], CHROMA_FILTER[frac_y], 4,
+                              frac_x, frac_y, (int)cw, (int)ch, shift1,
+                              out, out_stride)) {
+
     } else if (frac_y == 0) {
         const int16_t *c = CHROMA_FILTER[frac_x];
         for (j = 0; j < ch; j++) {
@@ -12690,6 +12896,11 @@ typedef struct {
     uint8_t *intra_chroma_mode_map;
     uint8_t *pred_mode_map;
     heic_pb_motion *mv_info;
+
+    heic_ref_table *ref_tables;
+    int n_ref_tables;
+    int ref_table_id;
+    uint8_t *mv_ref_table;
     uint32_t intra_mode_stride;
     size_t   intra_mode_n;
     const heic_frame *refs[2][HEIC_MAX_REF_PICS];
@@ -12907,7 +13118,11 @@ static void store_motion(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
     for (dy = 0; dy < ny; dy++)
         for (dx = 0; dx < nx; dx++) {
             size_t idx = (size_t)(sy + dy) * sc->intra_mode_stride + sx + dx;
-            if (idx < sc->intra_mode_n) sc->mv_info[idx] = motion;
+            if (idx < sc->intra_mode_n) {
+                sc->mv_info[idx] = motion;
+                if (sc->mv_ref_table)
+                    sc->mv_ref_table[idx] = (uint8_t)sc->ref_table_id;
+            }
         }
 }
 
@@ -13541,9 +13756,14 @@ static int derive_temporal_mv(const heic_slice_ctx *sc, const heic_pu *pu,
         else list = sc->sh->collocated_from_l0_flag ? 1 : 0;
         ref_idx = m.ref_idx[list];
         if (ref_idx < 0 || ref_idx >= HEIC_MAX_REF_PICS) continue;
-        col_ref_poc = col->ref_poc[list][ref_idx];
+        {
+            int table = col->motion_ref_table ? col->motion_ref_table[idx] : 0;
+            if (table >= col->n_ref_tables) continue;
+            col_ref_poc = col->ref_tables[table].poc[list][ref_idx];
+            col_long_term =
+                col->ref_tables[table].long_term[list][ref_idx] != 0;
+        }
         target_ref_poc = sc->refs[target_list][target_ref_idx]->poc;
-        col_long_term = col->ref_long_term[list][ref_idx] != 0;
         target_long_term =
             active_ref_is_long_term(sc, target_list, target_ref_idx);
         if (col_long_term != target_long_term) continue;
@@ -13886,6 +14106,11 @@ static int predict_internal_from_list(heic_slice_ctx *sc, const heic_pu *pu,
     return 0;
 }
 
+static uint32_t mc_row_len(uint32_t x0, uint32_t w, uint32_t limit)
+{
+    return w < limit - x0 ? w : limit - x0;
+}
+
 static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
                                     int list)
 {
@@ -13896,7 +14121,15 @@ static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
     int max_y = (1 << bd_y) - 1;
     if (shift_y < 2) shift_y = 2;
     for (y = 0; y < pu->h
-                && pu->y + y < (uint32_t)sc->frame->height; y++)
+                && pu->y + y < (uint32_t)sc->frame->height; y++) {
+        if (pu->x < (uint32_t)sc->frame->width
+            && heic_simd_mc_put_row(
+                   pred + y * 64u, NULL,
+                   (int)mc_row_len(pu->x, pu->w, (uint32_t)sc->frame->width),
+                   shift_y, max_y,
+                   sc->frame->y + (size_t)(pu->y + y) * sc->frame->y_stride
+                       + pu->x))
+            continue;
         for (x = 0; x < pu->w
                     && pu->x + x < (uint32_t)sc->frame->width; x++) {
             size_t pos =
@@ -13904,6 +14137,7 @@ static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
             int v = (pred[y * 64u + x] + (1 << (shift_y - 1))) >> shift_y;
             sc->frame->y[pos] = (uint16_t)clip_int(v, 0, max_y);
         }
+    }
     if (sc->frame->chroma_format != 0) {
         int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
         int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
@@ -13920,7 +14154,16 @@ static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
         for (c = 0; c < 2; c++) {
             int16_t *src = pred + (size_t)(c + 1) * 64u * 64u;
             for (y = 0; y < ch
-                        && cy + y < (uint32_t)sc->frame->c_height; y++)
+                        && cy + y < (uint32_t)sc->frame->c_height; y++) {
+                if (cx < (uint32_t)sc->frame->c_width
+                    && heic_simd_mc_put_row(
+                           src + y * 64u, NULL,
+                           (int)mc_row_len(cx, cw,
+                                           (uint32_t)sc->frame->c_width),
+                           shift_c, max_c,
+                           planes[c] + (size_t)(cy + y) * sc->frame->c_stride
+                               + cx))
+                    continue;
                 for (x = 0; x < cw
                             && cx + x < (uint32_t)sc->frame->c_width; x++) {
                     size_t pos =
@@ -13929,6 +14172,7 @@ static void put_unweighted_internal(heic_slice_ctx *sc, const heic_pu *pu,
                             >> shift_c;
                     planes[c][pos] = (uint16_t)clip_int(v, 0, max_c);
                 }
+            }
         }
     }
 }
@@ -13942,7 +14186,15 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
     int max_y = (1 << bit_depth_y(sc->sps)) - 1;
     if (shift_y < 3) shift_y = 3;
     for (y = 0; y < pu->h
-                && pu->y + y < (uint32_t)sc->frame->height; y++)
+                && pu->y + y < (uint32_t)sc->frame->height; y++) {
+        if (pu->x < (uint32_t)sc->frame->width
+            && heic_simd_mc_put_row(
+                   p0 + y * 64u, p1 + y * 64u,
+                   (int)mc_row_len(pu->x, pu->w, (uint32_t)sc->frame->width),
+                   shift_y, max_y,
+                   sc->frame->y + (size_t)(pu->y + y) * sc->frame->y_stride
+                       + pu->x))
+            continue;
         for (x = 0; x < pu->w
                     && pu->x + x < (uint32_t)sc->frame->width; x++) {
             size_t pos =
@@ -13951,6 +14203,7 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
                      + (1 << (shift_y - 1))) >> shift_y;
             sc->frame->y[pos] = (uint16_t)clip_int(v, 0, max_y);
         }
+    }
     if (sc->frame->chroma_format != 0) {
         int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
         int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
@@ -13967,7 +14220,16 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
             int16_t *a = p0 + (size_t)(c + 1) * 64u * 64u;
             int16_t *b = p1 + (size_t)(c + 1) * 64u * 64u;
             for (y = 0; y < ch
-                        && cy + y < (uint32_t)sc->frame->c_height; y++)
+                        && cy + y < (uint32_t)sc->frame->c_height; y++) {
+                if (cx < (uint32_t)sc->frame->c_width
+                    && heic_simd_mc_put_row(
+                           a + y * 64u, b + y * 64u,
+                           (int)mc_row_len(cx, cw,
+                                           (uint32_t)sc->frame->c_width),
+                           shift_c, max_c,
+                           planes[c] + (size_t)(cy + y) * sc->frame->c_stride
+                               + cx))
+                    continue;
                 for (x = 0; x < cw
                             && cx + x < (uint32_t)sc->frame->c_width; x++) {
                     size_t pos =
@@ -13976,6 +14238,7 @@ static void blend_internal_block(heic_slice_ctx *sc, const heic_pu *pu)
                              + (1 << (shift_c - 1))) >> shift_c;
                     planes[c][pos] = (uint16_t)clip_int(v, 0, max_c);
                 }
+            }
         }
     }
 }
@@ -15599,6 +15862,12 @@ static int slice_ctx_reset(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sp
     sc->pps = pps;
     sc->sh = sh;
     sc->frame = frame;
+    heic_free_buf(ctx, sc->ref_tables);
+    heic_free_buf(ctx, sc->mv_ref_table);
+    sc->ref_tables = NULL;
+    sc->mv_ref_table = NULL;
+    sc->n_ref_tables = 0;
+    sc->ref_table_id = 0;
     slice_ctx_set_refs(sc, l0, n_l0, l1, n_l1);
     sc->current_qg_x = -1;
     sc->current_qg_y = -1;
@@ -15664,6 +15933,8 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->intra_chroma_mode_map);
     heic_free_buf(sc->hctx, sc->pred_mode_map);
     heic_free_buf(sc->hctx, sc->mv_info);
+    heic_free_buf(sc->hctx, sc->ref_tables);
+    heic_free_buf(sc->hctx, sc->mv_ref_table);
     heic_free_buf(sc->hctx, sc->qp_map);
     heic_free_buf(sc->hctx, sc->sao_map);
     heic_free_buf(sc->hctx, sc->filter_map);
@@ -15696,6 +15967,47 @@ static void slice_ctx_set_refs(
     sc->n_refs[1] = n_l1;
     for (i = 0; l0 && i < n_l0; i++) sc->refs[0][i] = l0[i];
     for (i = 0; l1 && i < n_l1; i++) sc->refs[1][i] = l1[i];
+}
+
+static int slice_register_ref_table(heic_slice_ctx *sc)
+{
+    heic_ref_table t, *grown;
+    int list, i;
+    memset(&t, 0, sizeof(t));
+    for (list = 0; list < 2; list++) {
+        for (i = 0; i < HEIC_MAX_REF_PICS; i++) t.poc[list][i] = INT_MIN;
+        for (i = 0; i < sc->n_refs[list] && i < HEIC_MAX_REF_PICS; i++)
+            if (sc->refs[list][i] && sc->refs[list][i]->poc_valid) {
+                t.poc[list][i] = sc->refs[list][i]->poc;
+                t.long_term[list][i] =
+                    (uint8_t)active_ref_is_long_term(sc, list, i);
+            }
+    }
+    for (i = 0; i < sc->n_ref_tables; i++)
+        if (memcmp(&sc->ref_tables[i], &t, sizeof(t)) == 0) {
+            sc->ref_table_id = i;
+            return 0;
+        }
+    if (sc->n_ref_tables >= 256) {
+        heic_error(sc->hctx, HEIC_SEVERITY_ERROR,
+                   "more than 256 distinct reference lists in one picture");
+        return -1;
+    }
+    if (sc->n_ref_tables >= 1 && !sc->mv_ref_table) {
+        sc->mv_ref_table = (uint8_t *)heic_zalloc(sc->hctx, sc->intra_mode_n);
+        if (!sc->mv_ref_table) return -1;
+    }
+    grown = (heic_ref_table *)heic_zalloc(
+        sc->hctx, (size_t)(sc->n_ref_tables + 1) * sizeof(*grown));
+    if (!grown) return -1;
+    if (sc->n_ref_tables)
+        memcpy(grown, sc->ref_tables,
+               (size_t)sc->n_ref_tables * sizeof(*grown));
+    grown[sc->n_ref_tables] = t;
+    heic_free_buf(sc->hctx, sc->ref_tables);
+    sc->ref_tables = grown;
+    sc->ref_table_id = sc->n_ref_tables++;
+    return 0;
 }
 
 static uint32_t ebsp_to_rbsp(const uint32_t *eps, int n_ep, uint32_t ebsp_off)
@@ -15826,6 +16138,7 @@ typedef struct {
     int              finished;
     heic_slice_header sh;
     heic_slice_header filter_sh;
+    const heic_pps *pic_pps;
 } heic_slice_work;
 
 struct heic_hevc_picture {
@@ -15857,6 +16170,7 @@ heic_hevc_picture *heic_hevc_picture_new(
             cw->sh.entry_point_offsets = NULL;
             cw->sh.num_entry_point_offsets = 0;
             cw->filter_sh = cw->sh;
+            cw->pic_pps = pps;
             if (slice_ctx_reset(&cw->sc, ctx, sps, pps, &cw->sh,
                                 l0, n_l0, l1, n_l1, out) == 0) {
                 memset(cw->ctb_decoded, 0, total);
@@ -15892,6 +16206,7 @@ heic_hevc_picture *heic_hevc_picture_new(
         work->sh.entry_point_offsets = NULL;
         work->sh.num_entry_point_offsets = 0;
         work->filter_sh = work->sh;
+        work->pic_pps = pps;
         if (slice_ctx_init(&work->sc, ctx, sps, pps, &work->sh,
                            l0, n_l0, l1, n_l1, out) != 0)
             goto fail;
@@ -15917,8 +16232,41 @@ fail:
     return NULL;
 }
 
+static int pps_picture_level_equal(const heic_pps *a, const heic_pps *b)
+{
+    if (a == b) return 1;
+    if (a->tiles_enabled_flag != b->tiles_enabled_flag
+        || a->entropy_coding_sync_enabled_flag
+               != b->entropy_coding_sync_enabled_flag
+        || a->pps_cb_qp_offset != b->pps_cb_qp_offset
+        || a->pps_cr_qp_offset != b->pps_cr_qp_offset
+        || a->loop_filter_across_tiles_enabled_flag
+               != b->loop_filter_across_tiles_enabled_flag)
+        return 0;
+    if (a->tiles_enabled_flag) {
+        if (a->num_tile_columns_minus1 != b->num_tile_columns_minus1
+            || a->num_tile_rows_minus1 != b->num_tile_rows_minus1
+            || a->uniform_spacing_flag != b->uniform_spacing_flag)
+            return 0;
+        if (!a->uniform_spacing_flag) {
+            int k;
+            if (!a->column_width_minus1 || !b->column_width_minus1
+                || !a->row_height_minus1 || !b->row_height_minus1)
+                return 0;
+            for (k = 0; k < (int)a->num_tile_columns_minus1; k++)
+                if (a->column_width_minus1[k] != b->column_width_minus1[k])
+                    return 0;
+            for (k = 0; k < (int)a->num_tile_rows_minus1; k++)
+                if (a->row_height_minus1[k] != b->row_height_minus1[k])
+                    return 0;
+        }
+    }
+    return 1;
+}
+
 int heic_hevc_picture_decode_segment(
-    heic_hevc_picture *picture, const heic_slice_header *sh,
+    heic_hevc_picture *picture, const heic_pps *slice_pps,
+    const heic_slice_header *sh,
     const uint8_t *data, size_t len,
     const uint32_t *ep_positions, int n_ep,
     const heic_frame *const *l0, int n_l0,
@@ -15946,9 +16294,18 @@ int heic_hevc_picture_decode_segment(
     sc = &work->sc;
     ctx = sc->hctx;
     sps = sc->sps;
-    pps = sc->pps;
     out = sc->frame;
-    if (!ctx || !sps || !pps || !out || work->finished) return -1;
+    if (!ctx || !sps || !sc->pps || !out || work->finished) return -1;
+    if (slice_pps && slice_pps != sc->pps) {
+        if (!pps_picture_level_equal(work->pic_pps, slice_pps)) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "slices of one picture use PPS that differ in tile "
+                       "layout or chroma QP offsets (not supported)");
+            return -1;
+        }
+        sc->pps = slice_pps;
+    }
+    pps = sc->pps;
     if (sh->slice_type != HEIC_SLICE_I && (!l0 || n_l0 <= 0)) {
         heic_error(ctx, HEIC_SEVERITY_ERROR,
                    "predictive slice missing L0 reference frame");
@@ -15983,6 +16340,8 @@ int heic_hevc_picture_decode_segment(
 
     if (sh->slice_type != HEIC_SLICE_I || !sc->mv_info)
         slice_ctx_set_refs(sc, l0, n_l0, l1, n_l1);
+    if (sh->slice_type != HEIC_SLICE_I && slice_register_ref_table(sc) != 0)
+        return -1;
     if (heic_cabac_new(&sc->cabac, data, len) != 0) return -1;
 
     pic_w = sps->pic_width_in_ctbs;
@@ -16235,7 +16594,8 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
     heic_frame *out;
     heic_ctx *ctx;
     uint32_t ctb_sz;
-    int i, has_inter;
+    heic_ref_lookup ref_lookup;
+    int has_inter;
     if (!picture) return -1;
     work = &picture->work;
     sc = &work->sc;
@@ -16255,19 +16615,9 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
     }
 
     has_inter = sc->mv_info != NULL && sc->pred_mode_map != NULL;
-    if (has_inter) {
-        int list;
-        for (list = 0; list < 2; list++) {
-            for (i = 0; i < HEIC_MAX_REF_PICS; i++)
-                out->ref_poc[list][i] = INT_MIN;
-            for (i = 0; i < sc->n_refs[list] && i < HEIC_MAX_REF_PICS; i++)
-                if (sc->refs[list][i] && sc->refs[list][i]->poc_valid) {
-                    out->ref_poc[list][i] = sc->refs[list][i]->poc;
-                    out->ref_long_term[list][i] =
-                        (uint8_t)active_ref_is_long_term(sc, list, i);
-                }
-        }
-    }
+    ref_lookup.tables = sc->ref_tables;
+    ref_lookup.n_tables = sc->n_ref_tables;
+    ref_lookup.map = sc->mv_ref_table;
 
     ctb_sz = ctb_size_px(sps);
 
@@ -16282,7 +16632,7 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
             has_inter ? sc->mv_info : NULL,
             sc->intra_mode_stride, min_pu_size(sps),
             has_inter ? sc->cbf_map : NULL,
-            has_inter ? out->ref_poc : NULL,
+            has_inter ? &ref_lookup : NULL,
             sc->has_filter_exclusions ? sc->pcm_map : NULL);
     }
     if (sps->sample_adaptive_offset_enabled_flag && sc->sao_map) {
@@ -16301,8 +16651,16 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
         out->motion_n = sc->intra_mode_n;
         out->motion_stride = sc->intra_mode_stride;
         out->motion_min_pu = min_pu_size(sps);
+        heic_free_buf(ctx, out->ref_tables);
+        heic_free_buf(ctx, out->motion_ref_table);
+        out->ref_tables = sc->ref_tables;
+        out->n_ref_tables = sc->n_ref_tables;
+        out->motion_ref_table = sc->mv_ref_table;
         sc->mv_info = NULL;
         sc->pred_mode_map = NULL;
+        sc->ref_tables = NULL;
+        sc->mv_ref_table = NULL;
+        sc->n_ref_tables = 0;
     }
     work->finished = 1;
     return 0;
@@ -16840,14 +17198,17 @@ static int mv_diff_ge4(heic_mv a, heic_mv b)
            iabs((int)a.y - (int)b.y) >= 4;
 }
 
-static int resolve_ref_poc(const int ref_poc[2][HEIC_MAX_REF_PICS],
+static int resolve_ref_poc(const heic_ref_lookup *refs, size_t pu_idx,
                            heic_pb_motion motion, int list)
 {
     int ref = motion.ref_idx[list];
-    if (!motion.pred_flag[list] || !ref_poc ||
+    int table;
+    if (!motion.pred_flag[list] || !refs ||
         ref < 0 || ref >= HEIC_MAX_REF_PICS)
         return INT_MIN;
-    return ref_poc[list][ref];
+    table = refs->map ? refs->map[pu_idx] : 0;
+    if (table >= refs->n_tables) return INT_MIN;
+    return refs->tables[table].poc[list][ref];
 }
 
 static int compute_bs(uint32_t x, uint32_t y, int vertical,
@@ -16855,7 +17216,7 @@ static int compute_bs(uint32_t x, uint32_t y, int vertical,
                       const heic_pb_motion *mv_info, uint32_t pu_stride,
                       uint32_t min_pu, const uint8_t *cbf_map,
                       uint32_t cbf_stride,
-                      const int ref_poc[2][HEIC_MAX_REF_PICS])
+                      const heic_ref_lookup *ref_poc)
 {
     uint32_t px = vertical ? x - 1 : x;
     uint32_t py = vertical ? y : y - 1;
@@ -16881,10 +17242,10 @@ static int compute_bs(uint32_t x, uint32_t y, int vertical,
     count_q = mq.pred_flag[0] + mq.pred_flag[1];
     if (count_p != count_q) return 1;
 
-    rp0 = resolve_ref_poc(ref_poc, mp, 0);
-    rp1 = resolve_ref_poc(ref_poc, mp, 1);
-    rq0 = resolve_ref_poc(ref_poc, mq, 0);
-    rq1 = resolve_ref_poc(ref_poc, mq, 1);
+    rp0 = resolve_ref_poc(ref_poc, pi, mp, 0);
+    rp1 = resolve_ref_poc(ref_poc, pi, mp, 1);
+    rq0 = resolve_ref_poc(ref_poc, qi, mq, 0);
+    rq1 = resolve_ref_poc(ref_poc, qi, mq, 1);
     if (!((rp0 == rq0 && rp1 == rq1) ||
           (rp0 == rq1 && rp1 == rq0)))
         return 1;
@@ -17072,7 +17433,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
                                     const heic_pb_motion *mv_info,
                                     uint32_t pu_stride, uint32_t min_pu,
                                     const uint8_t *cbf_map,
-                                    const int ref_poc[2][HEIC_MAX_REF_PICS],
+                                    const heic_ref_lookup *ref_poc,
                                     const uint8_t *pcm_map)
 {
     int w = frame->width, h = frame->height;
@@ -17257,7 +17618,7 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
                         const uint8_t *pred_mode,
                         const heic_pb_motion *mv_info, uint32_t pu_stride,
                         uint32_t min_pu, const uint8_t *cbf_map,
-                        const int ref_poc[2][HEIC_MAX_REF_PICS],
+                        const heic_ref_lookup *ref_poc,
                         const uint8_t *pcm_map)
 {
     uint32_t w, h, x, y;
@@ -17520,6 +17881,19 @@ static int ref_is_available(const heic_frame *f, int managed)
     if (!f || !f->poc_valid) return 0;
     if (!managed) return 1;
     return f->dpb_mark == HEIC_DPB_SHORT || f->dpb_mark == HEIC_DPB_LONG;
+}
+
+static int slice_nal_pps_id(const heic_nal *nal)
+{
+    heic_bs sb;
+    uint32_t id;
+    heic_bs_init(&sb, nal->payload, nal->payload_len);
+    (void)heic_bs_bit(&sb);
+    if (nal->type >= HEIC_NAL_BLA_W_LP && nal->type <= HEIC_NAL_CRA)
+        (void)heic_bs_bit(&sb);
+    id = heic_bs_ue(&sb);
+    if (sb.error || id >= HEIC_PARAM_MAX_PPS) return -1;
+    return (int)id;
 }
 
 static int nal_is_reference(uint8_t nal_type)
@@ -17841,17 +18215,11 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
     }
 
     for (i = 0; i < n_nals; i++) {
-        heic_bs sb;
-        uint32_t id;
+        int id;
         if (!heic_nal_is_slice(nals[i].type) || nals[i].nuh_layer_id != 0)
             continue;
-        heic_bs_init(&sb, nals[i].payload, nals[i].payload_len);
-        (void)heic_bs_bit(&sb);
-        if (nals[i].type >= HEIC_NAL_BLA_W_LP && nals[i].type <= HEIC_NAL_CRA)
-            (void)heic_bs_bit(&sb);
-        id = heic_bs_ue(&sb);
-        if (!sb.error && id < HEIC_PARAM_MAX_PPS && pc->pps_valid[id])
-            active_pps_id = (int)id;
+        id = slice_nal_pps_id(&nals[i]);
+        if (id >= 0 && pc->pps_valid[id]) active_pps_id = id;
         break;
     }
     if (active_pps_id < 0) {
@@ -17933,6 +18301,7 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
             const heic_frame *l0[HEIC_MAX_REF_PICS] = {0};
             const heic_frame *l1[HEIC_MAX_REF_PICS] = {0};
             uint32_t *eps = NULL;
+            const heic_pps *slice_pps;
             size_t slice_len;
             int n_l0 = 0, n_l1 = 0;
             int ne = 0, e;
@@ -17947,8 +18316,21 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                 failed = 1;
                 break;
             }
+
+            {
+                int id = slice_nal_pps_id(&nals[i]);
+                if (id < 0 || !pc->pps_valid[id]
+                    || pc->pps_set[id].pps_seq_parameter_set_id
+                           != pps->pps_seq_parameter_set_id) {
+                    heic_error(ctx, HEIC_SEVERITY_ERROR,
+                               "slice refers to an unavailable PPS");
+                    failed = 1;
+                    break;
+                }
+                slice_pps = &pc->pps_set[id];
+            }
             if (heic_parse_slice_header(
-                    ctx, &nals[i], sps, pps,
+                    ctx, &nals[i], sps, slice_pps,
                     have_independent ? &independent : NULL, &sh) != 0) {
                 failed = 1;
                 break;
@@ -18053,7 +18435,8 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
             }
             if (!failed
                 && heic_hevc_picture_decode_segment(
-                       picture, &sh, slice_data, slice_len, eps, ne,
+                       picture, slice_pps, &sh, slice_data, slice_len,
+                       eps, ne,
                        l0, n_l0, l1, n_l1, ab) != 0)
                 failed = 1;
             heic_free_buf(ctx, eps);
@@ -18632,17 +19015,16 @@ static void br_byte_align(unci_br *br)
 
 static int br_get_bits(unci_br *br, int n)
 {
-    int v = 0, i;
+    size_t byte = br->bit_pos >> 3;
+    unsigned skip = (unsigned)(br->bit_pos & 7);
+    uint32_t acc = 0;
+    int i;
     if (n <= 0 || n > 16) return 0;
-    for (i = 0; i < n; i++) {
-        size_t byte = br->bit_pos >> 3;
-        int bit = 7 - (int)(br->bit_pos & 7);
-        int b = 0;
-        if (byte < br->len) b = (br->data[byte] >> bit) & 1;
-        v = (v << 1) | b;
-        br->bit_pos++;
-    }
-    return v;
+
+    for (i = 0; i < 3; i++)
+        acc = (acc << 8) | (byte + (size_t)i < br->len ? br->data[byte + i] : 0u);
+    br->bit_pos += (size_t)n;
+    return (int)((acc >> (24u - skip - (unsigned)n)) & ((1u << n) - 1u));
 }
 
 static void br_skip_bytes(unci_br *br, size_t n)
@@ -18976,7 +19358,8 @@ static int copy_pixel8_row(unci_br *br, heic_frame *out, const int *plane_map,
 }
 
 static int copy_component8_row(unci_br *br, heic_frame *out, int plane,
-                               uint32_t x, uint32_t y, uint32_t n)
+                               uint32_t x, uint32_t y, uint32_t n,
+                               size_t step)
 {
     const uint8_t *src;
     uint16_t *dst;
@@ -18986,10 +19369,10 @@ static int copy_component8_row(unci_br *br, heic_frame *out, int plane,
     if ((br->bit_pos & 7) != 0)
         return 0;
     pos = br->bit_pos >> 3;
-    if (pos > br->len || (size_t)n > br->len - pos)
+    if (step == 0 || pos > br->len || (size_t)n > (br->len - pos) / step)
         return 0;
     if (plane < 0) {
-        br->bit_pos += (size_t)n * 8;
+        br->bit_pos += (size_t)n * step * 8;
         return 1;
     }
     if (plane == 0) {
@@ -19013,10 +19396,21 @@ static int copy_component8_row(unci_br *br, heic_frame *out, int plane,
     }
 
     src = br->data + pos;
-    for (i = 0; i < n; i++)
-        dst[i] = src[i];
-    br->bit_pos += (size_t)n * 8;
+    if (step == 1) {
+        for (i = 0; i < n; i++) dst[i] = src[i];
+    } else {
+        for (i = 0; i < n; i++) dst[i] = src[(size_t)i * step];
+    }
+    br->bit_pos += (size_t)n * step * 8;
     return 1;
+}
+
+static size_t component_row_step(int bit_depth, uint8_t align)
+{
+    if (align != 0) return 0;
+    if (bit_depth == 8) return 1;
+    if (bit_depth == 16) return 2;
+    return 0;
 }
 
 static void plane_tile_dims(int plane, int sampling, uint32_t tw, uint32_t th,
@@ -19455,8 +19849,9 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
                     tile_start_bytes = br.bit_pos >> 3;
                     for (y = 0; y < pth; y++) {
                         size_t row_start = br.bit_pos >> 3;
-                        if (bit_depth[i] != 8 || align[i] != 0 ||
-                            !copy_component8_row(&br, out, plane, ox, oy + y, ptw)) {
+                        if (!copy_component8_row(
+                                &br, out, plane, ox, oy + y, ptw,
+                                component_row_step(bit_depth[i], align[i]))) {
                             for (x = 0; x < ptw; x++) {
                                 int val = read_comp_sample(&br, bit_depth[i], align[i]);
                                 uint16_t v8 = expand8(val, bit_depth[i]);
@@ -19501,8 +19896,9 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
                     oy = ty * pth;
                     for (y = 0; y < pth; y++) {
                         size_t row_start = br.bit_pos >> 3;
-                        if (bit_depth[i] != 8 || align[i] != 0 ||
-                            !copy_component8_row(&br, out, plane, ox, oy + y, ptw)) {
+                        if (!copy_component8_row(
+                                &br, out, plane, ox, oy + y, ptw,
+                                component_row_step(bit_depth[i], align[i]))) {
                             for (x = 0; x < ptw; x++) {
                                 int val = read_comp_sample(&br, bit_depth[i], align[i]);
                                 uint16_t v8 = expand8(val, bit_depth[i]);
