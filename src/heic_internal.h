@@ -26,9 +26,6 @@
 #ifndef HEIC_MAX
 #define HEIC_MAX(a, b) ((a) > (b) ? (a) : (b))
 #endif
-#ifndef HEIC_CLAMP
-#define HEIC_CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
-#endif
 
 #define HEIC_COUNTOF(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -71,12 +68,10 @@ typedef uint32_t heic_fourcc;
 #define HEIC_BOX_IPRP HEIC_FCC('i', 'p', 'r', 'p')
 #define HEIC_BOX_IPCO HEIC_FCC('i', 'p', 'c', 'o')
 #define HEIC_BOX_IPMA HEIC_FCC('i', 'p', 'm', 'a')
-#define HEIC_BOX_MDAT HEIC_FCC('m', 'd', 'a', 't')
 #define HEIC_BOX_ISPE HEIC_FCC('i', 's', 'p', 'e')
 #define HEIC_BOX_HVCC HEIC_FCC('h', 'v', 'c', 'C')
 #define HEIC_BOX_HVCB HEIC_FCC('h', 'v', 'c', 'B')
 #define HEIC_BOX_COLR HEIC_FCC('c', 'o', 'l', 'r')
-#define HEIC_BOX_PIXI HEIC_FCC('p', 'i', 'x', 'i')
 #define HEIC_BOX_IREF HEIC_FCC('i', 'r', 'e', 'f')
 #define HEIC_BOX_AUXC HEIC_FCC('a', 'u', 'x', 'C')
 #define HEIC_BOX_IDAT HEIC_FCC('i', 'd', 'a', 't')
@@ -88,8 +83,6 @@ typedef uint32_t heic_fourcc;
 #define HEIC_BOX_CMPC HEIC_FCC('c', 'm', 'p', 'C')
 #define HEIC_BOX_CMPD HEIC_FCC('c', 'm', 'p', 'd')
 #define HEIC_BOX_ICEF HEIC_FCC('i', 'c', 'e', 'f')
-#define HEIC_BOX_CLLI HEIC_FCC('c', 'L', 'L', 'i')
-#define HEIC_BOX_MDCV HEIC_FCC('m', 'D', 'C', 'v')
 #define HEIC_BOX_MINI HEIC_FCC('m', 'i', 'n', 'i')
 #define HEIC_BOX_MOOV HEIC_FCC('m', 'o', 'o', 'v')
 #define HEIC_BOX_MVHD HEIC_FCC('m', 'v', 'h', 'd')
@@ -118,8 +111,6 @@ typedef uint32_t heic_fourcc;
 /* Item type fourccs */
 #define HEIC_TYPE_HVC1 HEIC_FCC('h', 'v', 'c', '1')
 #define HEIC_TYPE_AV01 HEIC_FCC('a', 'v', '0', '1')
-#define HEIC_TYPE_AVC1 HEIC_FCC('a', 'v', 'c', '1')
-#define HEIC_TYPE_JPEG HEIC_FCC('j', 'p', 'e', 'g')
 #define HEIC_TYPE_UNCI HEIC_FCC('u', 'n', 'c', 'i')
 #define HEIC_TYPE_GRID HEIC_FCC('g', 'r', 'i', 'd')
 #define HEIC_TYPE_IOVL HEIC_FCC('i', 'o', 'v', 'l')
@@ -233,30 +224,20 @@ typedef struct {
     uint32_t width, height;
 } heic_ispe;
 
+/* hvcC: only the fields the decoder uses (profile/tier/level are skipped;
+   the SPS carries what matters). */
 typedef struct {
-    uint8_t   config_version;
-    uint8_t   general_profile_space;
-    int       general_tier_flag;
-    uint8_t   general_profile_idc;
-    uint32_t  general_profile_compatibility_flags;
-    uint64_t  general_constraint_indicator_flags;
-    uint8_t   general_level_idc;
     uint8_t   chroma_format;
     uint8_t   bit_depth_luma_minus8;
     uint8_t   bit_depth_chroma_minus8;
     uint8_t   length_size_minus_one;
-    /* Concatenated parameter-set NALs (each length-prefixed with 2 bytes BE). */
-    uint8_t  *nal_blob;
-    size_t    nal_blob_len;
-    /* Or: array of individual NALs for convenience. */
+    /* Parameter-set NALs, one allocation each. */
     uint8_t **nal_units;
     size_t   *nal_unit_lens;
     int       n_nal_units;
 } heic_hvcc;
 
 typedef struct {
-    uint8_t  seq_profile;
-    uint8_t  seq_level_idx_0;
     int      high_bitdepth;
     int      twelve_bit;
     int      monochrome;
@@ -313,9 +294,7 @@ typedef struct {
 } heic_xform;
 
 typedef struct {
-    char    *aux_type;
-    uint8_t *subtype_data;
-    size_t   subtype_len;
+    char    *aux_type; /* URN; the optional aux_subtype bytes are not kept */
 } heic_auxc;
 
 /* ISO 23001-17 uncC component (FullBox body). */
@@ -337,7 +316,6 @@ typedef struct {
     uint8_t        block_pad_lsb;            /* 0x40 */
     uint8_t        block_little_endian;      /* 0x20 */
     uint8_t        block_reversed;           /* 0x10 */
-    uint8_t        pad_unknown;              /* 0x08 */
     uint32_t       pixel_size;      /* ISO 23001-17: uint32 */
     uint32_t       row_align_size;
     uint32_t       tile_align_size;
@@ -457,8 +435,6 @@ typedef struct {
     int                n_item_references;
     const uint8_t     *idat;
     size_t             idat_len;
-    size_t             mdat_offset; /* content offset, or 0 */
-    size_t             mdat_len;
     int                has_meta;
     int                is_sequence; /* moov image sequence is available */
     heic_sequence      *sequence;
@@ -604,7 +580,6 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
 struct heic_doc {
     heic_ctx       *ctx;
     const uint8_t  *data;
-    size_t          len;
     heic_container  container;
     heic_kind       kind;
 };

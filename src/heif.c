@@ -118,7 +118,6 @@ static void free_hvcc(heic_ctx *ctx, heic_hvcc *h)
     for (i = 0; i < h->n_nal_units; i++) heic_free_buf(ctx, h->nal_units[i]);
     heic_free_buf(ctx, h->nal_units);
     heic_free_buf(ctx, h->nal_unit_lens);
-    heic_free_buf(ctx, h->nal_blob);
     memset(h, 0, sizeof(*h));
 }
 
@@ -136,7 +135,6 @@ static void free_property(heic_ctx *ctx, heic_property *p)
     }
     if (p->kind == HEIC_PROP_AUXC) {
         heic_free_buf(ctx, p->auxc.aux_type);
-        heic_free_buf(ctx, p->auxc.subtype_data);
         memset(&p->auxc, 0, sizeof(p->auxc));
     }
     if (p->kind == HEIC_PROP_UNCC) {
@@ -890,16 +888,7 @@ static int parse_hvcc(heic_ctx *ctx, const heic_box *b, heic_hvcc *out)
 
     memset(out, 0, sizeof(*out));
     if (len < 23) return -1;
-    out->config_version = content[0];
-    out->general_profile_space = (content[1] >> 6) & 3;
-    out->general_tier_flag = (content[1] >> 5) & 1;
-    out->general_profile_idc = content[1] & 0x1F;
-    out->general_profile_compatibility_flags = heic_rb32(content + 2);
-    out->general_constraint_indicator_flags =
-        ((uint64_t)content[6] << 40) | ((uint64_t)content[7] << 32) |
-        ((uint64_t)content[8] << 24) | ((uint64_t)content[9] << 16) |
-        ((uint64_t)content[10] << 8) | (uint64_t)content[11];
-    out->general_level_idc = content[12];
+    /* content[0..12]: configurationVersion + profile/tier/level (unused). */
     out->chroma_format = content[16] & 3;
     out->bit_depth_luma_minus8 = content[17] & 7;
     out->bit_depth_chroma_minus8 = content[18] & 7;
@@ -964,8 +953,6 @@ static int parse_av1c(heic_ctx *ctx, const heic_box *b, heic_av1c *out)
     memset(out, 0, sizeof(*out));
     if (len < 4) return -1;
     /* marker|version should be 0x81 */
-    out->seq_profile = (c[1] >> 5) & 7;
-    out->seq_level_idx_0 = c[1] & 0x1F;
     out->high_bitdepth = (c[2] >> 6) & 1;
     out->twelve_bit = (c[2] >> 5) & 1;
     out->monochrome = (c[2] >> 4) & 1;
@@ -1057,16 +1044,6 @@ static int parse_auxc(heic_ctx *ctx, const heic_box *b, heic_auxc *out)
     if (end > HEIC_MAX_STRING_LEN) return -1;
     out->aux_type = dup_cstr_z(ctx, data, end);
     if (!out->aux_type) return -1;
-    if (end + 1 < dlen) {
-        out->subtype_len = dlen - (end + 1);
-        out->subtype_data = (uint8_t *)heic_zalloc(ctx, out->subtype_len);
-        if (!out->subtype_data) {
-            heic_free_buf(ctx, out->aux_type);
-            memset(out, 0, sizeof(*out));
-            return -1;
-        }
-        memcpy(out->subtype_data, data + end + 1, out->subtype_len);
-    }
     return 0;
 }
 
@@ -1110,7 +1087,6 @@ static int parse_uncc(heic_ctx *ctx, const heic_box *b, heic_uncc *out)
         out->block_pad_lsb = (flags & 0x40) ? 1 : 0;
         out->block_little_endian = (flags & 0x20) ? 1 : 0;
         out->block_reversed = (flags & 0x10) ? 1 : 0;
-        out->pad_unknown = (flags & 0x08) ? 1 : 0;
     }
     /* pixel_size is uint32 in ISO 23001-17 / libheif (not uint8). */
     if (pos + 4 <= len) {
@@ -2721,9 +2697,6 @@ int heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,
                 heic_container_free(out);
                 return -1;
             }
-        } else if (top.type == HEIC_BOX_MDAT) {
-            out->mdat_offset = top.content_off;
-            out->mdat_len = top.content_len;
         } else if (top.type == HEIC_BOX_MINI) {
             if (out->has_meta) continue;
             if (parse_mini(ctx, &top, out) != 0) {

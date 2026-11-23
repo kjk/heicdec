@@ -38,7 +38,6 @@ heic_doc *heic_doc_open(heic_ctx *ctx, const uint8_t *data, size_t len)
     if (!doc) return NULL;
     doc->ctx = ctx;
     doc->data = data;
-    doc->len = len;
     if (heic_container_parse(ctx, data, len, &doc->container, NULL) != 0) {
         heic_free_buf(ctx, doc);
         return NULL;
