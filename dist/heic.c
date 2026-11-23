@@ -6883,60 +6883,154 @@ static void convert_420(const heic_frame *f, const ycc_coeffs *cc, int x0, int y
     }
 }
 
-#define YCC_STRIP_ROWS 16
-static int convert_8_via_rgb(heic_ctx *ctx, const heic_frame *f,
-                             const ycc_lut *lut, int x0, int y0, int w, int h,
-                             uint8_t *dst, int stride, int bpp, int is_bgr)
+static void ycc_reorder_rows(const uint8_t *rgb, int n, int w, uint8_t *dst,
+                             int stride, int bpp, int is_bgr,
+                             const uint16_t *ap, int a_stride, int a_shift)
 {
-    uint8_t *strip;
-    int y, r, x;
+    int r, x;
     int ri = is_bgr ? 2 : 0, bi = is_bgr ? 0 : 2;
-    strip = (uint8_t *)heic_alloc(ctx, (size_t)w * 3 * YCC_STRIP_ROWS);
-    if (!strip) return -1;
-    for (y = 0; y < h; y += YCC_STRIP_ROWS) {
-        int n = h - y < YCC_STRIP_ROWS ? h - y : YCC_STRIP_ROWS;
-        if (f->chroma_format == 3)
-            convert_444_8_rgb(f, lut, x0, y0 + y, w, n, strip, w * 3);
-        else
-            convert_420_8_rgb(f, lut, x0, y0 + y, w, n, strip, w * 3);
-        for (r = 0; r < n; r++) {
-            const uint8_t *s = strip + (size_t)r * (size_t)w * 3;
-            uint8_t *d = dst + (size_t)(y + r) * (size_t)stride;
-            if (bpp == 3) {
-                for (x = 0; x < w; x++) {
-                    d[0] = s[2];
-                    d[1] = s[1];
-                    d[2] = s[0];
-                    s += 3;
-                    d += 3;
-                }
-            } else if (f->a) {
-                const uint16_t *ap =
-                    f->a + (size_t)(y0 + y + r) *
-                               (size_t)(f->a_stride ? f->a_stride : f->y_stride) +
-                    (size_t)x0;
-                for (x = 0; x < w; x++) {
-                    d[ri] = s[0];
-                    d[1] = s[1];
-                    d[bi] = s[2];
-                    d[3] = (uint8_t)ap[x];
-                    s += 3;
-                    d += 4;
-                }
-            } else {
-                for (x = 0; x < w; x++) {
-                    d[ri] = s[0];
-                    d[1] = s[1];
-                    d[bi] = s[2];
-                    d[3] = 255;
-                    s += 3;
-                    d += 4;
-                }
+    for (r = 0; r < n; r++) {
+        const uint8_t *s = rgb + (size_t)r * (size_t)w * 3;
+        uint8_t *d = dst + (size_t)r * (size_t)stride;
+        if (bpp == 3) {
+            for (x = 0; x < w; x++) {
+                d[ri] = s[0];
+                d[1] = s[1];
+                d[bi] = s[2];
+                s += 3;
+                d += 3;
+            }
+        } else if (ap) {
+            const uint16_t *a = ap + (size_t)r * (size_t)a_stride;
+            for (x = 0; x < w; x++) {
+                d[ri] = s[0];
+                d[1] = s[1];
+                d[bi] = s[2];
+                d[3] = (uint8_t)(a[x] >> a_shift);
+                s += 3;
+                d += 4;
+            }
+        } else {
+            for (x = 0; x < w; x++) {
+                d[ri] = s[0];
+                d[1] = s[1];
+                d[bi] = s[2];
+                d[3] = 255;
+                s += 3;
+                d += 4;
             }
         }
     }
+}
+
+#define YCC_STRIP_ROWS 16
+static int convert_via_rgb8(heic_ctx *ctx, const heic_frame *f,
+                            const ycc_lut *lut, int x0, int y0, int w, int h,
+                            int y_shift, int c_shift, uint8_t *dst, int stride,
+                            int bpp, int is_bgr)
+{
+    int is420 = f->chroma_format == 1;
+    int hbd = y_shift != 0 || c_shift != 0;
+    int direct = bpp == 3 && !is_bgr;
+    int a_stride = f->a_stride ? f->a_stride : f->y_stride;
+
+    int px = is420 ? (x0 & 1) : 0;
+    int vw = w + px;
+    int cx0 = is420 ? (x0 >> 1) : x0;
+    int cx1 = is420 ? ((x0 + w - 1) >> 1) : (x0 + w - 1);
+    int vcw, vcs;
+    heic_frame g;
+    uint16_t *ybuf = NULL, *cbbuf = NULL, *crbuf = NULL;
+    uint8_t *strip = NULL;
+    int y, rc = -1;
+
+    memset(&g, 0, sizeof(g));
+    if (cx1 > f->c_width - 1) cx1 = f->c_width - 1;
+    if (cx0 < 0 || cx1 < cx0) return -1;
+    vcw = cx1 - cx0 + 1;
+    vcs = vcw + 2;
+
+    if (!direct) {
+        strip = (uint8_t *)heic_alloc(ctx, (size_t)w * 3 * YCC_STRIP_ROWS);
+        if (!strip) goto done;
+    }
+    if (hbd) {
+        size_t rows = YCC_STRIP_ROWS + 1;
+        ybuf = (uint16_t *)heic_alloc(ctx, (size_t)vw * rows * sizeof(uint16_t));
+        cbbuf = (uint16_t *)heic_alloc(ctx, (size_t)vcs * rows * sizeof(uint16_t));
+        crbuf = (uint16_t *)heic_alloc(ctx, (size_t)vcs * rows * sizeof(uint16_t));
+        if (!ybuf || !cbbuf || !crbuf) goto done;
+
+        memset(ybuf, 0, (size_t)vw * rows * sizeof(uint16_t));
+        g.chroma_format = f->chroma_format;
+        g.width = vw;
+        g.y = ybuf;
+        g.y_stride = vw;
+        g.cb = cbbuf;
+        g.cr = crbuf;
+        g.c_stride = vcs;
+        g.c_width = vcw;
+    }
+
+    for (y = 0; y < h; y += YCC_STRIP_ROWS) {
+        int n = h - y < YCC_STRIP_ROWS ? h - y : YCC_STRIP_ROWS;
+        int sy0 = y0 + y;
+        uint8_t *out_rows = dst + (size_t)y * (size_t)stride;
+        uint8_t *tgt = direct ? out_rows : strip;
+        int tstride = direct ? stride : w * 3;
+        const heic_frame *src = f;
+        int sx = x0, sy = sy0;
+
+        if (hbd) {
+            int py = is420 ? (sy0 & 1) : 0;
+            int cy0 = is420 ? (sy0 >> 1) : sy0;
+            int cy1 = is420 ? ((sy0 + n - 1) >> 1) : (sy0 + n - 1);
+            int r, i;
+            if (cy1 > f->c_height - 1) cy1 = f->c_height - 1;
+            if (cy1 < cy0) goto done;
+            for (r = 0; r < n; r++) {
+                const uint16_t *s =
+                    f->y + (size_t)(sy0 + r) * (size_t)f->y_stride + (size_t)x0;
+                uint16_t *d = ybuf + (size_t)(py + r) * (size_t)vw + (size_t)px;
+                for (i = 0; i < w; i++) d[i] = (uint16_t)(s[i] >> y_shift);
+            }
+            for (r = 0; r <= cy1 - cy0; r++) {
+                size_t si = (size_t)(cy0 + r) * (size_t)f->c_stride + (size_t)cx0;
+                uint16_t *db = cbbuf + (size_t)r * (size_t)vcs;
+                uint16_t *dr = crbuf + (size_t)r * (size_t)vcs;
+                for (i = 0; i < vcw; i++) {
+                    db[i] = (uint16_t)(f->cb[si + (size_t)i] >> c_shift);
+                    dr[i] = (uint16_t)(f->cr[si + (size_t)i] >> c_shift);
+                }
+                db[vcw] = db[vcw + 1] = db[vcw - 1];
+                dr[vcw] = dr[vcw + 1] = dr[vcw - 1];
+            }
+            g.height = py + n;
+            g.c_height = cy1 - cy0 + 1;
+            src = &g;
+            sx = px;
+            sy = py;
+        }
+
+        if (is420)
+            convert_420_8_rgb(src, lut, sx, sy, w, n, tgt, tstride);
+        else
+            convert_444_8_rgb(src, lut, sx, sy, w, n, tgt, tstride);
+
+        if (!direct)
+            ycc_reorder_rows(strip, n, w, out_rows, stride, bpp, is_bgr,
+                             (bpp == 4 && f->a)
+                                 ? f->a + (size_t)sy0 * (size_t)a_stride + (size_t)x0
+                                 : NULL,
+                             a_stride, y_shift);
+    }
+    rc = 0;
+done:
     heic_free_buf(ctx, strip);
-    return 0;
+    heic_free_buf(ctx, ybuf);
+    heic_free_buf(ctx, cbbuf);
+    heic_free_buf(ctx, crbuf);
+    return rc;
 }
 
 int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
@@ -6974,20 +7068,19 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
 
     ycc_select(matrix, full, &cc);
 
-    if (y_shift == 0 && c_shift == 0 && matrix != 0
-        && f->cb && f->cr
+    if (matrix != 0 && f->cb && f->cr
         && (f->chroma_format == 1 || f->chroma_format == 3)) {
         ycc_lut lut;
         ycc_build_lut(&cc, &lut);
-        if (!has_a && !is_bgr) {
+        if (y_shift == 0 && c_shift == 0 && !has_a && !is_bgr) {
             if (f->chroma_format == 3)
                 convert_444_8_rgb(f, &lut, x0, y0, w, h, dst, stride);
             else
                 convert_420_8_rgb(f, &lut, x0, y0, w, h, dst, stride);
             return 0;
         }
-        if (convert_8_via_rgb(ctx, f, &lut, x0, y0, w, h, dst, stride, bpp,
-                              is_bgr) == 0)
+        if (convert_via_rgb8(ctx, f, &lut, x0, y0, w, h, y_shift, c_shift, dst,
+                             stride, bpp, is_bgr) == 0)
             return 0;
     }
 
