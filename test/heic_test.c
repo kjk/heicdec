@@ -1596,6 +1596,12 @@ int main(int argc, char **argv)
             do_decode = 1;
         } else if (argv[i][0] != '-')
             path = argv[i];
+        else {
+            /* Unknown flag, or a value flag with its value missing: a typo
+               must not silently turn into a different (passing) run. */
+            fprintf(stderr, "heic_test: bad option %s\n", argv[i]);
+            return 2;
+        }
     }
     if (do_memory_limit) {
         return do_memory_limit_test();
