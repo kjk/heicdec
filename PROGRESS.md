@@ -520,6 +520,12 @@
       agree on tile layout, entropy sync, chroma QP offsets and tile-edge
       filtering (otherwise the decode fails with a clear error). No stream in
       the suite does this; verified as a non-regression only.
+- [x] HEVC inter prediction above 12 bits: the internal-precision samples
+      were int16 and overflowed (a 16-bit sample << 2 needs 18 bits), so every
+      inter picture was wrong. They are int32 above 12 bits now (scalar path;
+      SIMD stays for 8-12 bits). Two HM 18.0 encoded 16-bit 4:4:4 B-slice
+      streams are checked in under `test/streams/` (one with extended
+      precision + weighted prediction) and match HM's decoder MD5.
 
 ## Investigation notes
 

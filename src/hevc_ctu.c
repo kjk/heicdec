@@ -70,6 +70,7 @@ typedef struct {
     heic_coeff_buf *coeff; /* residual decode scratch (2KB; not on recursive stack) */
     int32_t *mc_scratch; /* max 64x(64+8), shared by luma/chroma MC */
     int16_t *mc_internal; /* two lists of internal-precision Y + Cb + Cr */
+    int32_t *mc_wide;     /* the same, when a bit depth is above 12 */
     uint8_t stat_coeff[4]; /* RExt persistent Rice adaptation state */
 } heic_slice_ctx;
 
@@ -1235,20 +1236,30 @@ static int predict_internal_from_list(heic_slice_ctx *sc, const heic_pu *pu,
                                       heic_pb_motion motion, int list)
 {
     const heic_frame *ref;
-    int16_t *pred = sc->mc_internal + (size_t)list * 3u * 64u * 64u;
+    size_t base = (size_t)list * 3u * 64u * 64u;
+    int wide = sc->mc_wide != NULL;
+    void *py, *pcb, *pcr;
     int idx = motion.ref_idx[list];
     if (!motion.pred_flag[list] || idx < 0 || idx >= sc->n_refs[list])
         return -1;
     ref = sc->refs[list][idx];
     if (!ref) return -1;
+    if (wide) {
+        py = sc->mc_wide + base;
+        pcb = sc->mc_wide + base + 64u * 64u;
+        pcr = sc->mc_wide + base + 2u * 64u * 64u;
+    } else {
+        py = sc->mc_internal + base;
+        pcb = sc->mc_internal + base + 64u * 64u;
+        pcr = sc->mc_internal + base + 2u * 64u * 64u;
+    }
     if (heic_mc_luma_internal(ref, motion.mv[list],
                               pu->x, pu->y, pu->w, pu->h,
-                              pred, 64, sc->mc_scratch, 72u * 72u) != 0)
+                              py, wide, 64, sc->mc_scratch, 72u * 72u) != 0)
         return -1;
     if (heic_mc_chroma_internal(ref, motion.mv[list],
                                 pu->x, pu->y, pu->w, pu->h,
-                                pred + 64u * 64u,
-                                pred + 2u * 64u * 64u, 64,
+                                pcb, pcr, wide, 64,
                                 sc->mc_scratch, 72u * 72u) != 0)
         return -1;
     return 0;
@@ -1503,11 +1514,90 @@ static void apply_internal_weight(heic_slice_ctx *sc, const heic_pu *pu,
     }
 }
 
+/* apply_motion for bit depths above 12: the internal-precision samples are
+   int32 (mc_wide). One scalar routine for the default, bi-predicted and
+   explicitly weighted cases (H.265 8.5.3.3.4.2 / 8.5.3.3.4.3). */
+static int apply_motion_wide(heic_slice_ctx *sc, const heic_pu *pu,
+                             heic_pb_motion motion)
+{
+    const heic_slice_header *sh = sc->sh;
+    int high_precision = sc->sps->high_precision_offsets_enabled_flag;
+    int weighted = sh->has_pred_weight_table;
+    int bi = motion.pred_flag[0] && motion.pred_flag[1];
+    int list = motion.pred_flag[0] ? 0 : 1;
+    int ref0 = motion.ref_idx[0], ref1 = motion.ref_idx[1];
+    int n_planes = sc->frame->chroma_format != 0 ? 3 : 1;
+    int sub_x = sc->frame->chroma_format == 3 ? 1 : 2;
+    int sub_y = sc->frame->chroma_format == 1 ? 2 : 1;
+    int plane, l;
+    for (l = 0; l < 2; l++)
+        if (motion.pred_flag[l]
+            && predict_internal_from_list(sc, pu, motion, l) != 0)
+            return -1;
+    for (plane = 0; plane < n_planes; plane++) {
+        const int32_t *a = sc->mc_wide + (size_t)plane * 64u * 64u;
+        const int32_t *b = a + 3u * 64u * 64u;
+        const int32_t *src = list ? b : a;
+        uint32_t x0 = plane ? pu->x / (uint32_t)sub_x : pu->x;
+        uint32_t y0 = plane ? pu->y / (uint32_t)sub_y : pu->y;
+        uint32_t w = plane ? pu->w / (uint32_t)sub_x : pu->w;
+        uint32_t h = plane ? pu->h / (uint32_t)sub_y : pu->h;
+        uint32_t pw = (uint32_t)(plane ? sc->frame->c_width : sc->frame->width);
+        uint32_t ph =
+            (uint32_t)(plane ? sc->frame->c_height : sc->frame->height);
+        int stride = plane ? sc->frame->c_stride : sc->frame->y_stride;
+        uint16_t *dst = plane == 0 ? sc->frame->y
+                        : (plane == 1 ? sc->frame->cb : sc->frame->cr);
+        int bd = plane ? bit_depth_c(sc->sps) : bit_depth_y(sc->sps);
+        int max_val = (1 << bd) - 1;
+        int shift = 14 - bd;
+        int w0, w1, o0, o1, denom;
+        uint32_t x, y;
+        if (shift < 2) shift = 2;
+        if (plane == 0) {
+            w0 = ref0 >= 0 ? sh->luma_weight[0][ref0] : 0;
+            w1 = ref1 >= 0 ? sh->luma_weight[1][ref1] : 0;
+            o0 = ref0 >= 0 ? sh->luma_offset[0][ref0] : 0;
+            o1 = ref1 >= 0 ? sh->luma_offset[1][ref1] : 0;
+            denom = sh->luma_log2_weight_denom;
+        } else {
+            w0 = ref0 >= 0 ? sh->chroma_weight[0][ref0][plane - 1] : 0;
+            w1 = ref1 >= 0 ? sh->chroma_weight[1][ref1][plane - 1] : 0;
+            o0 = ref0 >= 0 ? sh->chroma_offset[0][ref0][plane - 1] : 0;
+            o1 = ref1 >= 0 ? sh->chroma_offset[1][ref1][plane - 1] : 0;
+            denom = sh->chroma_log2_weight_denom;
+        }
+        for (y = 0; y < h && y0 + y < ph; y++)
+            for (x = 0; x < w && x0 + x < pw; x++) {
+                size_t i = (size_t)y * 64u + x;
+                int64_t v;
+                if (weighted && bi)
+                    v = weighted_bi_value(a[i], b[i], w0, w1, o0, o1, denom,
+                                          bd, high_precision);
+                else if (weighted)
+                    v = weighted_uni_value(src[i], list ? w1 : w0,
+                                           list ? o1 : o0, denom, bd,
+                                           high_precision);
+                else if (bi)
+                    v = ((int64_t)a[i] + b[i] + ((int64_t)1 << shift))
+                        >> (shift + 1);
+                else
+                    v = ((int64_t)src[i] + ((int64_t)1 << (shift - 1)))
+                        >> shift;
+                if (v < 0) v = 0;
+                if (v > max_val) v = max_val;
+                dst[(size_t)(y0 + y) * (size_t)stride + x0 + x] = (uint16_t)v;
+            }
+    }
+    return 0;
+}
+
 static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
                         heic_pb_motion motion)
 {
     int list = motion.pred_flag[0] ? 0 : 1;
     if (!motion.pred_flag[0] && !motion.pred_flag[1]) return -1;
+    if (sc->mc_wide) return apply_motion_wide(sc, pu, motion);
     if (sc->sh->has_pred_weight_table) {
         if (motion.pred_flag[0] &&
             predict_internal_from_list(sc, pu, motion, 0) != 0)
@@ -2847,6 +2937,17 @@ static int decode_ctu(heic_slice_ctx *sc, uint32_t x_ctb, uint32_t y_ctb)
     return decode_cqt(sc, x_ctb, y_ctb, sc->sps->log2_ctb_size, 0);
 }
 
+/* The int32 prediction buffers, needed once a bit depth exceeds 12. */
+static int slice_ctx_alloc_mc_wide(heic_slice_ctx *sc)
+{
+    if (sc->mc_wide
+        || (bit_depth_y(sc->sps) <= 12 && bit_depth_c(sc->sps) <= 12))
+        return 0;
+    sc->mc_wide = (int32_t *)heic_zalloc(sc->hctx,
+                                         6u * 64u * 64u * sizeof(int32_t));
+    return sc->mc_wide ? 0 : -1;
+}
+
 static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps,
                           const heic_pps *pps, const heic_slice_header *sh,
                           const heic_frame *const *l0, int n_l0,
@@ -2965,6 +3066,7 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
         sc->mc_internal =
             (int16_t *)heic_zalloc(ctx, 6u * 64u * 64u * sizeof(int16_t));
         if (!sc->mc_internal) return -1;
+        if (slice_ctx_alloc_mc_wide(sc) != 0) return -1;
     }
     if (!sc->residual_buf
         || (pps->cross_component_prediction_enabled_flag && !sc->luma_residual)
@@ -3004,6 +3106,7 @@ static int slice_ctx_ensure_inter(heic_slice_ctx *sc)
         sc->mc_internal =
             (int16_t *)heic_zalloc(ctx, 6u * 64u * 64u * sizeof(int16_t));
         if (!sc->mc_internal) return -1;
+        if (slice_ctx_alloc_mc_wide(sc) != 0) return -1;
     }
     return 0;
 }
@@ -3143,6 +3246,7 @@ static void slice_ctx_free(heic_slice_ctx *sc)
     heic_free_buf(sc->hctx, sc->coeff);
     heic_free_buf(sc->hctx, sc->mc_scratch);
     heic_free_buf(sc->hctx, sc->mc_internal);
+    heic_free_buf(sc->hctx, sc->mc_wide);
     memset(sc, 0, sizeof(*sc));
 }
 

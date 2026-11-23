@@ -1175,13 +1175,14 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
 
 /* ---- inter prediction / CTU decode (hevc_inter.c, hevc_ctu.c) ---- */
 
+/* `out` is int16_t[] or, with `wide` (bit depth above 12), int32_t[]. */
 int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
                           uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                          int16_t *out, uint32_t out_stride,
+                          void *out, int wide, uint32_t out_stride,
                           int32_t *scratch, size_t scratch_n);
 int heic_mc_chroma_internal(const heic_frame *ref, heic_mv mv,
                             uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                            int16_t *out_cb, int16_t *out_cr,
+                            void *out_cb, void *out_cr, int wide,
                             uint32_t out_stride,
                             int32_t *scratch, size_t scratch_n);
 

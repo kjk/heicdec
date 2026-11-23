@@ -617,6 +617,23 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "1ceef83183197fd1f21472c17b53cbff",
   },
+  /* 16-bit 4:4:4 inter (B slices, fractional MVs, bright content), encoded
+   * with HM 18.0 built with HIGH_BITDEPTH; MD5 is HM's decoder output. The
+   * only streams that take prediction intermediates past 16 bits; checked in
+   * under test/streams (see the README there). */
+  {
+    name: "HBD16_INTER_HM18.bit",
+    frames: 9,
+    mse: 0,
+    md5: "da87d6e7967f439cbb2af7f756cc8633",
+  },
+  /* Same source with extended_precision_processing and weighted prediction. */
+  {
+    name: "HBD16_INTER_EXTPREC_WP_HM18.bit",
+    frames: 9,
+    mse: 0,
+    md5: "76ab1f0062bea7d0a8235dc970df8efc",
+  },
   /* DELTAQP_B: exact vs ffmpeg/HM; libde265 conceals and diverges (weak oracle). */
   {
     name: "DELTAQP_B_SONY_3.bit",
@@ -998,7 +1015,11 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
     let ok = 0;
     let fail = 0;
     const log: string[] = [];
-    const input = join(TESTIMAGES_DIR, "hevc_sequence", t.name);
+    /* Streams no public source provides are checked in under test/streams. */
+    const local = join(root, "test", "streams", t.name);
+    const input = existsSync(local)
+      ? local
+      : join(TESTIMAGES_DIR, "hevc_sequence", t.name);
     if (!existsSync(input)) {
       fail++;
       log.push(

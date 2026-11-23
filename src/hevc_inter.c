@@ -53,6 +53,16 @@ static const uint16_t *mc_ref_block(const uint16_t *plane, int stride, int pw,
     return tmp;
 }
 
+/* Prediction samples before the final rounding ("internal precision") have
+   14 bits plus sign up to 12-bit video and are kept in int16. Deeper video
+   needs more (a 16-bit sample << 2 is 18 bits), so the caller then passes an
+   int32 buffer (`wide`). */
+#define MC_STORE(idx, v)                                 \
+    do {                                                 \
+        if (out32) out32[idx] = (int32_t)(v);            \
+        else out[idx] = (int16_t)(v);                    \
+    } while (0)
+
 /* The fractional cases through the SIMD kernel: `p` is the reference block
    from mc_ref_block (starting taps/2 - 1 samples before the block in each
    filtered direction). Only up to 12 bits, where the samples and the
@@ -80,14 +90,16 @@ static int mc_filter_simd(const uint16_t *p, int ps, int bit_depth,
 
 int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
                           uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                          int16_t *out, uint32_t out_stride,
+                          void *out_v, int wide, uint32_t out_stride,
                           int32_t *scratch, size_t scratch_n)
 {
+    int16_t *out = wide ? NULL : (int16_t *)out_v;
+    int32_t *out32 = wide ? (int32_t *)out_v : NULL;
     uint16_t tmp[MC_MAX_BLOCK * MC_MAX_BLOCK];
     const uint16_t *p;
     int ps, int_x, int_y, frac_x, frac_y, shift1, shift3;
     uint32_t i, j;
-    if (!ref || !ref->y || !out || !scratch || !w || !h ||
+    if (!ref || !ref->y || !out_v || !scratch || !w || !h ||
         w > 64 || h > 64 || out_stride < w)
         return -1;
     int_x = (int)x + ((int)mv.x >> 2);
@@ -110,10 +122,11 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
     if (frac_x == 0 && frac_y == 0) {
         for (j = 0; j < h; j++) {
             const uint16_t *s = p + (size_t)j * (size_t)ps;
-            int16_t *o = out + (size_t)j * out_stride;
-            for (i = 0; i < w; i++) o[i] = (int16_t)(s[i] << shift3);
+            size_t orow = (size_t)j * out_stride;
+            for (i = 0; i < w; i++) MC_STORE(orow + i, s[i] << shift3);
         }
-    } else if (mc_filter_simd(p, ps, ref->bit_depth, LUMA_FILTER[frac_x],
+    } else if (!wide
+               && mc_filter_simd(p, ps, ref->bit_depth, LUMA_FILTER[frac_x],
                               LUMA_FILTER[frac_y], 8, frac_x, frac_y,
                               (int)w, (int)h, shift1, out, out_stride)) {
         /* done */
@@ -121,25 +134,25 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
         const int16_t *c = LUMA_FILTER[frac_x];
         for (j = 0; j < h; j++) {
             const uint16_t *s = p + (size_t)j * (size_t)ps;
-            int16_t *o = out + (size_t)j * out_stride;
+            size_t orow = (size_t)j * out_stride;
             for (i = 0; i < w; i++) {
                 int sum = s[i] * c[0] + s[i + 1] * c[1] + s[i + 2] * c[2] +
                           s[i + 3] * c[3] + s[i + 4] * c[4] + s[i + 5] * c[5] +
                           s[i + 6] * c[6] + s[i + 7] * c[7];
-                o[i] = (int16_t)(sum >> shift1);
+                MC_STORE(orow + i, sum >> shift1);
             }
         }
     } else if (frac_x == 0) {
         const int16_t *c = LUMA_FILTER[frac_y];
         for (j = 0; j < h; j++) {
             const uint16_t *s = p + (size_t)j * (size_t)ps;
-            int16_t *o = out + (size_t)j * out_stride;
+            size_t orow = (size_t)j * out_stride;
             for (i = 0; i < w; i++) {
                 int sum = s[i] * c[0] + s[i + ps] * c[1] + s[i + 2 * ps] * c[2] +
                           s[i + 3 * ps] * c[3] + s[i + 4 * ps] * c[4] +
                           s[i + 5 * ps] * c[5] + s[i + 6 * ps] * c[6] +
                           s[i + 7 * ps] * c[7];
-                o[i] = (int16_t)(sum >> shift1);
+                MC_STORE(orow + i, sum >> shift1);
             }
         }
     } else {
@@ -159,13 +172,13 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
         }
         for (j = 0; j < h; j++) {
             const int32_t *t = scratch + (size_t)j * w;
-            int16_t *o = out + (size_t)j * out_stride;
+            size_t orow = (size_t)j * out_stride;
             for (i = 0; i < w; i++) {
                 int64_t sum = 0;
                 int k;
                 for (k = 0; k < 8; k++)
                     sum += (int64_t)t[(size_t)k * w + i] * cy[k];
-                o[i] = (int16_t)(sum >> 6);
+                MC_STORE(orow + i, sum >> 6);
             }
         }
     }
@@ -177,9 +190,11 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
                                     uint32_t x, uint32_t y,
                                     uint32_t w, uint32_t h,
                                     int sub_x, int sub_y,
-                                    int16_t *out, uint32_t out_stride,
+                                    void *out_v, int wide, uint32_t out_stride,
                                     int32_t *scratch, size_t scratch_n)
 {
+    int16_t *out = wide ? NULL : (int16_t *)out_v;
+    int32_t *out32 = wide ? (int32_t *)out_v : NULL;
     uint16_t tmp[MC_MAX_BLOCK * MC_MAX_BLOCK];
     const uint16_t *p;
     int ps;
@@ -194,7 +209,7 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
     int shift3 = 14 - ref->chroma_bit_depth;
     uint32_t i, j;
     if (!cw || !ch) return 0;
-    if (!src || !out || out_stride < cw || cw > 64 || ch > 64) return -1;
+    if (!src || !out_v || out_stride < cw || cw > 64 || ch > 64) return -1;
     if (shift3 < 2) shift3 = 2;
 
     /* 4-tap filter: 1 sample before, 2 after, in each filtered direction. */
@@ -206,10 +221,11 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
     if (frac_x == 0 && frac_y == 0) {
         for (j = 0; j < ch; j++) {
             const uint16_t *s = p + (size_t)j * (size_t)ps;
-            int16_t *o = out + (size_t)j * out_stride;
-            for (i = 0; i < cw; i++) o[i] = (int16_t)(s[i] << shift3);
+            size_t orow = (size_t)j * out_stride;
+            for (i = 0; i < cw; i++) MC_STORE(orow + i, s[i] << shift3);
         }
-    } else if (mc_filter_simd(p, ps, ref->chroma_bit_depth,
+    } else if (!wide
+               && mc_filter_simd(p, ps, ref->chroma_bit_depth,
                               CHROMA_FILTER[frac_x], CHROMA_FILTER[frac_y], 4,
                               frac_x, frac_y, (int)cw, (int)ch, shift1,
                               out, out_stride)) {
@@ -218,22 +234,22 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
         const int16_t *c = CHROMA_FILTER[frac_x];
         for (j = 0; j < ch; j++) {
             const uint16_t *s = p + (size_t)j * (size_t)ps;
-            int16_t *o = out + (size_t)j * out_stride;
+            size_t orow = (size_t)j * out_stride;
             for (i = 0; i < cw; i++) {
                 int sum = s[i] * c[0] + s[i + 1] * c[1] + s[i + 2] * c[2] +
                           s[i + 3] * c[3];
-                o[i] = (int16_t)(sum >> shift1);
+                MC_STORE(orow + i, sum >> shift1);
             }
         }
     } else if (frac_x == 0) {
         const int16_t *c = CHROMA_FILTER[frac_y];
         for (j = 0; j < ch; j++) {
             const uint16_t *s = p + (size_t)j * (size_t)ps;
-            int16_t *o = out + (size_t)j * out_stride;
+            size_t orow = (size_t)j * out_stride;
             for (i = 0; i < cw; i++) {
                 int sum = s[i] * c[0] + s[i + ps] * c[1] + s[i + 2 * ps] * c[2] +
                           s[i + 3 * ps] * c[3];
-                o[i] = (int16_t)(sum >> shift1);
+                MC_STORE(orow + i, sum >> shift1);
             }
         }
     } else {
@@ -252,13 +268,13 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
         }
         for (j = 0; j < ch; j++) {
             const int32_t *t = scratch + (size_t)j * cw;
-            int16_t *o = out + (size_t)j * out_stride;
+            size_t orow = (size_t)j * out_stride;
             for (i = 0; i < cw; i++) {
                 int64_t sum = 0;
                 int k;
                 for (k = 0; k < 4; k++)
                     sum += (int64_t)t[(size_t)k * cw + i] * fy[k];
-                o[i] = (int16_t)(sum >> 6);
+                MC_STORE(orow + i, sum >> 6);
             }
         }
     }
@@ -267,7 +283,7 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
 
 int heic_mc_chroma_internal(const heic_frame *ref, heic_mv mv,
                             uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                            int16_t *out_cb, int16_t *out_cr,
+                            void *out_cb, void *out_cr, int wide,
                             uint32_t out_stride,
                             int32_t *scratch, size_t scratch_n)
 {
@@ -277,10 +293,10 @@ int heic_mc_chroma_internal(const heic_frame *ref, heic_mv mv,
     sub_x = ref->chroma_format == 3 ? 1 : 2;
     sub_y = ref->chroma_format == 1 ? 2 : 1;
     if (mc_chroma_plane_internal(ref, ref->cb, mv, x, y, w, h,
-                                 sub_x, sub_y, out_cb, out_stride,
+                                 sub_x, sub_y, out_cb, wide, out_stride,
                                  scratch, scratch_n) != 0)
         return -1;
     return mc_chroma_plane_internal(ref, ref->cr, mv, x, y, w, h,
-                                    sub_x, sub_y, out_cr, out_stride,
+                                    sub_x, sub_y, out_cr, wide, out_stride,
                                     scratch, scratch_n);
 }
