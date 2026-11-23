@@ -1723,6 +1723,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     int rdpcm_mode = 0;
     int size, num, qp, bd, is_intra_4x4, max_val;
     int extended, max_transform_range, rotate;
+    int wide; /* levels and residuals held in 32 bits (see below) */
     uint16_t *plane;
     int stride, plane_w, plane_h;
 
@@ -1751,6 +1752,12 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     }
     extended = sc->sps->extended_precision_processing_flag;
     max_transform_range = extended ? HEIC_MAX(15, bd + 6) : 15;
+    /* Above 12 bits a residual no longer fits int16 (at 16 bits it spans
+       +-65535, and the spec does not clip it), so use the 32-bit path there
+       even without extended_precision_processing: with a transform range of
+       15 it computes exactly the standard formulas. `extended` keeps
+       meaning the syntax/semantics flag only. */
+    wide = extended || bd > 12;
     if (heic_decode_residual(&sc->cabac, sc->models, log2_size, c_idx, scan_order,
                              sc->pps->sign_data_hiding_enabled_flag,
                              sc->cu_transquant_bypass,
@@ -1780,6 +1787,11 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     num = size * size;
     if (!plane) return 0;
     max_val = (1 << bd) - 1;
+    if (wide && !extended) {
+        /* The residual decoder stored 16-bit levels; widen them. */
+        int k;
+        for (k = 0; k < num; k++) coeff->coeffs[k] = coeff->narrow[k];
+    }
 
     /* Rotation of 4x4 intra transform-skip / bypass blocks (H.265 8.6.2).
        Bypass rotates the levels themselves. */
@@ -1787,7 +1799,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
              && sc->cu_pred_mode == HEIC_PRED_INTRA && log2_size == 2
              && (sc->cu_transquant_bypass || transform_skip);
     if (rotate && sc->cu_transquant_bypass)
-        rotate_coeffs(coeff, num, extended);
+        rotate_coeffs(coeff, num, wide);
 
     if (sc->cu_transquant_bypass) {
         int py, px;
@@ -1798,7 +1810,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     int32_t sum = 0;
                     for (px = 0; px < size; px++) {
                         int pos = py * size + px;
-                        sum += extended ? coeff->coeffs[pos]
+                        sum += wide ? coeff->coeffs[pos]
                                         : coeff->narrow[pos];
                         rdpcm[py * size + px] = sum;
                     }
@@ -1808,7 +1820,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     int32_t sum = 0;
                     for (py = 0; py < size; py++) {
                         int pos = py * size + px;
-                        sum += extended ? coeff->coeffs[pos]
+                        sum += wide ? coeff->coeffs[pos]
                                         : coeff->narrow[pos];
                         rdpcm[py * size + px] = sum;
                     }
@@ -1818,7 +1830,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         if (c_idx == 0) {
             if (rdpcm_mode)
                 save_luma_residual32(sc, rdpcm, size);
-            else if (extended)
+            else if (wide)
                 save_luma_residual32(sc, coeff->coeffs, size);
             else
                 save_luma_residual16(sc, coeff->narrow, size);
@@ -1830,7 +1842,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                 if ((int)x0 + px >= plane_w) break;
                 v = (int32_t)plane[((int)y0 + py) * stride + (int)x0 + px]
                     + (rdpcm_mode ? rdpcm[py * size + px]
-                                  : (extended
+                                  : (wide
                                         ? coeff->coeffs[py * size + px]
                                         : coeff->narrow[py * size + px]))
                     + (c_idx ? cross_component_residual(
@@ -1854,7 +1866,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         /* matrixId = cIdx + (Intra ? 0 : 3); sizeId 3 stores Inter Y at 3. */
         uint8_t matrix_id = (uint8_t)(
             c_idx + (sc->cu_pred_mode == HEIC_PRED_INTRA ? 0 : 3));
-        if (extended) {
+        if (wide) {
             heic_dequantize_scaled_extended(
                 coeff->coeffs, num, qp, bd, log2_size, max_transform_range,
                 list, matrix_id);
@@ -1863,7 +1875,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                                    list, matrix_id);
         }
     } else {
-        if (extended) {
+        if (wide) {
             heic_dequantize_extended(
                 coeff->coeffs, num, qp, bd, log2_size, max_transform_range);
         } else {
@@ -1875,7 +1887,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
        each level must be scaled with the factor of its own position first.
        Rotating before dequantization picked the mirrored position's factor,
        which only shows with non-flat scaling lists. */
-    if (rotate) rotate_coeffs(coeff, num, extended);
+    if (rotate) rotate_coeffs(coeff, num, wide);
 
     if (transform_skip) {
         int bd_shift = HEIC_MAX(20 - bd, extended ? 11 : 0);
@@ -1886,9 +1898,9 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         if (rdpcm_mode == 0) {
             for (i = 0; i < num; i++) {
                 int64_t c =
-                    (int64_t)(extended ? coeff->coeffs[i] : coeff->narrow[i])
+                    (int64_t)(wide ? coeff->coeffs[i] : coeff->narrow[i])
                     * ((int64_t)1 << ts_shift);
-                if (extended)
+                if (wide)
                     sc->mc_scratch[i] = (int32_t)((c + rnd) >> bd_shift);
                 else
                     sc->residual_buf[i] = (int16_t)((c + rnd) >> bd_shift);
@@ -1902,7 +1914,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     for (px = 0; px < size; px++) {
                         int pos = py * size + px;
                         int64_t c =
-                            (int64_t)(extended
+                            (int64_t)(wide
                                 ? coeff->coeffs[pos]
                                 : coeff->narrow[pos])
                             * ((int64_t)1 << ts_shift);
@@ -1916,7 +1928,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     for (py = 0; py < size; py++) {
                         int pos = py * size + px;
                         int64_t c =
-                            (int64_t)(extended
+                            (int64_t)(wide
                                 ? coeff->coeffs[pos]
                                 : coeff->narrow[pos])
                             * ((int64_t)1 << ts_shift);
@@ -1945,7 +1957,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     } else {
         is_intra_4x4 = (log2_size == 2 && c_idx == 0 &&
                         sc->cu_pred_mode == HEIC_PRED_INTRA);
-        if (extended) {
+        if (wide) {
             heic_inverse_transform_extended(
                 coeff->coeffs, sc->mc_scratch, size, bd,
                 max_transform_range, is_intra_4x4);
@@ -1956,7 +1968,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         }
     }
 
-    if (extended) {
+    if (wide) {
         int py, px;
         if (c_idx == 0) save_luma_residual32(sc, sc->mc_scratch, size);
         for (py = 0; py < size; py++) {
