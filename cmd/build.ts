@@ -156,7 +156,6 @@ const harnessExeName = (useClang: boolean) =>
   binName(`heic_test_${useClang ? "clang" : "msvc"}`);
 
 export type BuildOpts = {
-  useClang?: boolean;
   withDav1d?: boolean;
   /** Link strukturag libheif + libde265 (+ dav1d) for -bench / -verify. */
   withLibheif?: boolean;
@@ -271,31 +270,50 @@ function dav1dIncFlags(dav1d: { inc: string[] }): string {
   return dav1d.inc.map((p) => ` -I${p}`).join("");
 }
 
-/** When feature / cflags stamps change, force a full recompile of that out dir. */
-function syncFeatureStamp(
-  dir: string,
-  useClang: boolean,
-  stampName: string,
-  want: string,
-  objExt: string,
-  _extraObjs: string[] = [],
-): void {
-  const stamp = `${dir}/${stampName}`;
+/**
+ * Objects live in one directory per configuration (feature set + exact
+ * compile command), so alternating between e.g. `build.ts`, `tests.ts`
+ * (libheif oracle, /MD) and `verify-release.ts` (dav1d only) no longer
+ * deletes and recompiles every object each time, and a changed compiler flag
+ * cannot leave stale objects behind. `features` names the directory;
+ * `compileCmd` is hashed into it.
+ */
+function objDirFor(dir: string, features: string, compileCmd: string): string {
+  const slug = features.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const hash = Bun.hash(compileCmd).toString(16).slice(0, 8);
+  const objDir = `${dir}/obj-${slug}-${hash}`;
+  mkdirSync(objDir, { recursive: true });
+  return objDir;
+}
+
+/**
+ * The harness exe is shared by every configuration: when the configuration
+ * that last linked it differs, drop it (and its pdb) so it is relinked.
+ */
+function syncExeStamp(dir: string, useClang: boolean, want: string): void {
+  const stamp = `${dir}/.heic_features`;
   const prev = existsSync(stamp) ? readFileSync(stamp, "utf8").trim() : "";
-  if (prev !== want) {
-    /* Drop every object + the harness so -Zi/-g and feature defines stay coherent. */
-    if (existsSync(dir)) {
-      for (const name of readdirSync(dir)) {
-        if (name.endsWith(`.${objExt}`) || name.endsWith(".pdb") || name.endsWith(".exe")) {
-          rmSync(`${dir}/${name}`, { force: true });
-        }
-      }
-    }
-    const exe = `${dir}/${harnessExeName(useClang)}`;
-    if (existsSync(exe)) rmSync(exe);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(stamp, want);
-  }
+  if (prev === want) return;
+  const exe = `${dir}/${harnessExeName(useClang)}`;
+  for (const f of [exe, exe.replace(/(\.exe)?$/, ".pdb")])
+    rmSync(f, { force: true });
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(stamp, want);
+}
+
+/** Run `jobs` with at most `limit` in flight. */
+async function runPool<T>(
+  items: T[],
+  limit: number,
+  job: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await job(items[next++]!);
+  };
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker),
+  );
 }
 
 function compressFeatureFlags(
@@ -340,13 +358,8 @@ async function buildClang(opts: BuildOpts = {}): Promise<string> {
     );
   }
   const comp = compressFeatureFlags(zlib, brotli);
-  syncFeatureStamp(
-    dir,
-    true,
-    ".heic_features",
-    `dav1d=${needDav1d ? 1 : 0};libheif=${withLibheif ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0};pdb=1`,
-    "o",
-  );
+  const features =
+    `dav1d=${needDav1d ? 1 : 0};libheif=${withLibheif ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0}`;
   let def = comp.def;
   let inc = ` -I${ROOT}/src -I${ROOT}/test` + comp.inc;
   if (dav1d) {
@@ -358,14 +371,16 @@ async function buildClang(opts: BuildOpts = {}): Promise<string> {
       " -DHEIC_HAVE_LIBHEIF -DLIBHEIF_STATIC_BUILD -DLIBDE265_STATIC_BUILD";
     for (const p of heif.heifInc) inc += ` -I${p}`;
   }
-  const units = cUnits(dir, "o", withLibheif);
+  const clangC = `clang ${clangCFlags()}${def}${inc} -c`;
+  const objDir = objDirFor(dir, features, clangC);
+  syncExeStamp(dir, true, objDir);
+  const units = cUnits(objDir, "o", withLibheif);
   const hdrs = trackedHeaders();
-  for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, ...hdrs)) continue;
-    await runCmd(
-      `clang ${clangCFlags()}${def}${inc} -c -o ${u.obj} ${u.src}`,
-    );
-  }
+  await runPool(
+    units.filter((u) => needsRebuild(u.obj, u.src, ...hdrs)),
+    navigator.hardwareConcurrency || 4,
+    (u) => runCmd(`${clangC} -o ${u.obj} ${u.src}`),
+  );
   const objs = units.map((u) => u.obj);
   const linkLibs: string[] = [];
   if (heif) {
@@ -420,13 +435,8 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
   const comp = compressFeatureFlags(zlib, brotli);
   /* meson/cmake deps (dav1d, libheif, libde265) are /MD; match CRT when linking them. */
   const useMd = withLibheif || needDav1d;
-  syncFeatureStamp(
-    dir,
-    false,
-    ".heic_features",
-    `dav1d=${needDav1d ? 1 : 0};libheif=${withLibheif ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0};crt=${useMd ? "MD" : "MT"};pdb=1`,
-    "obj",
-  );
+  const features =
+    `dav1d=${needDav1d ? 1 : 0};libheif=${withLibheif ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0};crt=${useMd ? "MD" : "MT"}`;
   let def = comp.def;
   let inc = " -Isrc -Itest" + comp.inc;
   if (dav1d) {
@@ -438,21 +448,24 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
       " -DHEIC_HAVE_LIBHEIF -DLIBHEIF_STATIC_BUILD -DLIBDE265_STATIC_BUILD";
     for (const p of heif.heifInc) inc += ` -I${p}`;
   }
-  const units = cUnits(dir, "obj", withLibheif);
   const msvcC = useMd
     ? HEIC_MSVC_CL_C.replace(/\s-MT\b/, " -MD")
     : HEIC_MSVC_CL_C;
-  /* One PDB for all objs + the final exe (winperf symbolicates from this). */
+  const objDir = objDirFor(dir, features, `${msvcC}${def}${inc}`);
+  syncExeStamp(dir, false, objDir);
+  const units = cUnits(objDir, "obj", withLibheif);
+  /* Type info for the objects; the linker writes heic_test_msvc.pdb next to
+     the exe from it (winperf symbolicates from that one). */
   const pdb = `${dir}/heic_test_msvc.pdb`;
-  const clC = `${msvcC}${def}${inc} -Fo${dir}/ -Fd${pdb} -c`;
+  const clC = `${msvcC}${def}${inc} -Fo${objDir}/ -Fd${objDir}/objs.pdb -c`;
   const hdrs = trackedHeaders();
-  for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, ...hdrs)) continue;
-    const rel = u.src.startsWith(`${ROOT}/`)
-      ? u.src.slice(ROOT.length + 1)
-      : u.src;
-    await runCmd(`cl ${clC} ${rel}`, ROOT);
-  }
+  const stale = units
+    .filter((u) => needsRebuild(u.obj, u.src, ...hdrs))
+    .map((u) =>
+      u.src.startsWith(`${ROOT}/`) ? u.src.slice(ROOT.length + 1) : u.src,
+    );
+  /* One cl for all stale units: -MP compiles them in parallel. */
+  if (stale.length) await runCmd(`cl ${clC} -MP ${stale.join(" ")}`, ROOT);
   const objs = units.map((u) => u.obj);
   const linkLibs: string[] = [];
   if (heif) {
@@ -476,7 +489,7 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
     /* -DEBUG → heic_test_msvc.pdb; oracle is C++ so pull MD C++ runtime. */
     const crt = useMd ? "-MD " : "";
     const cxxRt = withLibheif ? " -DEFAULTLIB:msvcprt" : "";
-    const link = `cl -nologo ${crt}-Zi ${objs.join(" ")}${linkExtra} -Fe:${exePath} -Fd${pdb} -link -DEBUG${cxxRt}`;
+    const link = `cl -nologo ${crt}-Zi ${objs.join(" ")}${linkExtra} -Fe:${exePath} -link -DEBUG -PDB:${pdb}${cxxRt}`;
     await runCmd(link, ROOT);
   }
   return exePath;
@@ -487,9 +500,8 @@ export async function build(
   opts: BuildOpts = {},
 ): Promise<string> {
   await getDeps();
-  const o = { ...opts, useClang };
-  if (useClang) return buildClang(o);
-  return buildMsvc(o);
+  if (useClang) return buildClang(opts);
+  return buildMsvc(opts);
 }
 
 /** True if nasm is on PATH (needed for dav1d x86 asm). */
