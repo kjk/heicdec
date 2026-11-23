@@ -890,6 +890,14 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
         heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "derived item recursion too deep");
         return -1;
     }
+    if (item->unsupported_essential) {
+        uint32_t t = item->unsupported_essential;
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                   "item %u has an unsupported essential property '%c%c%c%c'",
+                   (unsigned)item->id, (int)(t & 0xff), (int)((t >> 8) & 0xff),
+                   (int)((t >> 16) & 0xff), (int)((t >> 24) & 0xff));
+        return -1;
+    }
     if (++doc->item_decodes > HEIC_MAX_ITEM_DECODES) {
         heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
                    "too many item decodes for one image");

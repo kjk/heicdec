@@ -59,6 +59,8 @@ export const EXPECT_FAIL = new Set([
   "iovl_huge_canvas.heic",
   /* generated: 100x100 unci with 10 bytes of data */
   "rgb8_truncated.heif",
+  /* generated: item with an unknown essential property */
+  "essential_unknown.heic",
   /* generated: 8x8 unci whose zlib payload inflates to 16 MB */
   "rgb8_zlib_bomb.heif",
 ]);

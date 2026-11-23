@@ -1222,6 +1222,35 @@ static int parse_cmpd(heic_ctx *ctx, const heic_box *b, heic_cmpd *out)
     return 0;
 }
 
+/* Properties without a parsed representation that an item may still carry
+   as *essential* and be decoded:
+   - pixi: bits per channel, purely descriptive (the codec configuration is
+     authoritative); writers routinely mark it essential.
+   - rref: the reference types a reader must understand. Fine when all of
+     them are 'pred', which decode_item implements.
+   - a1op / a1lx: AV1 operating point / layer sizes. We decode the top
+     layer only, which is the documented behaviour for layered AVIF.
+   Any other unknown essential property makes its item undecodable. */
+static int essential_property_ok(const heic_box *b)
+{
+    if (b->type == HEIC_FCC('p', 'i', 'x', 'i') ||
+        b->type == HEIC_FCC('a', '1', 'o', 'p') ||
+        b->type == HEIC_FCC('a', '1', 'l', 'x'))
+        return 1;
+    if (b->type == HEIC_FCC('r', 'r', 'e', 'f')) {
+        /* FullBox(4) + reference_type_count(1) + count x fourcc */
+        size_t i, n;
+        if (b->content_len < 5) return 0;
+        n = b->content[4];
+        if (b->content_len < 5 + n * 4) return 0;
+        for (i = 0; i < n; i++)
+            if (heic_read_fcc(b->content + 5 + i * 4) != HEIC_REF_PRED)
+                return 0;
+        return 1;
+    }
+    return 0;
+}
+
 static int parse_ipco(heic_ctx *ctx, const heic_box *b, heic_container *c,
                       const heic_abort *ab)
 {
@@ -1237,6 +1266,8 @@ static int parse_ipco(heic_ctx *ctx, const heic_box *b, heic_container *c,
         if ((uint32_t)n >= HEIC_MAX_PROPERTIES) goto fail;
         memset(&prop, 0, sizeof(prop));
         prop.kind = HEIC_PROP_UNKNOWN;
+        prop.box_type = child.type;
+        prop.essential_ok = (uint8_t)essential_property_ok(&child);
         if (child.type == HEIC_BOX_ISPE) {
             if (parse_ispe(&child, &prop.ispe) == 0) prop.kind = HEIC_PROP_ISPE;
         } else if (child.type == HEIC_BOX_HVCC || child.type == HEIC_BOX_HVCB) {
@@ -2778,6 +2809,13 @@ int heic_container_get_item(const heic_container *c, uint32_t item_id, heic_item
         const heic_property *p;
         if (idx == 0 || idx > (uint16_t)c->n_properties) continue;
         p = &c->properties[idx - 1];
+        /* ISO 23008-12 6.5.1: a reader shall not process an item that has
+           an essential property it does not recognise (or could not parse).
+           Remember the first one; decoding the item refuses. */
+        if (p->kind == HEIC_PROP_UNKNOWN && assoc->essential
+            && assoc->essential[j] && !out->unsupported_essential
+            && !p->essential_ok)
+            out->unsupported_essential = p->box_type ? p->box_type : 1;
         switch (p->kind) {
         case HEIC_PROP_ISPE:
             out->has_dims = 1;

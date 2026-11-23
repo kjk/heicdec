@@ -375,6 +375,8 @@ typedef enum {
 
 typedef struct {
     heic_prop_kind kind;
+    heic_fourcc box_type; /* as found in ipco (0 for synthesized ones) */
+    uint8_t essential_ok; /* unknown kind, but harmless when essential */
     heic_ispe ispe;
     heic_hvcc hvcc;
     heic_av1c av1c;
@@ -473,6 +475,9 @@ typedef struct {
     const heic_icef   *icef;
     heic_xform         transforms[8];
     int                n_transforms;
+    /* fourcc of an essential property we do not support (0 = none): such an
+       item must not be decoded. */
+    heic_fourcc        unsupported_essential;
 } heic_item;
 
 int  heic_container_parse(heic_ctx *ctx, const uint8_t *data, size_t len,

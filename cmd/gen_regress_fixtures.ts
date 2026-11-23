@@ -15,6 +15,8 @@
 //   iovl_red_fill.heic       overlay whose canvas is filled with opaque red
 //                            around the image; the fill colour used to be
 //                            written as luma only.
+//   essential_unknown.heic   the image with an unknown essential property;
+//                            must be rejected.
 //   _info/grid_no_ispe.heic  the grid without an ispe property on the grid item;
 //                            its size must come from the grid descriptor.
 //   _info/aux_no_auxc.heic   the image plus a copy referenced as `auxl` with
@@ -342,6 +344,16 @@ export function generateRegressFixtures(
       src.payload,
     ));
   }
+
+  /* The image with an unknown property ('zzzz') marked essential. A reader
+     must not decode such an item (ISO 23008-12 6.5.1); we used to ignore
+     the flag. Listed in EXPECT_FAIL. */
+  write(join(outDir, "essential_unknown.heic"), assemble(
+    [{ id: 1, type: "hvc1", props: [1, 2, 3] }],
+    [src.ispe, src.hvcC, box("zzzz", new Uint8Array(4))],
+    new Uint8Array(0),
+    src.payload,
+  ));
 
   /* The grid with no ispe on the grid item itself. heic_doc_info used to
      report the first tile's size instead of the grid's. */
