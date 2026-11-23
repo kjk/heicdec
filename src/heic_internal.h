@@ -439,6 +439,7 @@ typedef struct {
     int                n_properties;
     heic_ipma         *property_associations;
     int                n_property_associations;
+    uint8_t            ipma_seen; /* (version, flags) pairs of ipma boxes read */
     heic_iref         *item_references;
     int                n_item_references;
     const uint8_t     *idat;

@@ -162,6 +162,7 @@ static void free_property_associations(heic_ctx *ctx, heic_container *c)
     heic_free_buf(ctx, c->property_associations);
     c->property_associations = NULL;
     c->n_property_associations = 0;
+    c->ipma_seen = 0;
 }
 
 static void free_item_locations(heic_ctx *ctx, heic_container *c)
@@ -1302,6 +1303,8 @@ static int parse_ipma(heic_ctx *ctx, const heic_box *b, heic_container *c,
     uint8_t version;
     uint32_t flags, entry_count, e;
     size_t pos;
+    int base;
+    uint8_t pair;
 
     if (len < 8) return -1;
     version = content[0];
@@ -1311,19 +1314,36 @@ static int parse_ipma(heic_ctx *ctx, const heic_box *b, heic_container *c,
     pos += 4;
     if (entry_count > HEIC_MAX_ITEMS) return -1;
 
-    /* Replace prior associations (duplicate ipma / second meta). Always index
-     * into a freshly allocated [0, entry_count) buffer — never append using a
-     * stale n_property_associations (heap OOB on re-entry). */
-    free_property_associations(ctx, c);
-    c->property_associations =
-        (heic_ipma *)heic_zalloc(ctx, entry_count * sizeof(heic_ipma));
-    if (!c->property_associations && entry_count) return -1;
+    /* ISO 23008-12 allows one ipma per (version, flags) pair, and their
+     * associations add up (a writer uses a second box for the items that
+     * need 16-bit property indices). A box repeating a pair is ignored.
+     * Earlier boxes were replaced, which dropped their items' properties. */
+    base = c->n_property_associations;
+    pair = (uint8_t)(1u << ((version ? 2 : 0) | (flags & 1)));
+    if (c->ipma_seen & pair) return 0;
+    if (base < 0 || (uint32_t)base + entry_count > HEIC_MAX_ITEMS) return -1;
+    if (entry_count) {
+        /* Grow into a fresh zeroed array sized for both, so the entries
+         * written below always lie inside the allocation. */
+        heic_ipma *grown = (heic_ipma *)heic_zalloc(
+            ctx, ((size_t)base + entry_count) * sizeof(heic_ipma));
+        if (!grown) return -1;
+        if (base)
+            memcpy(grown, c->property_associations,
+                   (size_t)base * sizeof(heic_ipma));
+        heic_free_buf(ctx, c->property_associations);
+        c->property_associations = grown;
+    }
+    c->ipma_seen |= pair;
 
     for (e = 0; e < entry_count; e++) {
         heic_ipma *a;
         uint8_t assoc_count, k;
         if (heic_abort_check(ab)) return -1;
-        a = &c->property_associations[e];
+        a = &c->property_associations[(uint32_t)base + e];
+        /* Counted before its arrays are allocated so an early exit below
+         * leaves them owned by the container. */
+        c->n_property_associations = base + (int)e + 1;
         if (version < 1) {
             if (pos + 2 > len) break;
             a->item_id = heic_rb16(content + pos);
@@ -1356,7 +1376,6 @@ static int parse_ipma(heic_ctx *ctx, const heic_box *b, heic_container *c,
             }
             a->n_props++;
         }
-        c->n_property_associations = (int)(e + 1);
     }
     return 0;
 }
