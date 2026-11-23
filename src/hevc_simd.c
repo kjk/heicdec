@@ -1407,6 +1407,39 @@ int heic_simd_mc_put_row_wide(const int32_t *a, const int32_t *b, int n,
     return 1;
 }
 
+/* Explicit weighted prediction from int32 samples:
+   dst[i] = clip(((a[i] * w0 + (b ? b[i] * w1 : 0) + round) >> shift) + offset,
+                 0, max_val).
+   The caller guarantees the sum fits in int32. */
+int heic_simd_mc_weight_row_wide(const int32_t *a, const int32_t *b, int n,
+                                 int w0, int w1, int round, int shift,
+                                 int offset, int max_val, uint16_t *dst)
+{
+    __m128i vw0, vw1, rnd, sh, off, mx, zero;
+    int i;
+    if (!g_simd || n < 4) return 0;
+    vw0 = _mm_set1_epi32(w0);
+    vw1 = _mm_set1_epi32(w1);
+    rnd = _mm_set1_epi32(round);
+    sh = _mm_cvtsi32_si128(shift);
+    off = _mm_set1_epi32(offset);
+    mx = _mm_set1_epi32(max_val);
+    zero = _mm_setzero_si128();
+    for (i = 0; i < n; i += 4) {
+        __m128i v;
+        if (i + 4 > n) i = n - 4; /* overlap the last full vector */
+        v = _mm_mullo_epi32(_mm_loadu_si128((const __m128i *)(a + i)), vw0);
+        if (b)
+            v = _mm_add_epi32(
+                v, _mm_mullo_epi32(
+                       _mm_loadu_si128((const __m128i *)(b + i)), vw1));
+        v = _mm_add_epi32(_mm_sra_epi32(_mm_add_epi32(v, rnd), sh), off);
+        v = _mm_min_epi32(_mm_max_epi32(v, zero), mx);
+        _mm_storel_epi64((__m128i *)(dst + i), _mm_packus_epi32(v, v));
+    }
+    return 1;
+}
+
 #else /* !HEIC_X86 */
 
 int heic_simd_idct8(const int16_t *c, int16_t *o, int bd)
@@ -1646,6 +1679,22 @@ int heic_simd_mc_put_row_wide(const int32_t *a, const int32_t *b, int n,
     (void)n;
     (void)round;
     (void)shift;
+    (void)max_val;
+    (void)dst;
+    return 0;
+}
+int heic_simd_mc_weight_row_wide(const int32_t *a, const int32_t *b, int n,
+                                 int w0, int w1, int round, int shift,
+                                 int offset, int max_val, uint16_t *dst)
+{
+    (void)a;
+    (void)b;
+    (void)n;
+    (void)w0;
+    (void)w1;
+    (void)round;
+    (void)shift;
+    (void)offset;
     (void)max_val;
     (void)dst;
     return 0;

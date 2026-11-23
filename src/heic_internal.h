@@ -1103,6 +1103,11 @@ int  heic_simd_mc_filter_i32_wide(const int32_t *src, ptrdiff_t tap_step,
 int  heic_simd_mc_put_row_wide(const int32_t *a, const int32_t *b, int n,
                                int round, int shift, int max_val,
                                uint16_t *dst);
+/* dst[i] = clip(((a[i]*w0 + (b ? b[i]*w1 : 0) + round) >> shift) + offset,
+   0, max_val) from int32 samples; the sum must fit in int32. */
+int  heic_simd_mc_weight_row_wide(const int32_t *a, const int32_t *b, int n,
+                                  int w0, int w1, int round, int shift,
+                                  int offset, int max_val, uint16_t *dst);
 /* dst[i] = clip((a[i] + (b ? b[i] : 0) + round) >> shift, 0, max_val). */
 int  heic_simd_mc_put_row(const int16_t *a, const int16_t *b, int n, int shift,
                           int max_val, uint16_t *dst);
