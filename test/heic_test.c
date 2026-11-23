@@ -265,6 +265,15 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
         free(nals);
         return 1;
     }
+    {
+        /* This mode keeps every decoded frame (up to 512) as a possible
+           reference and for output, so the default 1 GiB context limit is
+           too small for long or large streams. */
+        heic_limits lim;
+        memset(&lim, 0, sizeof(lim));
+        lim.max_memory_bytes = (uint64_t)16 << 30;
+        heic_ctx_set_limits(ctx, &lim);
+    }
 
     i = 0;
     {
@@ -449,6 +458,10 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
                     fr->bit_depth, fr->chroma_bit_depth, fr->chroma_bit_depth
                 };
                 int n_planes = fr->chroma_format ? 3 : 1;
+                /* Like the HM reference decoder (whose MD5s ship with the
+                   conformance streams): one sample size for the whole file,
+                   16-bit words as soon as any plane is deeper than 8 bits. */
+                int wide = depths[0] > 8 || (n_planes > 1 && depths[1] > 8);
                 if (widths[0] <= 0 || heights[0] <= 0) {
                     j = 0;
                     break;
@@ -459,7 +472,7 @@ static int do_hevc_sequence(const uint8_t *data, size_t len,
                         for (x = 0; x < widths[plane]; x++) {
                             uint16_t v = planes[plane][
                                 (size_t)(oy + y) * strides[plane] + ox + x];
-                            if (depths[plane] > 8) {
+                            if (wide) {
                                 uint8_t bytes[2] = {
                                     (uint8_t)v, (uint8_t)(v >> 8)
                                 };
