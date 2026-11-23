@@ -500,6 +500,26 @@
       `LS_A_Orange_2` match libde265 byte-for-byte, with a generated HEIC
       wrapper covered by the normal corpus.
 - [x] AVIF grid + alpha (meta/`dimg`/`auxl`; fixtures under `deps/testimages/avif/`)
+- [x] Essential properties: an item with an essential `ipma` property we do
+      not support is not decoded (ISO 23008-12 6.5.1). `pixi`, `rref` listing
+      only `pred`, and `a1op`/`a1lx` are accepted without being interpreted.
+      Fixture `regress/essential_unknown.heic` (expected fail).
+- [x] `heic_test -hevc-sequence` outputs and frees frames while decoding, so
+      stream length is no longer capped at 512 frames; `ExplicitRdpcm_A_BBC_1`
+      (600 frames) joins the RExt conformance set: 49 of 49 match.
+- [x] unci: bit fields read in one step and 16-bit component rows copied
+      directly (4000x3000 16-bit planar 544 -> 55 ms, 10-bit packed 405 -> 149 ms).
+- [x] HEVC motion compensation: SSE4.1 interpolation (8-tap luma, 4-tap
+      chroma, up to 12 bits) and prediction write-out; `MVDL1ZERO_A` 3638 ->
+      2351 ms with unchanged hashes. Above 12 bits the scalar path is used.
+- [x] HEVC reference lists are per slice: each distinct list pair of a
+      picture is a table on the frame, with a per-PU index once a second one
+      appears (deblocking boundary strength, collocated MVs). No stream in the
+      suite has such a picture; verified as a non-regression only.
+- [x] HEVC slices of one picture may name different PPS, as long as these
+      agree on tile layout, entropy sync, chroma QP offsets and tile-edge
+      filtering (otherwise the decode fails with a clear error). No stream in
+      the suite does this; verified as a non-regression only.
 
 ## Investigation notes
 
