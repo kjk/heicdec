@@ -1164,9 +1164,10 @@ static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu,
     if (count < 2 && !(have_a && have_b
                        && (a.x != b.x || a.y != b.y))) {
         heic_mv tmv;
-        if (derive_temporal_mv(sc, pu, list, ref_idx, &tmv)
-            && (count == 0
-                || tmv.x != mvp[0].x || tmv.y != mvp[0].y))
+        /* H.265 8.5.3.2.6: only the two spatial candidates are compared
+           with each other; the temporal one is added whenever fewer than
+           two remain, even if it equals the first. */
+        if (derive_temporal_mv(sc, pu, list, ref_idx, &tmv))
             mvp[count] = tmv;
     }
 }
