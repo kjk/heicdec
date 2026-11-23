@@ -15,7 +15,7 @@ output of that build's `TAppDecoder` (which also verified the picture hash
 SEI of every frame):
 
 ```
-python gen_hbd_yuv.py in.yuv 96 64 9
+bun gen_yuv.ts hbd16 in.yuv 96 64 9
 TAppEncoder -c cfg/encoder_lowdelay_main.cfg -i in.yuv -wdt 96 -hgt 64 -fr 30 -f 9 \
   --InputBitDepth=16 --InternalBitDepth=16 --InputChromaFormat=444 \
   --Profile=main-RExt -q 12 --SEIDecodedPictureHash=1 \
@@ -42,7 +42,7 @@ TAppEncoder -c cfg/encoder_lowdelay_main.cfg -i in8.yuv -wdt 128 -hgt 96 -fr 30 
 bun rewrite_slices.ts base.bit SLICE_REFLIST_MOD_offsets.txt lists SLICE_REFLIST_MOD_HM18.bit
 ```
 
-`in8.yuv` is the pattern of `gen_hbd_yuv.py` at 8 bits, 4:2:0.
+`in8.yuv` comes from `bun gen_yuv.ts main8 in8.yuv 128 96 9`.
 `SLICE_REFLIST_MOD_offsets.txt` holds the bit offsets of the header fields the script edits (PPS
 `lists_modification_present_flag`, each slice header's list-modification
 position and end); they came from a decoder build with temporary prints in
