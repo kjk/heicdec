@@ -11,6 +11,7 @@
  * Codecs:
  *   - HEVC (hvc1): pure-C port of imazen/heic
  *   - AV1  (av01): videolan dav1d (vendored / linked; not re-ported)
+ *   - unci (unci): ISO 23001-17 uncompressed (optional zlib / brotli)
  */
 #ifndef HEIC_H
 #define HEIC_H
@@ -180,7 +181,7 @@ heic_image *heic_sequence_decoder_decode_frame_abortable(
     heic_sequence_decoder *decoder, uint32_t frame_index, heic_abort *ab);
 
 /* Decode the primary image. Returns NULL on error; free with
-   heic_image_destroy(ctx, img). 8-bit output; 10/12-bit sources are
+   heic_image_destroy(ctx, img). 8-bit output; higher bit-depth sources are
    right-shifted (no EOTF / tone-map). */
 heic_image *heic_doc_decode(heic_doc *doc, heic_format format);
 heic_image *heic_doc_decode_abortable(heic_doc *doc, heic_format format,
