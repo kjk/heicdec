@@ -922,6 +922,43 @@ const HEVC_SEQUENCE_TESTS: readonly {
   },
 ];
 
+/** Worker count for independent test processes (each is single-threaded).
+ *  HEIC_TEST_JOBS=1 runs them one at a time. */
+const TEST_JOBS = Math.max(
+  1,
+  parseInt(process.env.HEIC_TEST_JOBS ?? "", 10)
+    || Math.min(navigator.hardwareConcurrency || 4, 8),
+);
+
+/**
+ * Start `job` for every item with at most `limit` running at once. Returns one
+ * promise per item, in item order, so callers can await and report results
+ * in order while later items are already running.
+ */
+function startPool<T, R>(
+  items: readonly T[],
+  limit: number,
+  job: (item: T) => Promise<R>,
+): Promise<R>[] {
+  const slots: { resolve: (r: R) => void; reject: (e: unknown) => void }[] = [];
+  const out = items.map(
+    () => new Promise<R>((resolve, reject) => slots.push({ resolve, reject })),
+  );
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        slots[i]!.resolve(await job(items[i]!));
+      } catch (e) {
+        slots[i]!.reject(e);
+      }
+    }
+  };
+  for (let w = 0; w < Math.min(limit, items.length); w++) void worker();
+  return out;
+}
+
 async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
   const root = join(import.meta.dir, "..");
   const dec265Candidates = process.platform === "win32"
@@ -936,16 +973,20 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
     return [0, HEVC_SEQUENCE_TESTS.length];
   }
 
-  let ok = 0;
-  let fail = 0;
-  for (const t of HEVC_SEQUENCE_TESTS) {
+  type SeqTest = (typeof HEVC_SEQUENCE_TESTS)[number];
+  /* Each test writes its own out/<stem>-{ours,ref}.yuv, so they can run
+     side by side; results are reported in table order. */
+  const runOne = async (t: SeqTest) => {
+    let ok = 0;
+    let fail = 0;
+    const log: string[] = [];
     const input = join(TESTIMAGES_DIR, "hevc_sequence", t.name);
     if (!existsSync(input)) {
       fail++;
-      console.log(
+      log.push(
         `[fail] HEVC sequence ${t.name} missing (get-deps did not install it)`,
       );
-      continue;
+      return { ok, fail, log };
     }
     const stem = t.name.replace(/\.[^.]+$/, "");
     const ours = join(root, "out", `${stem}-ours.yuv`);
@@ -968,39 +1009,39 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
       const detail = (
         op.stderr.toString() + (rp?.stderr.toString() ?? "")
       ).trim().slice(0, 300);
-      console.log(`[fail] HEVC sequence ${t.name} decode failed\n${detail}`);
-      continue;
+      log.push(`[fail] HEVC sequence ${t.name} decode failed\n${detail}`);
+      return { ok, fail, log };
     }
     const a = new Uint8Array(await Bun.file(ours).arrayBuffer());
     if (t.md5) {
       const digest = new Bun.CryptoHasher("md5").update(a).digest("hex");
       if (digest === t.md5) {
         ok++;
-        console.log(
+        log.push(
           `[ok] HEVC sequence ${t.name} frames=${t.frames} md5=${digest}`,
         );
       } else {
         fail++;
-        console.log(
+        log.push(
           `[fail] HEVC sequence ${t.name} md5=${digest} != ${t.md5}`,
         );
       }
       rmSync(ours, { force: true });
-      continue;
+      return { ok, fail, log };
     }
     const b = new Uint8Array(await Bun.file(ref).arrayBuffer());
     if (a.length !== b.length || a.length === 0) {
       fail++;
-      console.log(
+      log.push(
         `[fail] HEVC sequence ${t.name} size ${a.length} != oracle ${b.length}`,
       );
-      continue;
+      return { ok, fail, log };
     }
     const sampleBytes = (t.bitDepth ?? 8) > 8 ? 2 : 1;
     if (a.length % sampleBytes !== 0) {
       fail++;
-      console.log(`[fail] HEVC sequence ${t.name} invalid raw size ${a.length}`);
-      continue;
+      log.push(`[fail] HEVC sequence ${t.name} invalid raw size ${a.length}`);
+      return { ok, fail, log };
     }
     let sse = 0;
     let maxDiff = 0;
@@ -1014,19 +1055,28 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
     const mse = sse / (a.length / sampleBytes);
     if (mse <= t.mse) {
       ok++;
-      console.log(
+      log.push(
         `[ok] HEVC sequence ${t.name} frames=${t.frames} ` +
           `mse=${mse.toFixed(4)} maxdiff=${maxDiff}`,
       );
     } else {
       fail++;
-      console.log(
+      log.push(
         `[fail] HEVC sequence ${t.name} mse=${mse.toFixed(4)} > ${t.mse} ` +
           `maxdiff=${maxDiff}`,
       );
     }
     rmSync(ours, { force: true });
     rmSync(ref, { force: true });
+    return { ok, fail, log };
+  };
+  let ok = 0;
+  let fail = 0;
+  for (const pending of startPool(HEVC_SEQUENCE_TESTS, TEST_JOBS, runOne)) {
+    const r = await pending;
+    ok += r.ok;
+    fail += r.fail;
+    for (const line of r.log) console.log(line);
   }
   return [ok, fail];
 }
@@ -1213,12 +1263,17 @@ async function main() {
   let fail = 0;
   let skip = 0;
 
-  for (const f of files) {
+  /* The harness runs are independent processes: start them through a pool
+     and consume the results in file order below. */
+  const harnessRuns = startPool(files, TEST_JOBS, (f) =>
+    Bun.$`${exe} ${infoOnly ? "-info" : "-verify"} ${f}`.nothrow().quiet(),
+  );
+  for (const [fi, f] of files.entries()) {
     const name = basename(f);
     const wantFail = expectFail(name);
 
     if (infoOnly) {
-      const p = await Bun.$`${exe} -info ${f}`.nothrow().quiet();
+      const p = await harnessRuns[fi]!;
       const out = p.stdout.toString() + p.stderr.toString();
       const good = p.exitCode === 0 && /\d+x\d+/.test(out);
       if (wantFail) {
@@ -1242,7 +1297,7 @@ async function main() {
     }
 
     /* Decode + bitmap compare (heic_test -verify, same oracle as bench). */
-    const p = await Bun.$`${exe} -verify ${f}`.nothrow().quiet();
+    const p = await harnessRuns[fi]!;
     const out = (p.stdout.toString() + p.stderr.toString()).trim();
     const kind = classifyVerify(p.exitCode ?? 1, out);
     const mse = parseVerifyMse(out);

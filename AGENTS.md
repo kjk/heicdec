@@ -115,6 +115,7 @@ bun cmd/get-deps.ts      # clone deps + fill deps/testimages (auto-run by build/
 bun cmd/build.ts         # build library + heic_test harness (MSVC default on Win)
 bun cmd/build.ts -clang  # clang harness
 bun cmd/tests.ts -all    # decode + RGB mse vs libheif (fail if we can't / differ)
+                         # runs up to 8 harness processes at once; HEIC_TEST_JOBS=1 = serial
 bun cmd/tests.ts -info -all  # open/probe only
 bun cmd/bench.ts -rand 5
 bun cmd/fuzz.ts          # libFuzzer + ASan (seeds fuzz/corpus from deps/)
