@@ -672,7 +672,20 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   console.log(`deps/testimages: ready (${STAMP_WANT})`);
 }
 
-export async function getDeps(
+/* build(), buildRef() and each oracle builder call getDeps(); one check per
+   process is enough (a dozen repeats cost ~100 stat calls and a line of
+   output each). */
+let depsReady: Promise<void> | null = null;
+
+export function getDeps(
+  opts: { forceTestImages?: boolean; skipTestImages?: boolean } = {},
+): Promise<void> {
+  if (opts.forceTestImages) return getDepsOnce(opts);
+  depsReady ??= getDepsOnce(opts);
+  return depsReady;
+}
+
+async function getDepsOnce(
   opts: { forceTestImages?: boolean; skipTestImages?: boolean } = {},
 ): Promise<void> {
   mkdirSync(DEPS_DIR, { recursive: true });
