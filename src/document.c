@@ -260,6 +260,16 @@ int heic_doc_info(const heic_doc *doc, heic_image_info *info)
         (doc->container.sequence && doc->container.sequence->alpha))
         info->has_alpha = 1;
 
+    /* unci carries alpha as an ordinary component (type 7), not an aux item. */
+    if (item.uncc) {
+        for (i = 0; i < item.uncc->n_components; i++) {
+            uint16_t t = item.uncc->components[i].component_index;
+            if (item.cmpd && item.cmpd->types && t < item.cmpd->n_types)
+                t = item.cmpd->types[t];
+            if (t == 7) info->has_alpha = 1;
+        }
+    }
+
     if (heic_container_find_aux(&doc->container, item.id,
                                 "urn:com:apple:photo:2020:aux:hdrgainmap",
                                 aux, 4) > 0)
