@@ -44,19 +44,27 @@ jobs:
           foreach ($d in $extra) {
             if (Test-Path $d) { echo $d | Out-File -FilePath $env:GITHUB_PATH -Append }
           }
-      - name: Cache deps + oracle builds
+      # deps/ is self-healing: get-deps.ts moves each checkout to its pinned
+      # commit and refreshes testimages by stamp, so a prefix restore is safe.
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-v2-windows-${{ hashFiles('cmd/get-deps.ts', 'cmd/gen_*.ts') }}
+          restore-keys: |
+            deps-v2-windows-
+      # Oracle builds are not: build.ts skips a build whose library exists, so
+      # restoring one made with other flags would be used as is. Exact key only.
+      - name: Cache oracle builds
         uses: actions/cache@v4
         with:
           path: |
-            deps
             out/dav1d_build
             out/libde265_build
             out/libheif_build
             out/zlib_build
             out/brotli_build
-          key: deps-v1-windows-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts', 'cmd/corpus.ts') }}
-          restore-keys: |
-            deps-v1-windows-
+          key: oracle-v2-windows-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts') }}
       - name: Clone deps + testimages
         run: bun cmd/get-deps.ts
       - name: Oracle tests (MSVC)
@@ -76,18 +84,7 @@ jobs:
           bun-version: latest
       - name: MSVC environment (clang from VS)
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Cache deps
-        uses: actions/cache@v4
-        with:
-          path: deps
-          key: deps-v1-windows-fuzz-${{ hashFiles('cmd/get-deps.ts') }}
-          restore-keys: |
-            deps-v1-windows-fuzz-
-            deps-v1-windows-
-      - name: Clone deps (repos only)
-        env:
-          HEIC_SKIP_TESTIMAGES: "1"
-        run: bun cmd/get-deps.ts
+      # -check-crashes -no-deps needs no deps/ checkout (pure-C harness).
       - name: Replay tracked fuzz crashes under ASan
         run: bun cmd/fuzz.ts -check-crashes -no-deps
 
@@ -107,19 +104,27 @@ jobs:
           major=$(clang -dumpversion | cut -d. -f1)
           sudo apt-get install -y "libfuzzer-${major}-dev" || \
             sudo apt-get install -y "libclang-rt-${major}-dev" || true
-      - name: Cache deps + oracle builds
+      # deps/ is self-healing: get-deps.ts moves each checkout to its pinned
+      # commit and refreshes testimages by stamp, so a prefix restore is safe.
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-v2-linux-${{ hashFiles('cmd/get-deps.ts', 'cmd/gen_*.ts') }}
+          restore-keys: |
+            deps-v2-linux-
+      # Oracle builds are not: build.ts skips a build whose library exists, so
+      # restoring one made with other flags would be used as is. Exact key only.
+      - name: Cache oracle builds
         uses: actions/cache@v4
         with:
           path: |
-            deps
             out/dav1d_build
             out/libde265_build
             out/libheif_build
             out/zlib_build
             out/brotli_build
-          key: deps-v1-linux-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts', 'cmd/corpus.ts') }}
-          restore-keys: |
-            deps-v1-linux-
+          key: oracle-v2-linux-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts') }}
       - name: Clone deps + testimages
         run: bun cmd/get-deps.ts
       - name: Oracle tests (clang)
@@ -143,19 +148,27 @@ jobs:
           bun-version: latest
       - name: System packages
         run: brew install meson ninja nasm cmake
-      - name: Cache deps + oracle builds
+      # deps/ is self-healing: get-deps.ts moves each checkout to its pinned
+      # commit and refreshes testimages by stamp, so a prefix restore is safe.
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-v2-macos-${{ hashFiles('cmd/get-deps.ts', 'cmd/gen_*.ts') }}
+          restore-keys: |
+            deps-v2-macos-
+      # Oracle builds are not: build.ts skips a build whose library exists, so
+      # restoring one made with other flags would be used as is. Exact key only.
+      - name: Cache oracle builds
         uses: actions/cache@v4
         with:
           path: |
-            deps
             out/dav1d_build
             out/libde265_build
             out/libheif_build
             out/zlib_build
             out/brotli_build
-          key: deps-v1-macos-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts', 'cmd/corpus.ts') }}
-          restore-keys: |
-            deps-v1-macos-
+          key: oracle-v2-macos-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts') }}
       - name: Clone deps + testimages
         run: bun cmd/get-deps.ts
       - name: Oracle tests (clang)
@@ -183,10 +196,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps
-          key: deps-v1-linux-wasm-${{ hashFiles('cmd/get-deps.ts', 'cmd/build-wasm.ts') }}
+          key: deps-v2-linux-wasm-${{ hashFiles('cmd/get-deps.ts', 'cmd/build-wasm.ts') }}
           restore-keys: |
-            deps-v1-linux-wasm-
-            deps-v1-linux-
+            deps-v2-linux-wasm-
       - name: Clone deps (repos only)
         env:
           HEIC_SKIP_TESTIMAGES: "1"
