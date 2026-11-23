@@ -202,7 +202,7 @@
         mode20 32 residual mid-perfect; (1184,32) mode20 cbf=0 exact).
       - Same-CU top 16×16 residual mid-perfect; BAD residual vs need
         (`ff−pred`): corr≈0.7 but energy ~139×; mid exact only 11/55.
-      - Debug helpers: `HEIC_SKIP_LF=1`, `HEIC_FORCE_SCALAR=1`.
+      - Debug helpers (compile-time): `-DHEIC_DEBUG_SKIP_LF`, `-DHEIC_NO_SIMD`.
       **Next work items:**
       1. Diff pre-dequant levels for (1152,32) POC7 vs HM residual / analyser.
       2. Trace sign-hide + `coeff_abs_level_remaining` on CGs that feed mid

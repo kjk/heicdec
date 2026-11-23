@@ -7,7 +7,9 @@
  */
 #include "heic_internal.h"
 
-#if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
+/* Build with -DHEIC_NO_SIMD to force the scalar fallbacks (debugging, or to
+   compare the two paths). */
+#if !defined(HEIC_NO_SIMD) &&     (defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__))
 #define HEIC_X86 1
 #include <emmintrin.h> /* SSE2 */
 #include <tmmintrin.h> /* SSSE3: shuffle_epi8 */
@@ -24,7 +26,6 @@ static int g_simd; /* 0 = off, 1 = SSE4.1 */
 void heic_simd_init(void)
 {
     g_simd = 0;
-    if (getenv("HEIC_FORCE_SCALAR")) return;
 #if HEIC_X86
     {
 #if defined(_MSC_VER)

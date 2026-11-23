@@ -3588,8 +3588,9 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
     }
 
     ctb_sz = ctb_size_px(sps);
-    /* HEIC_SKIP_LF=1: skip deblock+SAO for residual isolation. */
-    if (!getenv("HEIC_SKIP_LF") && sc->deblock_flags && sc->deblock_qp) {
+    /* -DHEIC_DEBUG_SKIP_LF: skip deblock+SAO for residual isolation. */
+#ifndef HEIC_DEBUG_SKIP_LF
+    if (sc->deblock_flags && sc->deblock_qp) {
         heic_apply_deblock(
             out, sc->deblock_flags, sc->deblock_qp, sc->deblock_stride,
             pps->pps_cb_qp_offset, pps->pps_cr_qp_offset,
@@ -3602,8 +3603,7 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
             sh->slice_type == HEIC_SLICE_I ? NULL : out->ref_poc,
             sc->has_filter_exclusions ? sc->pcm_map : NULL);
     }
-    if (!getenv("HEIC_SKIP_LF")
-        && sps->sample_adaptive_offset_enabled_flag && sc->sao_map) {
+    if (sps->sample_adaptive_offset_enabled_flag && sc->sao_map) {
         heic_apply_sao(
             ctx, out, sc->sao_map, sps->pic_width_in_ctbs,
             sps->pic_height_in_ctbs, ctb_sz,
@@ -3611,6 +3611,7 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
             sc->has_filter_exclusions ? sc->pcm_map : NULL,
             sc->deblock_stride);
     }
+#endif
 
     if (sh->slice_type != HEIC_SLICE_I) {
         out->motion = sc->mv_info;
