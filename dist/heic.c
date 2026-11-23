@@ -1176,6 +1176,10 @@ int  heic_simd_mc_put_row_wide(const int32_t *a, const int32_t *b, int n,
                                int round, int shift, int max_val,
                                uint16_t *dst);
 
+int  heic_simd_mc_weight_row_wide(const int32_t *a, const int32_t *b, int n,
+                                  int w0, int w1, int round, int shift,
+                                  int offset, int max_val, uint16_t *dst);
+
 int  heic_simd_mc_put_row(const int16_t *a, const int16_t *b, int n, int shift,
                           int max_val, uint16_t *dst);
 
@@ -11833,6 +11837,35 @@ int heic_simd_mc_put_row_wide(const int32_t *a, const int32_t *b, int n,
     return 1;
 }
 
+int heic_simd_mc_weight_row_wide(const int32_t *a, const int32_t *b, int n,
+                                 int w0, int w1, int round, int shift,
+                                 int offset, int max_val, uint16_t *dst)
+{
+    __m128i vw0, vw1, rnd, sh, off, mx, zero;
+    int i;
+    if (!g_simd || n < 4) return 0;
+    vw0 = _mm_set1_epi32(w0);
+    vw1 = _mm_set1_epi32(w1);
+    rnd = _mm_set1_epi32(round);
+    sh = _mm_cvtsi32_si128(shift);
+    off = _mm_set1_epi32(offset);
+    mx = _mm_set1_epi32(max_val);
+    zero = _mm_setzero_si128();
+    for (i = 0; i < n; i += 4) {
+        __m128i v;
+        if (i + 4 > n) i = n - 4;
+        v = _mm_mullo_epi32(_mm_loadu_si128((const __m128i *)(a + i)), vw0);
+        if (b)
+            v = _mm_add_epi32(
+                v, _mm_mullo_epi32(
+                       _mm_loadu_si128((const __m128i *)(b + i)), vw1));
+        v = _mm_add_epi32(_mm_sra_epi32(_mm_add_epi32(v, rnd), sh), off);
+        v = _mm_min_epi32(_mm_max_epi32(v, zero), mx);
+        _mm_storel_epi64((__m128i *)(dst + i), _mm_packus_epi32(v, v));
+    }
+    return 1;
+}
+
 #else
 
 int heic_simd_idct8(const int16_t *c, int16_t *o, int bd)
@@ -12072,6 +12105,22 @@ int heic_simd_mc_put_row_wide(const int32_t *a, const int32_t *b, int n,
     (void)n;
     (void)round;
     (void)shift;
+    (void)max_val;
+    (void)dst;
+    return 0;
+}
+int heic_simd_mc_weight_row_wide(const int32_t *a, const int32_t *b, int n,
+                                 int w0, int w1, int round, int shift,
+                                 int offset, int max_val, uint16_t *dst)
+{
+    (void)a;
+    (void)b;
+    (void)n;
+    (void)w0;
+    (void)w1;
+    (void)round;
+    (void)shift;
+    (void)offset;
     (void)max_val;
     (void)dst;
     return 0;
@@ -14597,6 +14646,8 @@ static int apply_motion_wide(heic_slice_ctx *sc, const heic_pu *pu,
         int max_val = (1 << bd) - 1;
         int shift = 14 - bd;
         int w0, w1, o0, o1, denom;
+        int wp_simd = 0, wp_w0 = 0, wp_w1 = 0, wp_round = 0, wp_shift = 0;
+        int wp_offset = 0;
         uint32_t x, y;
         if (shift < 2) shift = 2;
         if (plane == 0) {
@@ -14612,7 +14663,41 @@ static int apply_motion_wide(heic_slice_ctx *sc, const heic_pu *pu,
             o1 = ref1 >= 0 ? sh->chroma_offset[1][ref1][plane - 1] : 0;
             denom = sh->chroma_log2_weight_denom;
         }
+
+        if (weighted) {
+            int wshift = shift + denom;
+            int scale = high_precision ? 1 : 1 << (bd - 8);
+            int64_t round64;
+            if (bi) {
+                round64 = ((int64_t)o0 * scale + (int64_t)o1 * scale + 1)
+                          * ((int64_t)1 << wshift);
+                wp_w0 = w0;
+                wp_w1 = w1;
+                wp_shift = wshift + 1;
+                wp_offset = 0;
+            } else {
+                round64 = (int64_t)1 << (wshift - 1);
+                wp_w0 = list ? w1 : w0;
+                wp_w1 = 0;
+                wp_shift = wshift;
+                wp_offset = (list ? o1 : o0) * scale;
+            }
+            wp_round = (int)round64;
+            wp_simd = wp_w0 >= -255 && wp_w0 <= 255
+                      && wp_w1 >= -255 && wp_w1 <= 255
+                      && wp_shift < 31
+                      && round64 > -((int64_t)1 << 29)
+                      && round64 < ((int64_t)1 << 29);
+        }
         for (y = 0; y < h && y0 + y < ph; y++) {
+            if (wp_simd && x0 < pw
+                && heic_simd_mc_weight_row_wide(
+                       (bi ? a : src) + (size_t)y * 64u,
+                       bi ? b + (size_t)y * 64u : NULL,
+                       (int)mc_row_len(x0, w, pw), wp_w0, wp_w1, wp_round,
+                       wp_shift, wp_offset, max_val,
+                       dst + (size_t)(y0 + y) * (size_t)stride + x0))
+                continue;
             if (!weighted && x0 < pw
                 && heic_simd_mc_put_row_wide(
                        (bi ? a : src) + (size_t)y * 64u,
