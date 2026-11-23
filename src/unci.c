@@ -356,6 +356,56 @@ static void store_sample(heic_frame *out, int plane, uint32_t x, uint32_t y, uin
     }
 }
 
+/* One row of pixel-interleaved 8-bit components, `step` bytes per pixel:
+   copy bytes straight into the planes instead of reading every sample bit by
+   bit. Returns 0 (nothing consumed) when the row is not byte aligned, not
+   fully present, or does not map onto full-resolution planes; the caller
+   then takes the general path. */
+static int copy_pixel8_row(unci_br *br, heic_frame *out, const int *plane_map,
+                           int ncomp, size_t step, uint32_t x, uint32_t y,
+                           uint32_t n)
+{
+    uint16_t *dp[16];
+    const uint8_t *src;
+    size_t pos;
+    uint32_t i;
+    int c;
+
+    if ((br->bit_pos & 7) != 0 || ncomp < 1 || ncomp > 16 || step < (size_t)ncomp)
+        return 0;
+    pos = br->bit_pos >> 3;
+    if (pos > br->len || (size_t)n > (br->len - pos) / step) return 0;
+    if (y >= (uint32_t)out->height || x > (uint32_t)out->width ||
+        n > (uint32_t)out->width - x)
+        return 0;
+    for (c = 0; c < ncomp; c++) {
+        int plane = plane_map[c];
+        if (plane < 0) {
+            dp[c] = NULL;
+        } else if (plane == 0) {
+            dp[c] = out->y + (size_t)y * (size_t)out->y_stride + x;
+        } else if (plane == 1 || plane == 2) {
+            if (!out->cb || !out->cr || out->c_width != out->width ||
+                out->c_height != out->height)
+                return 0;
+            dp[c] = (plane == 1 ? out->cb : out->cr) +
+                    (size_t)y * (size_t)out->c_stride + x;
+        } else if (plane == 3 && out->a) {
+            dp[c] = out->a + (size_t)y * (size_t)out->a_stride + x;
+        } else {
+            return 0;
+        }
+    }
+    src = br->data + pos;
+    for (i = 0; i < n; i++) {
+        for (c = 0; c < ncomp; c++)
+            if (dp[c]) dp[c][i] = src[c];
+        src += step;
+    }
+    br->bit_pos += (size_t)n * step * 8;
+    return 1;
+}
+
 static int copy_component8_row(unci_br *br, heic_frame *out, int plane,
                                uint32_t x, uint32_t y, uint32_t n)
 {
@@ -895,9 +945,22 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
             } else if (interleave == 1) {
                 /* Pixel interleaved within tile; optional pixel_size byte padding. */
                 uint32_t ox = tx * tile_w, oy = ty * tile_h;
+                /* Bytes per pixel when every component is a whole byte
+                   (0 = not eligible for the byte-copy row path). */
+                size_t step8 = 0;
+                if (sampling == 0) {
+                    step8 = uncc->pixel_size ? uncc->pixel_size : (size_t)ncomp;
+                    for (i = 0; i < ncomp; i++)
+                        if (bit_depth[i] != 8 || align[i] > 1) step8 = 0;
+                    if (step8 > 65536) step8 = 0;
+                }
                 for (y = 0; y < tile_h; y++) {
                     size_t row_start = br.bit_pos >> 3;
-                    for (x = 0; x < tile_w; x++) {
+                    x = (step8 && copy_pixel8_row(&br, out, plane_map, ncomp,
+                                                  step8, ox, oy + y, tile_w))
+                            ? tile_w
+                            : 0;
+                    for (; x < tile_w; x++) {
                         size_t pix_start = br.bit_pos >> 3; /* markPixelStart */
                         for (i = 0; i < ncomp; i++) {
                             int val = read_comp_sample(&br, bit_depth[i], align[i]);
