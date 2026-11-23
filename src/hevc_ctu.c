@@ -2928,8 +2928,13 @@ static int slice_ctx_ensure_inter(heic_slice_ctx *sc)
     ctx = sc->hctx;
     pu_n = sc->intra_mode_n;
     if (!sc->pred_mode_map) {
-        sc->pred_mode_map = (uint8_t *)heic_zalloc(ctx, pu_n);
+        sc->pred_mode_map = (uint8_t *)heic_alloc(ctx, pu_n);
         if (!sc->pred_mode_map) return -1;
+        /* The map only exists from the first non-I slice on. Everything
+           decoded before it belongs to I slices, whose CUs were not
+           recorded: mark it intra (deblocking needs that for bS = 2).
+           Blocks decoded from here on store their own mode. */
+        memset(sc->pred_mode_map, HEIC_PRED_INTRA, pu_n);
     }
     if (!sc->mv_info) {
         sc->mv_info =
@@ -3382,7 +3387,10 @@ int heic_hevc_picture_decode_segment(
     work->sh.entry_point_offsets = NULL;
     work->sh.num_entry_point_offsets = 0;
     sc->sh = &work->sh;
-    slice_ctx_set_refs(sc, l0, n_l0, l1, n_l1);
+    /* An I slice after an inter slice must not wipe the reference lists the
+       picture-level deblocking and motion export still need. */
+    if (sh->slice_type != HEIC_SLICE_I || !sc->mv_info)
+        slice_ctx_set_refs(sc, l0, n_l0, l1, n_l1);
     if (heic_cabac_new(&sc->cabac, data, len) != 0) return -1;
 
     pic_w = sps->pic_width_in_ctbs;
@@ -3649,18 +3657,16 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
     heic_slice_ctx *sc;
     const heic_sps *sps;
     const heic_pps *pps;
-    const heic_slice_header *sh;
     heic_frame *out;
     heic_ctx *ctx;
     uint32_t ctb_sz;
-    int i;
+    int i, has_inter;
     if (!picture) return -1;
     work = &picture->work;
     sc = &work->sc;
     ctx = sc->hctx;
     sps = sc->sps;
     pps = sc->pps;
-    sh = &work->filter_sh;
     out = sc->frame;
     if (!ctx || !sps || !pps || !out || work->finished
         || !work->have_segment
@@ -3672,7 +3678,11 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
                        (unsigned)sps->pic_size_in_ctbs);
         return -1;
     }
-    if (sh->slice_type != HEIC_SLICE_I) {
+    /* Whether the picture has inter-coded blocks is a property of the
+       picture, not of its last slice: an I slice at the end used to make
+       the whole picture deblock as intra and drop its motion field. */
+    has_inter = sc->mv_info != NULL && sc->pred_mode_map != NULL;
+    if (has_inter) {
         int list;
         for (list = 0; list < 2; list++) {
             for (i = 0; i < HEIC_MAX_REF_PICS; i++)
@@ -3695,11 +3705,11 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
             pps->pps_cb_qp_offset, pps->pps_cr_qp_offset,
             sc->filter_map, sps->pic_width_in_ctbs, ctb_sz,
             pps->loop_filter_across_tiles_enabled_flag,
-            sh->slice_type == HEIC_SLICE_I ? NULL : sc->pred_mode_map,
-            sh->slice_type == HEIC_SLICE_I ? NULL : sc->mv_info,
+            has_inter ? sc->pred_mode_map : NULL,
+            has_inter ? sc->mv_info : NULL,
             sc->intra_mode_stride, min_pu_size(sps),
-            sh->slice_type == HEIC_SLICE_I ? NULL : sc->cbf_map,
-            sh->slice_type == HEIC_SLICE_I ? NULL : out->ref_poc,
+            has_inter ? sc->cbf_map : NULL,
+            has_inter ? out->ref_poc : NULL,
             sc->has_filter_exclusions ? sc->pcm_map : NULL);
     }
     if (sps->sample_adaptive_offset_enabled_flag && sc->sao_map) {
@@ -3712,7 +3722,7 @@ int heic_hevc_picture_finish(heic_hevc_picture *picture)
     }
 #endif
 
-    if (sh->slice_type != HEIC_SLICE_I) {
+    if (has_inter) {
         out->motion = sc->mv_info;
         out->motion_pred_mode = sc->pred_mode_map;
         out->motion_n = sc->intra_mode_n;
