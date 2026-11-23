@@ -126,6 +126,40 @@ static int resolve_seen(const uint32_t *seen, int n_seen, uint32_t id)
     return 0;
 }
 
+/* Canvas size a grid / overlay item declares in its own data. This, not the
+   size of its first input image, is what the item decodes to. */
+static int derived_canvas_dims(const heic_doc *doc, const heic_item *item,
+                               uint32_t *w, uint32_t *h)
+{
+    const uint8_t *d = NULL;
+    size_t len = 0, pos;
+    int owned = 0, rc = -1, large;
+    if (heic_container_item_data(&doc->container, item->id, &d, &len,
+                                 &owned) != 0)
+        return -1;
+    if (item->item_type == HEIC_TYPE_GRID) {
+        /* version, flags, rows-1, cols-1, output_width, output_height */
+        pos = 4;
+    } else {
+        /* version, flags, 4 x 16-bit fill colour, canvas width, height */
+        pos = 10;
+    }
+    if (len >= 2) {
+        large = (d[1] & 1) != 0;
+        if (large && len >= pos + 8) {
+            *w = heic_rb32(d + pos);
+            *h = heic_rb32(d + pos + 4);
+            rc = 0;
+        } else if (!large && len >= pos + 4) {
+            *w = heic_rb16(d + pos);
+            *h = heic_rb16(d + pos + 2);
+            rc = 0;
+        }
+    }
+    if (owned) heic_free_buf(doc->ctx, (void *)d);
+    return rc == 0 && *w && *h ? 0 : -1;
+}
+
 /* Resolve display dimensions for grid/iden by following dimg. */
 static int resolve_dims_r(const heic_doc *doc, const heic_item *item, uint32_t *w,
                           uint32_t *h, uint32_t *seen, int n_seen)
@@ -138,8 +172,15 @@ static int resolve_dims_r(const heic_doc *doc, const heic_item *item, uint32_t *
     }
     if (n_seen >= HEIC_RESOLVE_MAX_DEPTH || resolve_seen(seen, n_seen, item->id))
         return -1;
-    if (item->item_type == HEIC_TYPE_IDEN || item->item_type == HEIC_TYPE_TMAP ||
-        item->item_type == HEIC_TYPE_GRID) {
+    /* A grid or overlay without ispe: its descriptor has the size. Following
+       dimg instead reported the first tile's size, smaller than what the
+       item decodes to, so a buffer sized from it was too small. */
+    if (item->item_type == HEIC_TYPE_GRID || item->item_type == HEIC_TYPE_IOVL) {
+        if (derived_canvas_dims(doc, item, w, h) != 0) return -1;
+        apply_transform_dims(w, h, item);
+        return 0;
+    }
+    if (item->item_type == HEIC_TYPE_IDEN || item->item_type == HEIC_TYPE_TMAP) {
         uint32_t refs[4];
         int n = heic_container_find_refs(&doc->container, item->id, HEIC_REF_DIMG, refs, 4);
         heic_item child;
