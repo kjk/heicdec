@@ -39,6 +39,9 @@ Compile `dist/heic.c` as one C11 translation unit next to `dist/heic.h`.
   intrinsics and won't compile without it; the CPU is still checked at
   runtime, and the code falls back to scalar without SSE4.1. MSVC needs no
   flag.
+* **Apple silicon:** Clang enables the AArch64 NEON kernels with the
+  default arm64 target. Define `HEIC_NO_SIMD` to compare with the scalar
+  kernels.
 * **AVIF / AV1:** define `HEIC_HAVE_DAV1D`, put `dav1d/dav1d.h` on the include
   path, and link libdav1d. Without it, AV1 items fail to decode with "AV1
   decode requires dav1d (build with HEIC_HAVE_DAV1D)".

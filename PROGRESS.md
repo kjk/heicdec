@@ -150,6 +150,32 @@
   - Full pass remains 166 comparable / 22 skips / 0 failures; pixel oracle
     183 ok / 5 no-oracle skips / 0 failures.
 
+## Apple silicon performance (2026-11)
+
+- Added AArch64 NEON for the HEVC SIMD kernels. NEON and SSE4.1 share the
+  integer IDCT butterflies. The NEON color path packs eight RGB pixels per
+  store and reuses chroma work across pairs of 4:2:0 rows.
+- Xcode Instruments Time Profiler on an Apple M3 Pro sampled 180 primary
+  decodes of `example.heic` in each build. Color conversion fell from 5.7%
+  to 1.7% of samples, dequantization from 5.4% to 1.5%, and SAO from 5.0%
+  to 2.4%. CABAC and residual parsing remain the largest costs.
+- Median of seven alternating runs using Apple Clang `-O3` builds.
+  Stills use `heic_test -profile-heic 20` to time primary RGB decode.
+  The sequence result is elapsed time for `heic_test -hevc-sequence`,
+  including frame hashing.
+
+  | Input | Scalar | NEON | Time reduction |
+  | --- | ---: | ---: | ---: |
+  | `example.heic` | 49.94 ms | 42.82 ms | 14.3% |
+  | `hdr-sample.heic` | 38.57 ms | 30.13 ms | 21.9% |
+  | `nokia_444.heic` | 55.29 ms | 31.74 ms | 42.6% |
+  | `transform-skip-main10.heic` | 24.48 ms | 18.52 ms | 24.3% |
+  | `MVDL1ZERO_A_docomo_3.bit` (500 frames) | 2,612.09 ms | 2,369.84 ms | 9.3% |
+
+- The NEON build matched 185 RGB still decodes byte for byte and 160 raw
+  HEVC stream hashes against `HEIC_NO_SIMD`. The full libheif and reference
+  stream suite finished with 386 passes, four skips, and zero failures.
+
 ## Next
 
 ### Remaining priorities (ordered)
@@ -252,7 +278,7 @@
         amalgamation, WASM decode smoke
 - [x] Resume performance work after the correctness sweep (see the perf
       entries below).
-- [ ] Remaining perf ideas: AVX2 / ARM64 NEON kernels and parallel decoding
+- [ ] Remaining perf ideas: AVX2 kernels and parallel decoding
       of independent grid tiles. Keep scalar output byte-identical.
 - [x] Perf restart (post-correctness): HDR `hdr-sample` 40.3ms → **37.2ms**
       (libheif ~34.6ms, +7.4%; was +19.6%). Wins: stack color LUTs (no per-frame

@@ -32,7 +32,7 @@ export const DIST_C = join(DIST, "heic.c");
  * deliberately standalone and cannot depend on files left under src/.
  * Headers that would duplicate symbols if pasted into every .c are stripped
  * and injected once after heic_internal.h (see ONCE_HEADERS). */
-const EMBEDDED_INCLUDES = ["hevc_cabac_init.inc"];
+const EMBEDDED_INCLUDES = ["hevc_cabac_init.inc", "hevc_neon.inc"];
 const ONCE_HEADERS = ["hevc_cabac_inline.h"];
 const STRIP_LOCAL_HEADERS = [
   "heic_internal\\.h",
