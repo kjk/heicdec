@@ -1,4 +1,5 @@
-// Generate tiny unci HEIFs with block_size≠0 for regression.
+// Generate tiny unci HEIFs for regression: block_size≠0 layouts, plus two
+// files for fixed bugs (mono + alpha colour cast, truncated payload).
 //
 //   bun cmd/gen_unci_block_fixtures.ts [outDir]
 //
@@ -211,6 +212,7 @@ function packBe(val: number, nbytes: number): Uint8Array {
 
 export function generateUnciBlockFixtures(outDir: string = DEFAULT_OUT): void {
   mkdirSync(outDir, { recursive: true });
+  generateUnciBugFixtures(outDir);
   const w = 4,
     h = 4;
 
@@ -289,6 +291,51 @@ export function generateUnciBlockFixtures(outDir: string = DEFAULT_OUT): void {
     new Uint8Array(sample3),
     w,
     h,
+  );
+}
+
+/** Fixtures for two fixed bugs; called by generateUnciBlockFixtures. */
+function generateUnciBugFixtures(outDir: string): void {
+  /* Mono + alpha, component interleave. Planes without a component used to
+     keep the 0xFFFF fill, so this rendered magenta. libheif decodes it. */
+  const ma = new Uint8Array(8 * 8 * 2);
+  for (let i = 0; i < 64; i++) {
+    ma[i] = i * 4;
+    ma[64 + i] = 255 - i;
+  }
+  writeHeif(
+    join(outDir, "mono_alpha_comp.heif"),
+    unccBox({
+      ncomp: 2,
+      depths: [8, 8],
+      sampling: 0,
+      interleave: 0,
+      blockSize: 0,
+      flags: 0,
+      pixelSize: 0,
+    }),
+    cmpdBox([0, 7]),
+    ma,
+    8,
+    8,
+  );
+  /* 100x100 RGB8 declared, 10 bytes present. Used to decode "successfully"
+     as a mostly black image; must be rejected (listed in EXPECT_FAIL). */
+  writeHeif(
+    join(outDir, "rgb8_truncated.heif"),
+    unccBox({
+      ncomp: 3,
+      depths: [8, 8, 8],
+      sampling: 0,
+      interleave: 1,
+      blockSize: 0,
+      flags: 0,
+      pixelSize: 0,
+    }),
+    cmpdBox([4, 5, 6]),
+    new Uint8Array(10).fill(200),
+    100,
+    100,
   );
 }
 

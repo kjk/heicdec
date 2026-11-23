@@ -19,6 +19,8 @@ export function corpusRoots(): string[] {
     join(TESTIMAGES_DIR, "unci_block"),
     /* ISO/IEC 14496-15 HEVC and AV1 Mini boxes copied from libheif's corpus. */
     join(TESTIMAGES_DIR, "mini"),
+    /* Generated files for fixed container bugs (gen_regress_fixtures.ts). */
+    join(TESTIMAGES_DIR, "regress"),
   ];
 }
 
@@ -55,6 +57,8 @@ export const EXPECT_FAIL = new Set([
   "mini_size_zero.avif",
   "iovl_badver.heic",
   "iovl_huge_canvas.heic",
+  /* generated: 100x100 unci with 10 bytes of data */
+  "rgb8_truncated.heif",
 ]);
 
 export function corpusFiles(): string[] {

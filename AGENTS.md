@@ -87,6 +87,11 @@ Corpus (used by `tests.ts` / `bench.ts` via `cmd/corpus.ts`):
 - `deps/heif_conformance/conformance_files/*.heic`
 - `deps/testimages/avif/**`, `deps/testimages/unci_block/**`,
   `deps/testimages/mini/**`
+- `deps/testimages/regress/**`: generated files for fixed container bugs
+  (`cmd/gen_regress_fixtures.ts`). A new bug that needs a crafted file gets a
+  generator there rather than a checked-in binary; files libheif cannot open
+  go under `regress/_info/` (skipped by the corpus walk) with a direct check
+  in `tests.ts`.
 
 `tests.ts -all` also decodes raw HEVC streams with `heic_test -hevc-sequence`:
 the pinned FATE/ITU list in `deps/testimages/hevc_sequence`, and the JCT-VC

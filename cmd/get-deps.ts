@@ -32,6 +32,7 @@ import {
   generateSaoOffsetScaleHevc,
 } from "./gen_hevc_fixtures";
 import { generateUnciBlockFixtures } from "./gen_unci_block_fixtures";
+import { generateRegressFixtures } from "./gen_regress_fixtures";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 export const DEPS_DIR = join(ROOT, "deps");
@@ -156,7 +157,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v43-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+deltaqp-ab+slist+persist-rparam+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+main422b+family-coverage+exact-pins+rpsd-rap-nooutprior+rext-conformance";
+  "v44-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+deltaqp-ab+slist+persist-rparam+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+main422b+family-coverage+exact-pins+rpsd-rap-nooutprior+rext-conformance+regress";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -514,6 +515,10 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
         existsSync(join(HEVC_REXT_DIR, `${n}.bit`))
         && existsSync(join(HEVC_REXT_DIR, `${n}.md5`)),
     ) &&
+    existsSync(join(root, "regress", "two_pps_grid.heic")) &&
+    existsSync(join(root, "regress", "_info", "aux_no_auxc.heic")) &&
+    existsSync(join(unciDir, "mono_alpha_comp.heif")) &&
+    existsSync(join(unciDir, "rgb8_truncated.heif")) &&
     existsSync(join(avifDir, "grid_2x2.avif")) &&
     existsSync(join(avifDir, "alpha.avif")) &&
     existsSync(join(avifDir, "sequence_inter.avif")) &&
@@ -597,6 +602,11 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   generateAvifFixtures(avifDir);
   console.log("deps/testimages: generating unci block HEIFs…");
   generateUnciBlockFixtures(unciDir);
+  /* Container-level regression files derived from a corpus image. */
+  generateRegressFixtures(
+    join(HEIC_RUST_DIR, "testdata", "features", "single.heic"),
+    join(root, "regress"),
+  );
   console.log("deps/testimages: installing HEVC/AV1 Mini fixtures…");
   copyFileSync(
     join(LIBHEIF_DIR, "fuzzing", "data", "corpus", "hevc32-mini.heif"),

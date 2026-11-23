@@ -1554,6 +1554,26 @@ async function main() {
       ],
       ["api allocator+abort", ["-api", sample]],
     ];
+    /* An `auxl` item without auxC has no known type: it must not be
+       reported as alpha or as a gain map, and the primary must still decode.
+       libheif rejects this file, so it is checked here rather than through
+       -verify. */
+    {
+      const aux = join(TESTIMAGES_DIR, "regress", "_info", "aux_no_auxc.heic");
+      const ip = await Bun.$`${exe} -info ${aux}`.nothrow().quiet();
+      const dp = await Bun.$`${exe} -verify ${aux}`.nothrow().quiet();
+      const info = ip.stdout.toString().trim();
+      /* -verify exit 4 = we decoded, libheif did not. */
+      if (ip.exitCode === 0 && /alpha=0 gain_map=0/.test(info) && dp.exitCode === 4) {
+        ok++;
+        console.log(`[ok] aux item without auxC ignored: ${info}`);
+      } else {
+        fail++;
+        console.log(
+          `[fail] aux item without auxC: info="${info}" verify exit ${dp.exitCode}`,
+        );
+      }
+    }
     for (const [label, args] of surface) {
       const sp = await Bun.$`${exe} ${args}`.nothrow().quiet();
       if (sp.exitCode === 0) {
@@ -1569,7 +1589,7 @@ async function main() {
     }
     extra =
       HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 2
-      + surface.length + HEVC_REXT_CONFORMANCE.length;
+      + surface.length + HEVC_REXT_CONFORMANCE.length + 1;
   }
 
   console.log(
