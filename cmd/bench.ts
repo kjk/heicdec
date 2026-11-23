@@ -27,6 +27,7 @@ import {
   fileLabel,
   fileNameLabel,
   fileRel,
+  hasSelection,
   selectFiles,
 } from "./corpus";
 
@@ -223,7 +224,8 @@ async function main(): Promise<void> {
   const verbose = argv.includes("-verbose");
   const withWic = isWindows;
 
-  await getDeps();
+  /* No selection: selectFiles below prints usage and exits without fetching. */
+  if (hasSelection(["-rand"], ["-list-files"])) await getDeps();
 
   if (argv.includes("-list-files")) {
     const all = corpusFiles();

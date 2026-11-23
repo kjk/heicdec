@@ -27,7 +27,7 @@ import {
   cleanBuildOutput,
 } from "./build";
 import { getDeps, TESTIMAGES_DIR } from "./get-deps";
-import { selectFiles, corpusSummary } from "./corpus";
+import { hasSelection, selectFiles, corpusSummary } from "./corpus";
 
 /** Intentionally invalid / malformed fixtures (ok-expect-fail when we fail). */
 const EXPECT_FAIL = new Set([
@@ -1183,13 +1183,16 @@ async function main() {
     return i >= 0 ? parseFloat(argv[i + 1] ?? "8") : 8.0;
   })();
 
-  await getDeps();
+  /* No selection: selectFiles prints usage and exits without fetching. */
+  if (hasSelection(["-rand", "-mse"])) await getDeps();
   const files = selectFiles(
     `usage: bun cmd/tests.ts [options] <-all | -rand N | file...>\n` +
       `  (default)   decode RGB vs libheif; fail if we can't decode or mse > N\n` +
       `  -info        open/probe only (no decode, no libheif)\n` +
       `  -mse N       pixel mse threshold (default 8)\n` +
       `  -clang|-msvc toolchain\n` +
+      `  -dav1d       with -info: link dav1d so AVIF items can be probed\n` +
+      `  -clean       delete out/ first (full rebuild of harness + oracle)\n` +
       `corpus: ${corpusSummary()}`,
     ["-rand", "-mse"],
   );

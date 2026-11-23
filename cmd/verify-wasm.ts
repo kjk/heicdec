@@ -1,7 +1,7 @@
 // verify-wasm.ts — smoke-test dist/wasm/heic.js through the same
 // exports the web app uses.
 //
-//   bun cmd/verify-wasm.ts <file.heic | -rand N>
+//   bun cmd/verify-wasm.ts <file.heic | -rand 1>
 //   bun cmd/verify-wasm.ts deps/heic/testdata/features/single.heic
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -10,9 +10,13 @@ import { corpusSummary, selectFiles } from "./corpus";
 import { ensureWasm, WASM_BINARY, WASM_JS } from "./build-wasm";
 
 const ROOT = path.resolve(import.meta.dir, "..");
-await getDeps();
+/* Only the corpus selectors need deps/; an explicit file (CI) or a bare
+   invocation (usage) must not clone repos and download test images. */
+if (process.argv.includes("-all") || process.argv.includes("-rand"))
+  await getDeps();
 const [file] = selectFiles(
   `usage: bun cmd/verify-wasm.ts <file.heic|.heif|.avif | -rand 1>
+Decodes the first selected file only.
 
 ${corpusSummary()}`,
 );

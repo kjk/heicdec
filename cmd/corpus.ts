@@ -74,7 +74,26 @@ export function corpusSummary(): string {
   const base = files.length - nokia;
   if (nokia > 0)
     return `${files.length} corpus images (${base} imazen/libheif + ${nokia} Nokia conformance)`;
+  if (files.length === 0)
+    return "0 corpus images (deps/ not fetched yet: run `bun cmd/get-deps.ts`)";
   return `${files.length} corpus images`;
+}
+
+/**
+ * True when argv selects something to run (`-all`, `-rand`, a file, or one of
+ * `extraFlags`). Scripts check this before fetching deps so that running one
+ * with no arguments only prints usage, as the script convention promises.
+ */
+export function hasSelection(
+  valueFlags: string[] = ["-rand"],
+  extraFlags: string[] = [],
+): boolean {
+  const argv = process.argv.slice(2);
+  return argv.some(
+    (a, i) =>
+      a === "-all" || a === "-rand" || extraFlags.includes(a)
+      || (!a.startsWith("-") && !valueFlags.includes(argv[i - 1] ?? "")),
+  );
 }
 
 /** Path relative to `root` when possible (forward slashes). */
