@@ -89,15 +89,20 @@ Corpus (used by `tests.ts` / `bench.ts` via `cmd/corpus.ts`):
   `deps/testimages/mini/**`
 - `deps/testimages/regress/**`: generated files for fixed container bugs
   (`cmd/gen_regress_fixtures.ts`). A new bug that needs a crafted file gets a
-  generator there rather than a checked-in binary; files libheif cannot open
+  generator there when a script can build it; files libheif cannot open
   go under `regress/_info/` (skipped by the corpus walk) with a direct check
   in `tests.ts`.
+- `test/streams/*.bit`: checked-in fixtures. Checking in a small fixture is
+  fine when it cannot be generated or downloaded (e.g. it needs an external
+  encoder); record how it was made in `test/streams/README.md`.
 
 `tests.ts -all` also decodes raw HEVC streams with `heic_test -hevc-sequence`:
 the pinned FATE/ITU list in `deps/testimages/hevc_sequence`, and the JCT-VC
 range-extensions conformance set in `deps/testimages/hevc_rext`, each compared
 with the reference decoder MD5 shipped in its zip (streams that do not match
-yet are listed with the reason in `REXT_KNOWN_DIFF`).
+yet are listed with the reason in `REXT_KNOWN_DIFF`). The checked-in streams
+in `test/streams` run with the FATE/ITU list, pinned to the MD5 of the encoder's
+reference decoder.
 
 Override with `HEIC_SPECS=<dir>`.
 
