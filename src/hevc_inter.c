@@ -27,12 +27,40 @@ static int clip_i(int v, int lo, int hi)
     return v;
 }
 
+/* Largest block a filter reads: 64 samples plus 7 taps of margin. */
+#define MC_MAX_BLOCK (64 + 7)
+
+/* The (bw x bh) reference samples whose top-left is (x0, y0) in `plane`.
+   A block fully inside the picture is read in place. Otherwise it is copied
+   into `tmp` with coordinates clamped to the picture (the reference padding
+   of H.265 8.5.3.3.3), so the filters never clamp per tap. */
+static const uint16_t *mc_ref_block(const uint16_t *plane, int stride, int pw,
+                                    int ph, int x0, int y0, int bw, int bh,
+                                    uint16_t *tmp, int *out_stride)
+{
+    int i, j;
+    if (x0 >= 0 && y0 >= 0 && x0 + bw <= pw && y0 + bh <= ph) {
+        *out_stride = stride;
+        return plane + (size_t)y0 * (size_t)stride + (size_t)x0;
+    }
+    for (j = 0; j < bh; j++) {
+        const uint16_t *row =
+            plane + (size_t)clip_i(y0 + j, 0, ph - 1) * (size_t)stride;
+        uint16_t *d = tmp + j * bw;
+        for (i = 0; i < bw; i++) d[i] = row[clip_i(x0 + i, 0, pw - 1)];
+    }
+    *out_stride = bw;
+    return tmp;
+}
+
 int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
                           uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                           int16_t *out, uint32_t out_stride,
                           int32_t *scratch, size_t scratch_n)
 {
-    int int_x, int_y, frac_x, frac_y, shift1, shift3;
+    uint16_t tmp[MC_MAX_BLOCK * MC_MAX_BLOCK];
+    const uint16_t *p;
+    int ps, int_x, int_y, frac_x, frac_y, shift1, shift3;
     uint32_t i, j;
     if (!ref || !ref->y || !out || !scratch || !w || !h ||
         w > 64 || h > 64 || out_stride < w)
@@ -45,58 +73,69 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
     shift3 = 14 - ref->bit_depth;
     if (shift3 < 2) shift3 = 2;
 
+    /* 8-tap filter: 3 samples before, 4 after, in each filtered direction. */
+    p = mc_ref_block(ref->y, ref->y_stride, ref->width, ref->height,
+                     int_x - (frac_x ? 3 : 0), int_y - (frac_y ? 3 : 0),
+                     (int)w + (frac_x ? 7 : 0), (int)h + (frac_y ? 7 : 0),
+                     tmp, &ps);
+
     if (frac_x == 0 && frac_y == 0) {
-        for (j = 0; j < h; j++)
+        for (j = 0; j < h; j++) {
+            const uint16_t *s = p + (size_t)j * (size_t)ps;
+            int16_t *o = out + (size_t)j * out_stride;
+            for (i = 0; i < w; i++) o[i] = (int16_t)(s[i] << shift3);
+        }
+    } else if (frac_y == 0) {
+        const int16_t *c = LUMA_FILTER[frac_x];
+        for (j = 0; j < h; j++) {
+            const uint16_t *s = p + (size_t)j * (size_t)ps;
+            int16_t *o = out + (size_t)j * out_stride;
             for (i = 0; i < w; i++) {
-                int sx = clip_i(int_x + (int)i, 0, ref->width - 1);
-                int sy = clip_i(int_y + (int)j, 0, ref->height - 1);
-                out[j * out_stride + i] =
-                    (int16_t)(ref->y[sy * ref->y_stride + sx] << shift3);
+                int sum = s[i] * c[0] + s[i + 1] * c[1] + s[i + 2] * c[2] +
+                          s[i + 3] * c[3] + s[i + 4] * c[4] + s[i + 5] * c[5] +
+                          s[i + 6] * c[6] + s[i + 7] * c[7];
+                o[i] = (int16_t)(sum >> shift1);
             }
-    } else if (frac_y == 0 || frac_x == 0) {
-        const int16_t *coeff =
-            LUMA_FILTER[frac_x ? frac_x : frac_y];
-        for (j = 0; j < h; j++)
+        }
+    } else if (frac_x == 0) {
+        const int16_t *c = LUMA_FILTER[frac_y];
+        for (j = 0; j < h; j++) {
+            const uint16_t *s = p + (size_t)j * (size_t)ps;
+            int16_t *o = out + (size_t)j * out_stride;
             for (i = 0; i < w; i++) {
-                int sum = 0, k;
-                for (k = 0; k < 8; k++) {
-                    int sx = frac_x
-                                 ? clip_i(int_x + (int)i + k - 3, 0,
-                                          ref->width - 1)
-                                 : clip_i(int_x + (int)i, 0, ref->width - 1);
-                    int sy = frac_y
-                                 ? clip_i(int_y + (int)j + k - 3, 0,
-                                          ref->height - 1)
-                                 : clip_i(int_y + (int)j, 0, ref->height - 1);
-                    sum += ref->y[sy * ref->y_stride + sx] * coeff[k];
-                }
-                out[j * out_stride + i] = (int16_t)(sum >> shift1);
+                int sum = s[i] * c[0] + s[i + ps] * c[1] + s[i + 2 * ps] * c[2] +
+                          s[i + 3 * ps] * c[3] + s[i + 4 * ps] * c[4] +
+                          s[i + 5 * ps] * c[5] + s[i + 6 * ps] * c[6] +
+                          s[i + 7 * ps] * c[7];
+                o[i] = (int16_t)(sum >> shift1);
             }
+        }
     } else {
+        const int16_t *cx = LUMA_FILTER[frac_x];
+        const int16_t *cy = LUMA_FILTER[frac_y];
         uint32_t tmp_h = h + 7;
         if ((size_t)w * tmp_h > scratch_n) return -1;
         for (j = 0; j < tmp_h; j++) {
-            int sy = clip_i(int_y + (int)j - 3, 0, ref->height - 1);
+            const uint16_t *s = p + (size_t)j * (size_t)ps;
+            int32_t *t = scratch + (size_t)j * w;
             for (i = 0; i < w; i++) {
-                int sum = 0, k;
-                for (k = 0; k < 8; k++) {
-                    int sx = clip_i(int_x + (int)i + k - 3, 0,
-                                    ref->width - 1);
-                    sum += ref->y[sy * ref->y_stride + sx] *
-                           LUMA_FILTER[frac_x][k];
-                }
-                scratch[j * w + i] = sum >> shift1;
+                int sum = s[i] * cx[0] + s[i + 1] * cx[1] + s[i + 2] * cx[2] +
+                          s[i + 3] * cx[3] + s[i + 4] * cx[4] +
+                          s[i + 5] * cx[5] + s[i + 6] * cx[6] + s[i + 7] * cx[7];
+                t[i] = sum >> shift1;
             }
         }
-        for (j = 0; j < h; j++)
+        for (j = 0; j < h; j++) {
+            const int32_t *t = scratch + (size_t)j * w;
+            int16_t *o = out + (size_t)j * out_stride;
             for (i = 0; i < w; i++) {
                 int64_t sum = 0;
                 int k;
                 for (k = 0; k < 8; k++)
-                    sum += (int64_t)scratch[(j + (uint32_t)k) * w + i] *
-                           LUMA_FILTER[frac_y][k];
-                out[j * out_stride + i] = (int16_t)(sum >> 6);
+                    sum += (int64_t)t[(size_t)k * w + i] * cy[k];
+                o[i] = (int16_t)(sum >> 6);
             }
+        }
     }
     return 0;
 }
@@ -109,6 +148,9 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
                                     int16_t *out, uint32_t out_stride,
                                     int32_t *scratch, size_t scratch_n)
 {
+    uint16_t tmp[MC_MAX_BLOCK * MC_MAX_BLOCK];
+    const uint16_t *p;
+    int ps;
     uint32_t cx = x / (uint32_t)sub_x, cy = y / (uint32_t)sub_y;
     uint32_t cw = w / (uint32_t)sub_x, ch = h / (uint32_t)sub_y;
     int cmv_x = sub_x > 1 ? mv.x : (int)mv.x * 2;
@@ -120,63 +162,68 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
     int shift3 = 14 - ref->chroma_bit_depth;
     uint32_t i, j;
     if (!cw || !ch) return 0;
-    if (!src || !out || out_stride < cw) return -1;
+    if (!src || !out || out_stride < cw || cw > 64 || ch > 64) return -1;
     if (shift3 < 2) shift3 = 2;
 
+    /* 4-tap filter: 1 sample before, 2 after, in each filtered direction. */
+    p = mc_ref_block(src, ref->c_stride, ref->c_width, ref->c_height,
+                     int_x - (frac_x ? 1 : 0), int_y - (frac_y ? 1 : 0),
+                     (int)cw + (frac_x ? 3 : 0), (int)ch + (frac_y ? 3 : 0),
+                     tmp, &ps);
+
     if (frac_x == 0 && frac_y == 0) {
-        for (j = 0; j < ch; j++)
+        for (j = 0; j < ch; j++) {
+            const uint16_t *s = p + (size_t)j * (size_t)ps;
+            int16_t *o = out + (size_t)j * out_stride;
+            for (i = 0; i < cw; i++) o[i] = (int16_t)(s[i] << shift3);
+        }
+    } else if (frac_y == 0) {
+        const int16_t *c = CHROMA_FILTER[frac_x];
+        for (j = 0; j < ch; j++) {
+            const uint16_t *s = p + (size_t)j * (size_t)ps;
+            int16_t *o = out + (size_t)j * out_stride;
             for (i = 0; i < cw; i++) {
-                int sx = clip_i(int_x + (int)i, 0, ref->c_width - 1);
-                int sy = clip_i(int_y + (int)j, 0, ref->c_height - 1);
-                out[j * out_stride + i] =
-                    (int16_t)(src[sy * ref->c_stride + sx] << shift3);
+                int sum = s[i] * c[0] + s[i + 1] * c[1] + s[i + 2] * c[2] +
+                          s[i + 3] * c[3];
+                o[i] = (int16_t)(sum >> shift1);
             }
-    } else if (frac_y == 0 || frac_x == 0) {
-        const int16_t *coeff =
-            CHROMA_FILTER[frac_x ? frac_x : frac_y];
-        for (j = 0; j < ch; j++)
+        }
+    } else if (frac_x == 0) {
+        const int16_t *c = CHROMA_FILTER[frac_y];
+        for (j = 0; j < ch; j++) {
+            const uint16_t *s = p + (size_t)j * (size_t)ps;
+            int16_t *o = out + (size_t)j * out_stride;
             for (i = 0; i < cw; i++) {
-                int sum = 0, k;
-                for (k = 0; k < 4; k++) {
-                    int sx = frac_x
-                                 ? clip_i(int_x + (int)i + k - 1, 0,
-                                          ref->c_width - 1)
-                                 : clip_i(int_x + (int)i, 0,
-                                          ref->c_width - 1);
-                    int sy = frac_y
-                                 ? clip_i(int_y + (int)j + k - 1, 0,
-                                          ref->c_height - 1)
-                                 : clip_i(int_y + (int)j, 0,
-                                          ref->c_height - 1);
-                    sum += src[sy * ref->c_stride + sx] * coeff[k];
-                }
-                out[j * out_stride + i] = (int16_t)(sum >> shift1);
+                int sum = s[i] * c[0] + s[i + ps] * c[1] + s[i + 2 * ps] * c[2] +
+                          s[i + 3 * ps] * c[3];
+                o[i] = (int16_t)(sum >> shift1);
             }
+        }
     } else {
+        const int16_t *fx = CHROMA_FILTER[frac_x];
+        const int16_t *fy = CHROMA_FILTER[frac_y];
         uint32_t tmp_h = ch + 3;
         if ((size_t)cw * tmp_h > scratch_n) return -1;
-        for (j = 0; j < tmp_h; j++)
+        for (j = 0; j < tmp_h; j++) {
+            const uint16_t *s = p + (size_t)j * (size_t)ps;
+            int32_t *t = scratch + (size_t)j * cw;
             for (i = 0; i < cw; i++) {
-                int sum = 0, k;
-                int sy = clip_i(int_y + (int)j - 1, 0,
-                                ref->c_height - 1);
-                for (k = 0; k < 4; k++) {
-                    int sx = clip_i(int_x + (int)i + k - 1, 0,
-                                    ref->c_width - 1);
-                    sum += src[sy * ref->c_stride + sx] *
-                           CHROMA_FILTER[frac_x][k];
-                }
-                scratch[j * cw + i] = sum >> shift1;
+                int sum = s[i] * fx[0] + s[i + 1] * fx[1] + s[i + 2] * fx[2] +
+                          s[i + 3] * fx[3];
+                t[i] = sum >> shift1;
             }
-        for (j = 0; j < ch; j++)
+        }
+        for (j = 0; j < ch; j++) {
+            const int32_t *t = scratch + (size_t)j * cw;
+            int16_t *o = out + (size_t)j * out_stride;
             for (i = 0; i < cw; i++) {
                 int64_t sum = 0;
                 int k;
                 for (k = 0; k < 4; k++)
-                    sum += (int64_t)scratch[(j + (uint32_t)k) * cw + i] *
-                           CHROMA_FILTER[frac_y][k];
-                out[j * out_stride + i] = (int16_t)(sum >> 6);
+                    sum += (int64_t)t[(size_t)k * cw + i] * fy[k];
+                o[i] = (int16_t)(sum >> 6);
             }
+        }
     }
     return 0;
 }
