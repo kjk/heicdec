@@ -583,15 +583,19 @@ static uint8_t decode_merge_idx(heic_slice_ctx *sc)
 
 static int16_t decode_mvd_component(heic_slice_ctx *sc, int gt0, int gt1)
 {
-    int v, sign;
+    uint64_t v;
+    int sign;
     if (!gt0) return 0;
-    v = gt1 ? (int)heic_cabac_decode_egk(&sc->cabac, 1) + 2 : 1;
-    if (v > INT16_MAX) {
+    v = gt1 ? (uint64_t)heic_cabac_decode_egk(&sc->cabac, 1) + 2 : 1;
+    sign = heic_cabac_decode_bypass(&sc->cabac);
+    /* MvdLX is in -2^15 .. 2^15 - 1 (H.265 7.4.9.9): the magnitude 32768 is
+       legal with a negative sign. Checking the magnitude against INT16_MAX
+       before reading the sign rejected it. */
+    if (v > 32768 || (v == 32768 && !sign)) {
         sc->cabac.error = 1;
         return 0;
     }
-    sign = heic_cabac_decode_bypass(&sc->cabac);
-    return (int16_t)(sign ? -v : v);
+    return (int16_t)(sign ? -(int32_t)v : (int32_t)v);
 }
 
 static void decode_mvd(heic_slice_ctx *sc, int16_t *mx, int16_t *my)
