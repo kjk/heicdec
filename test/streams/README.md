@@ -51,5 +51,27 @@ list-modification syntax into every inter slice header, re-aligns the header
 and drops the SEI. The pinned MD5 is HM's decoder output; ffmpeg gives the
 same.
 
-The script's `pps` mode (second slice names a second PPS) produces an invalid
+## MIXED_SLICES_HM18.bit
+
+Pictures that mix an intra slice with an inter slice: from the third picture
+on, one of the two slices is intra coded, alternately the second and the
+first. The picture still has to keep its motion field and reference lists
+for deblocking and for later pictures. HM never encodes this, so slices of an
+all-intra encode are spliced into the inter stream above (`base.bit`):
+
+```
+TAppEncoder -c cfg/encoder_intra_main.cfg <same options as base.bit> -b intra.bit
+bun splice_intra_slices.ts base.bit MIXED_SLICES_inter_offsets.txt \
+  intra.bit MIXED_SLICES_intra_offsets.txt MIXED_SLICES_HM18.bit
+```
+
+Both encodes produce the same PPS, which the splice relies on. The offsets
+files again come from temporary prints in the slice header parser (positions
+of slice_type, the SAO flags, the P/B-only block, slice_qp_delta and the
+header end). The pinned MD5 is HM's decoder output; ffmpeg gives the same.
+A decoder build from before the mixed-slice fix gets 7 of the 9 frames wrong.
+
+`annexb.ts` holds the bitstream helpers both scripts share.
+
+The `rewrite_slices.ts` script's `pps` mode (second slice names a second PPS) produces an invalid
 stream: H.265 7.4.7.1 requires the same PPS in all slices of a picture.

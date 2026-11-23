@@ -629,6 +629,16 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "0825554eb37ffc8aae1c794998db4ca2",
   },
+  /* Pictures mixing an I slice with a B slice (second slice intra in even
+   * pictures, first slice intra in odd ones). Spliced from two HM 18.0
+   * encodes by test/streams/splice_intra_slices.ts; MD5 is the output of
+   * HM's decoder, which ffmpeg reproduces. */
+  {
+    name: "MIXED_SLICES_HM18.bit",
+    frames: 9,
+    mse: 0,
+    md5: "698af54a328c20bed1e3796ec45e8f20",
+  },
   /* 16-bit 4:4:4 inter (B slices, fractional MVs, bright content), encoded
    * with HM 18.0 built with HIGH_BITDEPTH; MD5 is HM's decoder output. The
    * only streams that take prediction intermediates past 16 bits; checked in
