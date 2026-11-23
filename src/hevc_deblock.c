@@ -36,8 +36,11 @@ static inline int clampi(int v, int lo, int hi)
 
 static inline int iabs(int v) { return v < 0 ? -v : v; }
 
-static int chroma_qp_mapping(int qp_i)
+/* H.265 8.7.2.5.5: QpC comes from Table 8-10 only when ChromaArrayType is 1
+   (4:2:0); for 4:2:2 and 4:4:4 it is Min(qPi, 51), as in 8.6.1. */
+static int chroma_qp_mapping(int qp_i, int chroma_format)
 {
+    if (chroma_format != 1) return qp_i > 51 ? 51 : qp_i;
     if (qp_i < 30) return qp_i;
     if (qp_i >= 43) return qp_i - 6;
     return CHROMA_QP_TABLE[qp_i - 30];
@@ -376,7 +379,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             for (c_idx = 0; c_idx < 2; c_idx++) {
                 int qp_offset = c_idx == 0 ? cb_qp_offset : cr_qp_offset;
                 int qp_i = ((qp_q + qp_p + 1) >> 1) + qp_offset;
-                int qp_c = chroma_qp_mapping(qp_i);
+                int qp_c = chroma_qp_mapping(qp_i, frame->chroma_format);
                 int tc_offset = q_filter ? q_filter->tc_offset : 0;
                 int q_tc = clampi(qp_c + 2 + tc_offset, 0, 53);
                 int tc = ((int)TC_PRIME[q_tc]) << (bit_depth_c - 8);
@@ -447,7 +450,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             for (c_idx = 0; c_idx < 2; c_idx++) {
                 int qp_offset = c_idx == 0 ? cb_qp_offset : cr_qp_offset;
                 int qp_i = ((qp_q + qp_p + 1) >> 1) + qp_offset;
-                int qp_c = chroma_qp_mapping(qp_i);
+                int qp_c = chroma_qp_mapping(qp_i, frame->chroma_format);
                 int tc_offset = q_filter ? q_filter->tc_offset : 0;
                 int q_tc = clampi(qp_c + 2 + tc_offset, 0, 53);
                 int tc = ((int)TC_PRIME[q_tc]) << (bit_depth_c - 8);

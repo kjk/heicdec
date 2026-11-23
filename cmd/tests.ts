@@ -492,10 +492,15 @@ const HEVC_SEQUENCE_TESTS: readonly {
     mse: 0,
     md5: "777439d78f6a82e2d2fa522fe1f93e17",
   },
-  /* CCP: signed residual scale matches HM/ffmpeg (was mse~8390 vs HM with
-   * libde265-style uint cast). Remaining chroma drift mse≈0.00035 maxdiff=4
-   * vs HM (libde265 is a weak oracle here). */
-  { name: "CCP_8bit_RExt_QCOM_1.bin", frames: 9, mse: 0.001 },
+  /* CCP (4:4:4): exact vs the MD5 shipped with the conformance stream. The
+   * last residual (maxdiff 4) was chroma deblocking using the 4:2:0 QpC
+   * table for 4:4:4. */
+  {
+    name: "CCP_8bit_RExt_QCOM_1.bin",
+    frames: 9,
+    mse: 0,
+    md5: "54231c6f121ca65d8b94a747b9504b8b",
+  },
   {
     name: "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1-seq0.bit",
     frames: 1,

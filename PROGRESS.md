@@ -219,7 +219,7 @@
       Prior clamp broke 12-bit 4:4:4 chroma dequant. FATE
       `PERSIST_RPARAM_A_RExt_Sony_3` (12-bit 4:4:4 + persistent Rice) exact
       MD5 vs libde265; Y was already exact, chroma now matches.
-- [x] Full HEVC sequence pin suite: **107** entries (106 exact MD5 + CCP mse≤0.001;
+- [x] Full HEVC sequence pin suite: **107** entries (all exact MD5;
       no skips). Covers WPP Main/Main10, SLIST A–D, PERSIST, RAP/NoOutPrior,
       RPS, SAO, TILES, DELTAQP_B/C, Main_422 A/B, and the rest of
       `HEVC_SEQUENCE_TESTS`.
@@ -231,9 +231,11 @@
       shift + arithmetic `>> 3` (H.265 RExt 8.6.6 / HM). The prior
       `(uint32_t)<<BdC>>BdY` form (libde265) breaks negatives and diverged from
       HM/ffmpeg (CCP mse ~8390 → ~0.00035). PERSIST_RPARAM pin retargeted to HM.
+- [x] `CCP_8bit_RExt_QCOM_1` exact: chroma deblocking used the 4:2:0 QpC table
+      for 4:2:2/4:4:4 (H.265 8.7.2.5.5: QpC = Min(qPi, 51) there). Now matches
+      the conformance MD5 and is pinned.
 - [ ] Remaining HEVC FATE gaps: `DELTAQP_A_BRCM_4` (see isolation above; not
-      pinned); `CCP_8bit_RExt_QCOM_1` (mse≈0.00035 maxdiff=4 vs HM after CCP
-      residual fix — optional polish to exact).
+      pinned).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
       (`heic_alloc` / `heic_zalloc` / `heic_free_buf`), overflow-safe cap checks,
       frame planes and RGB output routed through them; `heic_test -memory-limit`
