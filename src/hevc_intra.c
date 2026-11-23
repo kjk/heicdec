@@ -243,17 +243,11 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
             }
             avail_count += guaranteed;
             if (top_count > guaranteed) {
-                if (!heic_simd_border_top_ext(
-                        top_row + guaranteed,
-                        &border[center + 1 + (int)guaranteed],
-                        &avail[center + 1 + (int)guaranteed],
-                        (int)(top_count - guaranteed))) {
-                    for (i = guaranteed; i < top_count; i++) {
-                        uint16_t raw = top_row[i];
-                        if (raw != HEIC_UNINIT_SAMPLE) {
-                            border[center + 1 + (int)i] = raw;
-                            avail[center + 1 + (int)i] = 1;
-                        }
+                for (i = guaranteed; i < top_count; i++) {
+                    uint16_t raw = top_row[i];
+                    if (raw != HEIC_UNINIT_SAMPLE) {
+                        border[center + 1 + (int)i] = raw;
+                        avail[center + 1 + (int)i] = 1;
                     }
                 }
                 for (i = guaranteed; i < top_count; i++)
@@ -530,8 +524,6 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
             int row_base = rc + py + 1;
             uint16_t *dst =
                 plane + ((size_t)y + (size_t)py) * (size_t)stride + (size_t)x;
-            if (heic_simd_intra_ang_row_var(dst, ref_arr, n, row_base, angle, max_val))
-                continue;
             for (px = 0; px < n; px++) {
                 int32_t i_idx = ((px + 1) * angle) >> 5;
                 int32_t i_fact = ((px + 1) * angle) & 31;

@@ -1129,104 +1129,6 @@ int heic_simd_u16_to_i32_avail(const uint16_t *src, int32_t *border, int *avail,
     return 1;
 }
 
-int heic_simd_border_top_ext(const uint16_t *src, int32_t *border, int *avail, int n)
-{
-    int i, count = 0;
-    __m128i uninit = _mm_set1_epi16(-1); /* 0xFFFF as i16 */
-    if (!g_simd || n < 4) return 0;
-    for (i = 0; i + 4 <= n; i += 4) {
-        __m128i v = _mm_loadl_epi64((const __m128i *)(src + i));
-        __m128i ok = _mm_cmpeq_epi16(v, uninit); /* FFFF if UNINIT */
-        ok = _mm_xor_si128(ok, _mm_set1_epi16(-1)); /* FFFF if valid */
-        {
-            int32_t t[4];
-            uint16_t s[4]; /* unsigned: samples >= 0x8000 at 16-bit depth */
-            int16_t m[4];
-            _mm_storel_epi64((__m128i *)s, v);
-            _mm_storel_epi64((__m128i *)m, ok);
-            t[0] = s[0];
-            t[1] = s[1];
-            t[2] = s[2];
-            t[3] = s[3];
-            if (m[0]) {
-                border[i] = t[0];
-                avail[i] = 1;
-                count++;
-            }
-            if (m[1]) {
-                border[i + 1] = t[1];
-                avail[i + 1] = 1;
-                count++;
-            }
-            if (m[2]) {
-                border[i + 2] = t[2];
-                avail[i + 2] = 1;
-                count++;
-            }
-            if (m[3]) {
-                border[i + 3] = t[3];
-                avail[i + 3] = 1;
-                count++;
-            }
-        }
-    }
-    for (; i < n; i++) {
-        if (src[i] != HEIC_UNINIT_SAMPLE) {
-            border[i] = src[i];
-            avail[i] = 1;
-            count++;
-        }
-    }
-    return count >= 0 ? 1 : 0; /* always "handled" when simd on */
-}
-
-int heic_simd_intra_ang_row_var(uint16_t *dst, const int32_t *ref, int n, int row_base,
-                                int32_t angle, int max_val)
-{
-    int px;
-    if (!g_simd || n < 4) return 0;
-    /* Process 4 pixels; each has its own i_idx / i_fact from (px+1)*angle. */
-    for (px = 0; px + 4 <= n; px += 4) {
-        int k;
-        int32_t pred4[4];
-        for (k = 0; k < 4; k++) {
-            int p = px + k;
-            int32_t i_idx = ((p + 1) * angle) >> 5;
-            int32_t i_fact = ((p + 1) * angle) & 31;
-            int idx = row_base + (int)i_idx;
-            int32_t pred;
-            if (i_fact != 0)
-                pred = ((32 - i_fact) * ref[idx] + i_fact * ref[idx + 1] + 16) >> 5;
-            else
-                pred = ref[idx];
-            pred4[k] = pred;
-        }
-        {
-            __m128i p = _mm_loadu_si128((const __m128i *)pred4);
-            p = clamp_i32(p, 0, max_val);
-            _mm_storeu_si128((__m128i *)pred4, p);
-            dst[px] = (uint16_t)pred4[0];
-            dst[px + 1] = (uint16_t)pred4[1];
-            dst[px + 2] = (uint16_t)pred4[2];
-            dst[px + 3] = (uint16_t)pred4[3];
-        }
-    }
-    for (; px < n; px++) {
-        int32_t i_idx = ((px + 1) * angle) >> 5;
-        int32_t i_fact = ((px + 1) * angle) & 31;
-        int idx = row_base + (int)i_idx;
-        int32_t pred;
-        if (i_fact != 0)
-            pred = ((32 - i_fact) * ref[idx] + i_fact * ref[idx + 1] + 16) >> 5;
-        else
-            pred = ref[idx];
-        if (pred < 0) pred = 0;
-        if (pred > max_val) pred = max_val;
-        dst[px] = (uint16_t)pred;
-    }
-    return 1;
-}
-
 /* sign(a): +1 / 0 / -1 via compares (no branch). */
 static inline __m128i isign4(__m128i a)
 {
@@ -1234,47 +1136,6 @@ static inline __m128i isign4(__m128i a)
     __m128i lt = _mm_cmplt_epi32(a, _mm_setzero_si128());
     return _mm_or_si128(_mm_and_si128(gt, _mm_set1_epi32(1)),
                         _mm_and_si128(lt, _mm_set1_epi32(-1)));
-}
-
-int heic_simd_sao_band_row(uint16_t *row, int x0, int x1, int band_shift,
-                           const int16_t band_table[32], int max_val)
-{
-    int x;
-    if (!g_simd || x1 - x0 < 8) return 0;
-    /* 8-wide: load samples, compute band indices, apply offsets. */
-    for (x = x0; x + 8 <= x1; x += 8) {
-        __m128i v = _mm_loadu_si128((const __m128i *)(row + x));
-        int16_t s[8];
-        int k;
-        _mm_storeu_si128((__m128i *)s, v);
-        for (k = 0; k < 8; k++) {
-            int sample = (int)(uint16_t)s[k];
-            int band, offset, out;
-            if (sample > max_val) sample = max_val;
-            band = sample >> band_shift;
-            offset = (int)band_table[band & 31];
-            if (!offset) continue;
-            out = sample + offset;
-            if (out < 0) out = 0;
-            else if (out > max_val) out = max_val;
-            s[k] = (int16_t)out;
-        }
-        _mm_storeu_si128((__m128i *)(row + x), _mm_loadu_si128((const __m128i *)s));
-    }
-    for (; x < x1; x++) {
-        int sample = (int)row[x];
-        int band, offset;
-        if (sample > max_val) sample = max_val;
-        band = sample >> band_shift;
-        offset = (int)band_table[band & 31];
-        if (offset) {
-            int v = sample + offset;
-            if (v < 0) v = 0;
-            else if (v > max_val) v = max_val;
-            row[x] = (uint16_t)v;
-        }
-    }
-    return 1;
 }
 
 int heic_simd_sao_edge_h_row(const uint16_t *srow, uint16_t *drow, int x0, int x1,
@@ -1505,35 +1366,6 @@ int heic_simd_u16_to_i32_avail(const uint16_t *s, int32_t *b, int *a, int n)
     (void)b;
     (void)a;
     (void)n;
-    return 0;
-}
-int heic_simd_border_top_ext(const uint16_t *s, int32_t *b, int *a, int n)
-{
-    (void)s;
-    (void)b;
-    (void)a;
-    (void)n;
-    return 0;
-}
-int heic_simd_intra_ang_row_var(uint16_t *d, const int32_t *r, int n, int rb, int32_t ang,
-                                int m)
-{
-    (void)d;
-    (void)r;
-    (void)n;
-    (void)rb;
-    (void)ang;
-    (void)m;
-    return 0;
-}
-int heic_simd_sao_band_row(uint16_t *r, int a, int b, int s, const int16_t *t, int m)
-{
-    (void)r;
-    (void)a;
-    (void)b;
-    (void)s;
-    (void)t;
-    (void)m;
     return 0;
 }
 int heic_simd_sao_edge_h_row(const uint16_t *s, uint16_t *d, int a, int b, const int *o,

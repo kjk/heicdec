@@ -81,8 +81,6 @@ static void apply_sao_band(uint16_t *plane, int stride, int x0, int y0, int x1,
     if (stride <= 0) return;
     for (y = y0; y < y1; y++) {
         uint16_t *row = plane + (size_t)y * (size_t)stride;
-        if (heic_simd_sao_band_row(row, x0, x1, band_shift, band_table, max_val))
-            continue;
         for (x = x0; x < x1; x++) {
             int sample = (int)row[x];
             if (sample > max_val) sample = max_val;

@@ -1050,14 +1050,6 @@ int  heic_simd_intra_ang_row(uint16_t *dst, const int32_t *ref, int n, int a, in
                              int max_val);
 /* Copy n u16 plane samples → int32 border; set avail[i]=1. */
 int  heic_simd_u16_to_i32_avail(const uint16_t *src, int32_t *border, int *avail, int n);
-/* Top extension: copy if != UNINIT; returns how many were valid. */
-int  heic_simd_border_top_ext(const uint16_t *src, int32_t *border, int *avail, int n);
-/* Angular mode<18: per-pixel angle index along a row (row_base + f(px)). */
-int  heic_simd_intra_ang_row_var(uint16_t *dst, const int32_t *ref, int n, int row_base,
-                                 int32_t angle, int max_val);
-/* SAO band interior row: x0..x1 on one scanline. */
-int  heic_simd_sao_band_row(uint16_t *row, int x0, int x1, int band_shift,
-                            const int16_t band_table[32], int max_val);
 /* SAO edge class 0 (horizontal neighbors) interior row. */
 int  heic_simd_sao_edge_h_row(const uint16_t *srow, uint16_t *drow, int x0, int x1,
                               const int offset_table[5], int max_val);
