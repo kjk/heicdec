@@ -137,10 +137,15 @@ typedef struct {
 
 /* ----- image sequences ----- */
 
-/* Sequence timing uses timescale ticks. repetition_count is 1 without an
-   edit-list loop, 0 for an unrecognized edit pattern, or UINT32_MAX for an
-   indefinite loop. frame_count describes one bounded presentation pass;
-   callers repeat that pass according to repetition_count. */
+/* Sequence timing uses timescale ticks. repetition_count (same meaning as
+   libheif's heif_track_get_number_of_repetitions):
+     1           no edit list: play once
+     0           an edit list is present but is not a recognized loop
+                 (including a plain, non-repeating edit): play once
+     UINT32_MAX  indefinite loop
+     otherwise   the number of times the pass is played
+   frame_count describes one bounded presentation pass; callers repeat that
+   pass according to repetition_count. */
 typedef struct {
     uint32_t frame_count;
     uint32_t timescale;
@@ -189,7 +194,8 @@ heic_image *heic_doc_decode_abortable(heic_doc *doc, heic_format format,
 void heic_image_destroy(heic_ctx *ctx, heic_image *img);
 
 /* heic_doc_output_size: bytes for a tightly packed image
-   (width * height * bytes-per-pixel), or 0 on error.
+   (width * height * bytes-per-pixel), or 0 on error, including an image
+   larger than the context limits (which heic_doc_decode_into would refuse).
    heic_doc_decode_into: decode the primary image into a caller-owned buffer.
    stride <= 0 means tight (width * bytes-per-pixel); then
    heic_doc_output_size is enough. Otherwise buf_size must be at least

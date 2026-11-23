@@ -181,6 +181,8 @@ const char *heic_version(void);
 #define HEIC_DEFAULT_MAX_MEMORY ((size_t)1 * 1024 * 1024 * 1024)
 
 #define HEIC_MAX_ITEMS            65536u
+
+#define HEIC_MAX_ITEM_DECODES     4096u
 #define HEIC_MAX_PROPERTIES       65536u
 #define HEIC_MAX_EXTENTS_PER_ITEM 1024u
 #define HEIC_MAX_REFERENCES       65536u
@@ -654,6 +656,9 @@ int  heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab);
+
+int heic_hevc_frame_unreferenced(const heic_frame *f);
+int heic_hevc_frame_is_poc_anchor(const heic_frame *f);
 int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,
                           const uint8_t *data, size_t len,
                           const heic_frame *const *refs, int n_refs,
@@ -688,6 +693,8 @@ struct heic_doc {
     const uint8_t  *data;
     heic_container  container;
     heic_kind       kind;
+
+    uint32_t        item_decodes;
 };
 
 typedef enum {
@@ -1170,7 +1177,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint32_t pic_width_in_ctbs, uint32_t ctb_size,
                        const heic_ctb_filter_info *filter_map,
                        const uint8_t *pred_mode_map, uint32_t pred_mode_stride,
-                       size_t pred_mode_n, uint32_t pred_mode_min_pu);
+                       size_t pred_mode_n, uint32_t pred_mode_min_pu,
+                       int disable_boundary_filter);
 
 typedef struct {
     uint8_t sao_type_idx[3];
@@ -4619,8 +4627,10 @@ int heic_container_find_aux(const heic_container *c, uint32_t target_id,
         for (j = 0; j < r->n_to; j++) {
             if (r->to_item_ids[j] != target_id) continue;
             if (heic_container_get_item(c, r->from_item_id, &item) != 0) continue;
-            if (urn_prefix && item.auxc && item.auxc->aux_type &&
-                strncmp(item.auxc->aux_type, urn_prefix, plen) != 0)
+
+            if (urn_prefix &&
+                (!item.auxc || !item.auxc->aux_type ||
+                 strncmp(item.auxc->aux_type, urn_prefix, plen) != 0))
                 continue;
             if (n < max_out && out_ids) out_ids[n] = r->from_item_id;
             n++;
@@ -4919,9 +4929,18 @@ size_t heic_doc_output_size(const heic_doc *doc, heic_format format)
 {
     heic_image_info info;
     int bpp;
-    if (heic_doc_info(doc, &info) != 0) return 0;
+    const heic_limits *lim;
+    uint64_t pixels;
+    if (!doc || heic_doc_info(doc, &info) != 0) return 0;
     bpp = (format == HEIC_FORMAT_RGBA || format == HEIC_FORMAT_BGRA) ? 4 : 3;
-    return (size_t)info.width * (size_t)info.height * (size_t)bpp;
+
+    lim = &doc->ctx->limits;
+    pixels = (uint64_t)info.width * (uint64_t)info.height;
+    if (!info.width || !info.height || info.width > lim->max_width
+        || info.height > lim->max_height || pixels > lim->max_pixels
+        || pixels > SIZE_MAX / (uint64_t)bpp)
+        return 0;
+    return (size_t)pixels * (size_t)bpp;
 }
 
 int heic_doc_exif(heic_doc *doc, uint8_t **out, size_t *out_len)
@@ -5055,6 +5074,11 @@ static int decode_hevc_reference(heic_doc *doc, const heic_item *item,
     if (depth > 4 || !item->hvcc) {
         heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
                    "invalid HEVC predictive reference chain");
+        return -1;
+    }
+    if (++doc->item_decodes > HEIC_MAX_ITEM_DECODES) {
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                   "too many item decodes for one image");
         return -1;
     }
     if (heic_container_item_data(&doc->container, item->id, &data, &len,
@@ -5863,6 +5887,11 @@ static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
         heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "derived item recursion too deep");
         return -1;
     }
+    if (++doc->item_decodes > HEIC_MAX_ITEM_DECODES) {
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR,
+                   "too many item decodes for one image");
+        return -1;
+    }
     if (heic_abort_check(ab)) return -1;
 
     if (item->item_type == HEIC_TYPE_GRID) {
@@ -5980,7 +6009,8 @@ done:
 
 static uint16_t scale_alpha_sample(uint16_t v, int src_bd, int dst_bd)
 {
-    if (v == HEIC_UNINIT_SAMPLE) return 0;
+
+    if (v == HEIC_UNINIT_SAMPLE && src_bd < 16) return 0;
     if (src_bd == dst_bd || src_bd <= 0 || dst_bd <= 0) return v;
     if (src_bd < dst_bd) return (uint16_t)(v << (dst_bd - src_bd));
     return (uint16_t)(v >> (src_bd - dst_bd));
@@ -6078,6 +6108,7 @@ int heic_decode_primary(heic_doc *doc, heic_format format,
     bpp = (format == HEIC_FORMAT_RGBA || format == HEIC_FORMAT_BGRA) ? 4 : 3;
 
     if (heic_abort_check(ab)) return -1;
+    doc->item_decodes = 0;
     rc = decode_item(doc, &item, &frame, ab, 0);
     if (rc != 0) {
         heic_frame_free(doc->ctx, &frame);
@@ -6183,8 +6214,12 @@ typedef struct {
     uint32_t sample_count;
     uint32_t cache_start;
     uint32_t next_sample;
+
+    uint32_t evict_floor;
     int initialized;
 } heic_sequence_cache;
+
+#define HEIC_SEQ_KEEP_PICTURES 17u
 
 struct heic_sequence_decoder {
     heic_doc *doc;
@@ -6207,6 +6242,7 @@ static void sequence_cache_clear(heic_sequence_decoder *decoder,
     }
     cache->cache_start = 0;
     cache->next_sample = 0;
+    cache->evict_floor = 0;
     cache->initialized = 0;
     heic_av1_sequence_destroy(cache->av1);
     cache->av1 = NULL;
@@ -6294,6 +6330,33 @@ static void sequence_apply_color(const heic_item *item, heic_frame *decoded)
     decoded->full_range = item->colr->full_range;
 }
 
+static void sequence_cache_evict(heic_sequence_decoder *decoder,
+                                 heic_sequence_cache *cache, uint32_t newest,
+                                 int is_hevc)
+{
+    heic_ctx *ctx = decoder->doc->ctx;
+    uint32_t floor, j;
+    int anchor_seen = 0;
+    if (newest < HEIC_SEQ_KEEP_PICTURES) return;
+    floor = newest - HEIC_SEQ_KEEP_PICTURES + 1;
+    if (floor <= cache->cache_start) return;
+    for (j = newest + 1; j-- > cache->cache_start;) {
+        heic_frame *p = &cache->pictures[j];
+        int anchor;
+        if (!cache->picture_ready[j]) continue;
+        anchor = is_hevc && heic_hevc_frame_is_poc_anchor(p);
+        if (j < floor
+            && (!is_hevc
+                || (heic_hevc_frame_unreferenced(p)
+                    && (!anchor || anchor_seen)))) {
+            heic_frame_free(ctx, p);
+            cache->picture_ready[j] = 0;
+        }
+        if (anchor) anchor_seen = 1;
+    }
+    if (floor > cache->evict_floor) cache->evict_floor = floor;
+}
+
 static int sequence_store_av1_picture(heic_sequence_decoder *decoder,
                                       heic_sequence_cache *cache,
                                       const heic_item *item,
@@ -6313,6 +6376,7 @@ static int sequence_store_av1_picture(heic_sequence_decoder *decoder,
     cache->pictures[sample] = *picture;
     memset(picture, 0, sizeof(*picture));
     cache->picture_ready[sample] = 1;
+    sequence_cache_evict(decoder, cache, sample, 0);
     return 0;
 }
 
@@ -6332,7 +6396,8 @@ static heic_frame *sequence_decode_track(
     target = seq->frame_samples[frame_index];
     if (target >= seq->sample_count) return NULL;
 
-    if (!cache->initialized || target < cache->cache_start) {
+    if (!cache->initialized || target < cache->cache_start
+        || (target < cache->evict_floor && !cache->picture_ready[target])) {
         sequence_cache_clear(decoder, cache);
         start = target;
         while (start > 0 && !seq->samples[start].is_sync) start--;
@@ -6357,11 +6422,11 @@ static heic_frame *sequence_decode_track(
             decoded = &cache->pictures[i];
             memset(decoded, 0, sizeof(*decoded));
             if (item.hvcc) {
-                uint32_t n_refs = i - cache->cache_start;
-                for (j = 0; j < n_refs; j++) {
-                    if (!cache->picture_ready[i - 1 - j]) return NULL;
-                    cache->refs[j] = &cache->pictures[i - 1 - j];
-                }
+
+                uint32_t n_refs = 0;
+                for (j = i; j-- > cache->cache_start;)
+                    if (cache->picture_ready[j])
+                        cache->refs[n_refs++] = &cache->pictures[j];
                 if (heic_hevc_decode_refs(
                         doc->ctx, item.hvcc,
                         doc->data + sample->offset, sample->size,
@@ -6373,6 +6438,8 @@ static heic_frame *sequence_decode_track(
                 sequence_apply_color(&item, decoded);
                 cache->picture_ready[i] = 1;
                 cache->next_sample = i + 1;
+
+                if (i <= target) sequence_cache_evict(decoder, cache, i, 1);
             } else {
                 heic_frame picture;
                 uint32_t output_sample = 0;
@@ -6386,9 +6453,8 @@ static heic_frame *sequence_decode_track(
                     doc->data + sample->offset, sample->size, i,
                     &picture, &output_sample, ab);
                 if (got < 0) {
-                    heic_av1_sequence_destroy(cache->av1);
-                    cache->av1 = NULL;
-                    cache->next_sample = i;
+
+                    sequence_cache_clear(decoder, cache);
                     return NULL;
                 }
                 cache->next_sample = i + 1;
@@ -6492,6 +6558,7 @@ static heic_image *decode_item_to_image(heic_doc *doc, const heic_item *item,
     int w, h;
 
     memset(&frame, 0, sizeof(frame));
+    doc->item_decodes = 0;
     if (decode_item(doc, item, &frame, ab, 0) != 0) {
         heic_frame_free(doc->ctx, &frame);
         return NULL;
@@ -7038,6 +7105,7 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
 {
     int x0, y0, x1, y1, w, h;
     int y_shift, c_shift;
+    int y_uninit, c_uninit;
     int full;
     int matrix;
     int bpp;
@@ -7055,6 +7123,9 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
     h = y1 - y0;
     y_shift = f->bit_depth > 8 ? f->bit_depth - 8 : 0;
     c_shift = f->chroma_bit_depth > 8 ? f->chroma_bit_depth - 8 : 0;
+
+    y_uninit = f->bit_depth < 16;
+    c_uninit = f->chroma_bit_depth < 16;
     full = f->full_range;
     matrix = f->matrix_coeffs;
 
@@ -7105,12 +7176,13 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                 uint16_t ys = yp[x];
                 int Y;
                 uint8_t r, g, b, av = 255;
-                if (ys == HEIC_UNINIT_SAMPLE) ys = 0;
+                if (ys == HEIC_UNINIT_SAMPLE && y_uninit) ys = 0;
                 Y = (int)(ys >> y_shift);
                 r = g = b = gray[Y > 255 ? 255 : Y];
                 if (ap) {
                     uint16_t as = ap[x];
-                    if (as != HEIC_UNINIT_SAMPLE) av = (uint8_t)(as >> y_shift);
+                    if (as != HEIC_UNINIT_SAMPLE || !y_uninit)
+                        av = (uint8_t)(as >> y_shift);
                 }
                 ycc_store(row, is_bgr, has_a, r, g, b, av);
                 row += bpp;
@@ -7142,7 +7214,7 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                 uint16_t ys = f->y[(size_t)sy * (size_t)f->y_stride + (size_t)sx];
                 int cx = sx >> 1, cy = sy;
                 uint16_t cbs, crs;
-                if (ys == HEIC_UNINIT_SAMPLE) ys = 0;
+                if (ys == HEIC_UNINIT_SAMPLE && y_uninit) ys = 0;
                 Y = (int)(ys >> y_shift);
                 if (cx >= f->c_width) cx = f->c_width - 1;
                 if (cy >= f->c_height) cy = f->c_height - 1;
@@ -7150,8 +7222,10 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                 if (cy < 0) cy = 0;
                 cbs = f->cb[(size_t)cy * (size_t)f->c_stride + (size_t)cx];
                 crs = f->cr[(size_t)cy * (size_t)f->c_stride + (size_t)cx];
-                if (cbs == HEIC_UNINIT_SAMPLE) cbs = (uint16_t)(128u << c_shift);
-                if (crs == HEIC_UNINIT_SAMPLE) crs = (uint16_t)(128u << c_shift);
+                if (cbs == HEIC_UNINIT_SAMPLE && c_uninit)
+                    cbs = (uint16_t)(128u << c_shift);
+                if (crs == HEIC_UNINIT_SAMPLE && c_uninit)
+                    crs = (uint16_t)(128u << c_shift);
                 Cb = (int)(cbs >> c_shift);
                 Cr = (int)(crs >> c_shift);
                 ycc_pixel(&cc, Y, Cb, Cr, &r, &g, &b);
@@ -7159,7 +7233,8 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                     uint16_t as =
                         f->a[(size_t)sy * (size_t)(f->a_stride ? f->a_stride : f->y_stride) +
                              (size_t)sx];
-                    if (as != HEIC_UNINIT_SAMPLE) av = (uint8_t)(as >> y_shift);
+                    if (as != HEIC_UNINIT_SAMPLE || !y_uninit)
+                        av = (uint8_t)(as >> y_shift);
                 }
                 ycc_store(row, is_bgr, has_a, r, g, b, av);
                 row += bpp;
@@ -7579,12 +7654,12 @@ static void fill_scaling_factors(heic_scaling_list *out)
         if (mid == 0 || mid == 3) continue;
         for (i = 0; i < 64; i++) {
             int sx = i % 8, sy = i / 8;
-            uint8_t v = out->coef[1][mid][i];
+            uint8_t v = out->coef[2][mid][i];
             for (dy = 0; dy < 4; dy++)
                 for (dx = 0; dx < 4; dx++)
                     out->factor32[mid][sy * 4 + dy][sx * 4 + dx] = v;
         }
-        out->factor32[mid][0][0] = out->coef[1][mid][0];
+        out->factor32[mid][0][0] = out->dc_coef[0][mid];
     }
 }
 
@@ -11728,6 +11803,61 @@ static int sample_is_intra(const heic_frame *frame, uint8_t c_idx,
     return idx < pred_mode_n && pred_mode_map[idx] == HEIC_PRED_INTRA;
 }
 
+typedef struct {
+    uint32_t sub_x, sub_y;
+    uint32_t ctb_mask, ctb_shift;
+    uint32_t ctb_x0, ctb_y0;
+    uint32_t cur_z;
+    uint32_t cur_addr, pic_width_in_ctbs;
+    const heic_ctb_filter_info *filter_map;
+} intra_avail;
+
+static uint32_t intra_z_index(uint32_t ux, uint32_t uy)
+{
+
+    static const uint8_t SPREAD[16] = {
+        0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15,
+        0x40, 0x41, 0x44, 0x45, 0x50, 0x51, 0x54, 0x55
+    };
+    return (uint32_t)SPREAD[ux & 15] | ((uint32_t)SPREAD[uy & 15] << 1);
+}
+
+static void intra_avail_init(intra_avail *a, const heic_frame *frame,
+                             uint8_t c_idx, uint32_t x, uint32_t y,
+                             uint32_t pic_width_in_ctbs, uint32_t ctb_size,
+                             const heic_ctb_filter_info *filter_map)
+{
+    uint32_t xl, yl;
+    a->sub_x = a->sub_y = 1;
+    if (c_idx != 0) {
+        if (frame->chroma_format == 1 || frame->chroma_format == 2) a->sub_x = 2;
+        if (frame->chroma_format == 1) a->sub_y = 2;
+    }
+    a->ctb_mask = ctb_size - 1;
+    a->ctb_shift = 0;
+    while ((1u << a->ctb_shift) < ctb_size) a->ctb_shift++;
+    xl = x * a->sub_x;
+    yl = y * a->sub_y;
+    a->ctb_x0 = xl & ~a->ctb_mask;
+    a->ctb_y0 = yl & ~a->ctb_mask;
+    a->cur_z = intra_z_index((xl & a->ctb_mask) >> 2, (yl & a->ctb_mask) >> 2);
+    a->pic_width_in_ctbs = pic_width_in_ctbs;
+    a->cur_addr = (yl >> a->ctb_shift) * pic_width_in_ctbs + (xl >> a->ctb_shift);
+    a->filter_map = filter_map;
+}
+
+static inline int intra_decoded(const intra_avail *a, uint32_t x, uint32_t y)
+{
+    uint32_t xl = x * a->sub_x, yl = y * a->sub_y;
+    uint32_t addr;
+    if ((xl & ~a->ctb_mask) == a->ctb_x0 && (yl & ~a->ctb_mask) == a->ctb_y0)
+        return intra_z_index((xl & a->ctb_mask) >> 2, (yl & a->ctb_mask) >> 2)
+               < a->cur_z;
+    addr = (yl >> a->ctb_shift) * a->pic_width_in_ctbs + (xl >> a->ctb_shift);
+    if (a->filter_map) return a->filter_map[addr].slice_address != UINT32_MAX;
+    return addr < a->cur_addr;
+}
+
 static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size,
                         uint8_t c_idx, int32_t *border, int center,
                         uint32_t slice_address, uint32_t pic_width_in_ctbs,
@@ -11746,7 +11876,10 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
     int corner_ok = 0;
     uint32_t i;
     const heic_ctb_filter_info *current_filter = NULL;
+    intra_avail av;
 
+    intra_avail_init(&av, frame, c_idx, x, y, pic_width_in_ctbs, ctb_size,
+                     filter_map);
     if (c_idx == 0) {
         plane = frame->y;
         stride = frame->y_stride;
@@ -11797,7 +11930,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
     if (avail_tl) {
         uint16_t raw =
             plane[(size_t)(y - 1) * (size_t)stride + (size_t)(x - 1)];
-        if (raw != HEIC_UNINIT_SAMPLE) {
+        if (intra_decoded(&av, x - 1, y - 1)) {
             border[center] = raw;
             corner_ok = 1;
             avail_count++;
@@ -11831,7 +11964,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
             if (top_count > guaranteed) {
                 for (i = guaranteed; i < top_count; i++) {
                     uint16_t raw = top_row[i];
-                    if (raw != HEIC_UNINIT_SAMPLE) {
+                    if (intra_decoded(&av, x + i, y - 1)) {
                         border[center + 1 + (int)i] = raw;
                         avail[center + 1 + (int)i] = 1;
                     }
@@ -11842,7 +11975,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
         } else {
             for (i = 0; i < top_count; i++) {
                 uint16_t raw = top_row[i];
-                if (raw != HEIC_UNINIT_SAMPLE
+                if (intra_decoded(&av, x + i, y - 1)
                     && sample_in_slice(frame, c_idx, x + i, y - 1,
                                        slice_address, pic_width_in_ctbs,
                                        ctb_size, filter_map, current_filter)
@@ -11878,7 +12011,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
             avail_count += guaranteed;
             for (i = guaranteed; i < left_count; i++) {
                 uint16_t raw = left_p[(size_t)i * (size_t)stride];
-                if (raw != HEIC_UNINIT_SAMPLE) {
+                if (intra_decoded(&av, x - 1, y + i)) {
                     border[center - 1 - (int)i] = raw;
                     avail[center - 1 - (int)i] = 1;
                     avail_count++;
@@ -11887,7 +12020,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
         } else {
             for (i = 0; i < left_count; i++) {
                 uint16_t raw = left_p[(size_t)i * (size_t)stride];
-                if (raw != HEIC_UNINIT_SAMPLE
+                if (intra_decoded(&av, x - 1, y + i)
                     && sample_in_slice(frame, c_idx, x - 1, y + i,
                                        slice_address, pic_width_in_ctbs,
                                        ctb_size, filter_map, current_filter)
@@ -12027,7 +12160,8 @@ static void predict_dc(uint16_t *plane, int stride, uint32_t x, uint32_t y,
 
 static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
                             uint32_t size, uint8_t c_idx, uint8_t mode, int max_val,
-                            const int32_t *border, int center)
+                            const int32_t *border, int center,
+                            int disable_boundary_filter)
 {
     int n = (int)size;
     int32_t angle = HEIC_INTRA_ANGLE[mode];
@@ -12077,7 +12211,7 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
                 dst[px] = (uint16_t)pred;
             }
         }
-        if (mode == 26 && c_idx == 0 && size < 32) {
+        if (mode == 26 && c_idx == 0 && size < 32 && !disable_boundary_filter) {
             for (py = 0; py < n; py++) {
                 int32_t pred = border[center + 1]
                                + ((border[center - 1 - py] - border[center]) >> 1);
@@ -12123,7 +12257,7 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
                 dst[px] = (uint16_t)pred;
             }
         }
-        if (mode == 10 && c_idx == 0 && size < 32) {
+        if (mode == 10 && c_idx == 0 && size < 32 && !disable_boundary_filter) {
             for (px = 0; px < n; px++) {
                 int32_t pred = border[center - 1]
                                + ((border[center + 1 + px] - border[center]) >> 1);
@@ -12141,7 +12275,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
                        uint32_t pic_width_in_ctbs, uint32_t ctb_size,
                        const heic_ctb_filter_info *filter_map,
                        const uint8_t *pred_mode_map, uint32_t pred_mode_stride,
-                       size_t pred_mode_n, uint32_t pred_mode_min_pu)
+                       size_t pred_mode_n, uint32_t pred_mode_min_pu,
+                       int disable_boundary_filter)
 {
     uint32_t size;
     int32_t border[HEIC_BORDER_N];
@@ -12187,7 +12322,8 @@ int heic_predict_intra(heic_frame *frame, uint32_t x, uint32_t y,
     else if (mode == 1)
         predict_dc(plane, stride, x, y, size, log2_size, c_idx, max_val, border, center);
     else
-        predict_angular(plane, stride, x, y, size, c_idx, mode, max_val, border, center);
+        predict_angular(plane, stride, x, y, size, c_idx, mode, max_val, border, center,
+                        disable_boundary_filter);
     return 0;
 }
 
@@ -12253,7 +12389,9 @@ int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
     int_y = (int)y + ((int)mv.y >> 2);
     frac_x = (int)mv.x & 3;
     frac_y = (int)mv.y & 3;
+
     shift1 = ref->bit_depth - 8;
+    if (shift1 > 4) shift1 = 4;
     shift3 = 14 - ref->bit_depth;
     if (shift3 < 2) shift3 = 2;
 
@@ -12341,7 +12479,7 @@ static int mc_chroma_plane_internal(const heic_frame *ref,
     int int_x = (int)cx + (cmv_x >> 3);
     int int_y = (int)cy + (cmv_y >> 3);
     int frac_x = cmv_x & 7, frac_y = cmv_y & 7;
-    int shift1 = ref->chroma_bit_depth - 8;
+    int shift1 = ref->chroma_bit_depth > 12 ? 4 : ref->chroma_bit_depth - 8;
     int shift3 = 14 - ref->chroma_bit_depth;
     uint32_t i, j;
     if (!cw || !ch) return 0;
@@ -12530,7 +12668,9 @@ static int predict_intra_block(heic_slice_ctx *sc, uint32_t x, uint32_t y,
         sc->sh->slice_address, sc->sps->pic_width_in_ctbs,
         ctb_size_px(sc->sps), sc->filter_map,
         pred_mode_map, sc->intra_mode_stride,
-        sc->intra_mode_n, min_pu_size(sc->sps));
+        sc->intra_mode_n, min_pu_size(sc->sps),
+
+        sc->sps->implicit_rdpcm_enabled_flag && sc->cu_transquant_bypass);
 }
 
 static int chroma_qp_from_luma(int qpi, int chroma_array_type)
@@ -12797,7 +12937,15 @@ static void decode_quant_params(heic_slice_ctx *sc, uint32_t x0,
         sc->current_qg_y = y_qg;
     }
 
-    first_in_ctb_row = (x_qg == 0 && (y_qg & ctb_mask) == 0);
+    first_in_ctb_row = (y_qg & ctb_mask) == 0
+        && (x_qg == 0
+            || (sc->pps->tiles_enabled_flag && (x_qg & ctb_mask) == 0
+                && tile_axis_starts_at(
+                       (uint32_t)x_qg >> sc->sps->log2_ctb_size,
+                       sc->sps->pic_width_in_ctbs,
+                       (uint32_t)sc->pps->num_tile_columns_minus1 + 1,
+                       sc->pps->uniform_spacing_flag,
+                       sc->pps->column_width_minus1)));
     slice_sx = (sc->sh->slice_address % sc->sps->pic_width_in_ctbs)
                * ctb_size_px(sc->sps);
     slice_sy = (sc->sh->slice_address / sc->sps->pic_width_in_ctbs)
@@ -13578,9 +13726,8 @@ static void derive_amvp(heic_slice_ctx *sc, const heic_pu *pu,
     if (count < 2 && !(have_a && have_b
                        && (a.x != b.x || a.y != b.y))) {
         heic_mv tmv;
-        if (derive_temporal_mv(sc, pu, list, ref_idx, &tmv)
-            && (count == 0
-                || tmv.x != mvp[0].x || tmv.y != mvp[0].y))
+
+        if (derive_temporal_mv(sc, pu, list, ref_idx, &tmv))
             mvp[count] = tmv;
     }
 }
@@ -14099,6 +14246,22 @@ static int apply_cross_component_only(heic_slice_ctx *sc, uint32_t x0,
     return 0;
 }
 
+static void rotate_coeffs(heic_coeff_buf *coeff, int num, int extended)
+{
+    int i;
+    for (i = 0; i < num / 2; i++) {
+        if (extended) {
+            int32_t t = coeff->coeffs[i];
+            coeff->coeffs[i] = coeff->coeffs[num - 1 - i];
+            coeff->coeffs[num - 1 - i] = t;
+        } else {
+            int16_t t = coeff->narrow[i];
+            coeff->narrow[i] = coeff->narrow[num - 1 - i];
+            coeff->narrow[num - 1 - i] = t;
+        }
+    }
+}
+
 static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
                                      uint8_t log2_size, uint8_t c_idx, int scan_order,
                                      uint8_t intra_mode, int res_scale)
@@ -14107,7 +14270,8 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     int transform_skip = 0;
     int rdpcm_mode = 0;
     int size, num, qp, bd, is_intra_4x4, max_val;
-    int extended, max_transform_range;
+    int extended, max_transform_range, rotate;
+    int wide;
     uint16_t *plane;
     int stride, plane_w, plane_h;
 
@@ -14136,6 +14300,8 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     }
     extended = sc->sps->extended_precision_processing_flag;
     max_transform_range = extended ? HEIC_MAX(15, bd + 6) : 15;
+
+    wide = extended || bd > 12;
     if (heic_decode_residual(&sc->cabac, sc->models, log2_size, c_idx, scan_order,
                              sc->pps->sign_data_hiding_enabled_flag,
                              sc->cu_transquant_bypass,
@@ -14164,23 +14330,17 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     num = size * size;
     if (!plane) return 0;
     max_val = (1 << bd) - 1;
+    if (wide && !extended) {
 
-    if (sc->sps->transform_skip_rotation_enabled_flag
-        && sc->cu_pred_mode == HEIC_PRED_INTRA && log2_size == 2
-        && (sc->cu_transquant_bypass || transform_skip)) {
-        int i;
-        for (i = 0; i < num / 2; i++) {
-            if (extended) {
-                int32_t t = coeff->coeffs[i];
-                coeff->coeffs[i] = coeff->coeffs[num - 1 - i];
-                coeff->coeffs[num - 1 - i] = t;
-            } else {
-                int16_t t = coeff->narrow[i];
-                coeff->narrow[i] = coeff->narrow[num - 1 - i];
-                coeff->narrow[num - 1 - i] = t;
-            }
-        }
+        int k;
+        for (k = 0; k < num; k++) coeff->coeffs[k] = coeff->narrow[k];
     }
+
+    rotate = sc->sps->transform_skip_rotation_enabled_flag
+             && sc->cu_pred_mode == HEIC_PRED_INTRA && log2_size == 2
+             && (sc->cu_transquant_bypass || transform_skip);
+    if (rotate && sc->cu_transquant_bypass)
+        rotate_coeffs(coeff, num, wide);
 
     if (sc->cu_transquant_bypass) {
         int py, px;
@@ -14191,7 +14351,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     int32_t sum = 0;
                     for (px = 0; px < size; px++) {
                         int pos = py * size + px;
-                        sum += extended ? coeff->coeffs[pos]
+                        sum += wide ? coeff->coeffs[pos]
                                         : coeff->narrow[pos];
                         rdpcm[py * size + px] = sum;
                     }
@@ -14201,7 +14361,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     int32_t sum = 0;
                     for (py = 0; py < size; py++) {
                         int pos = py * size + px;
-                        sum += extended ? coeff->coeffs[pos]
+                        sum += wide ? coeff->coeffs[pos]
                                         : coeff->narrow[pos];
                         rdpcm[py * size + px] = sum;
                     }
@@ -14211,7 +14371,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         if (c_idx == 0) {
             if (rdpcm_mode)
                 save_luma_residual32(sc, rdpcm, size);
-            else if (extended)
+            else if (wide)
                 save_luma_residual32(sc, coeff->coeffs, size);
             else
                 save_luma_residual16(sc, coeff->narrow, size);
@@ -14223,7 +14383,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                 if ((int)x0 + px >= plane_w) break;
                 v = (int32_t)plane[((int)y0 + py) * stride + (int)x0 + px]
                     + (rdpcm_mode ? rdpcm[py * size + px]
-                                  : (extended
+                                  : (wide
                                         ? coeff->coeffs[py * size + px]
                                         : coeff->narrow[py * size + px]))
                     + (c_idx ? cross_component_residual(
@@ -14245,7 +14405,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
 
         uint8_t matrix_id = (uint8_t)(
             c_idx + (sc->cu_pred_mode == HEIC_PRED_INTRA ? 0 : 3));
-        if (extended) {
+        if (wide) {
             heic_dequantize_scaled_extended(
                 coeff->coeffs, num, qp, bd, log2_size, max_transform_range,
                 list, matrix_id);
@@ -14254,13 +14414,15 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                                    list, matrix_id);
         }
     } else {
-        if (extended) {
+        if (wide) {
             heic_dequantize_extended(
                 coeff->coeffs, num, qp, bd, log2_size, max_transform_range);
         } else {
             heic_dequantize(coeff->narrow, num, qp, bd, log2_size);
         }
     }
+
+    if (rotate) rotate_coeffs(coeff, num, wide);
 
     if (transform_skip) {
         int bd_shift = HEIC_MAX(20 - bd, extended ? 11 : 0);
@@ -14271,9 +14433,9 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         if (rdpcm_mode == 0) {
             for (i = 0; i < num; i++) {
                 int64_t c =
-                    (int64_t)(extended ? coeff->coeffs[i] : coeff->narrow[i])
+                    (int64_t)(wide ? coeff->coeffs[i] : coeff->narrow[i])
                     * ((int64_t)1 << ts_shift);
-                if (extended)
+                if (wide)
                     sc->mc_scratch[i] = (int32_t)((c + rnd) >> bd_shift);
                 else
                     sc->residual_buf[i] = (int16_t)((c + rnd) >> bd_shift);
@@ -14287,7 +14449,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     for (px = 0; px < size; px++) {
                         int pos = py * size + px;
                         int64_t c =
-                            (int64_t)(extended
+                            (int64_t)(wide
                                 ? coeff->coeffs[pos]
                                 : coeff->narrow[pos])
                             * ((int64_t)1 << ts_shift);
@@ -14301,7 +14463,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
                     for (py = 0; py < size; py++) {
                         int pos = py * size + px;
                         int64_t c =
-                            (int64_t)(extended
+                            (int64_t)(wide
                                 ? coeff->coeffs[pos]
                                 : coeff->narrow[pos])
                             * ((int64_t)1 << ts_shift);
@@ -14330,7 +14492,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
     } else {
         is_intra_4x4 = (log2_size == 2 && c_idx == 0 &&
                         sc->cu_pred_mode == HEIC_PRED_INTRA);
-        if (extended) {
+        if (wide) {
             heic_inverse_transform_extended(
                 coeff->coeffs, sc->mc_scratch, size, bd,
                 max_transform_range, is_intra_4x4);
@@ -14341,7 +14503,7 @@ static int decode_and_apply_residual(heic_slice_ctx *sc, uint32_t x0, uint32_t y
         }
     }
 
-    if (extended) {
+    if (wide) {
         int py, px;
         if (c_idx == 0) save_luma_residual32(sc, sc->mc_scratch, size);
         for (py = 0; py < size; py++) {
@@ -14534,7 +14696,8 @@ static int decode_tu_leaf(heic_slice_ctx *sc, uint32_t x0, uint32_t y0,
             &sc->models[HEIC_CTX_CU_CHROMA_QP_OFFSET_FLAG]);
         int idx = 0;
         if (enabled && sc->pps->chroma_qp_offset_list_len > 1) {
-            while (idx < 5
+
+            while (idx < sc->pps->chroma_qp_offset_list_len - 1
                    && heic_cabac_decode_bin(
                        &sc->cabac,
                        &sc->models[HEIC_CTX_CU_CHROMA_QP_OFFSET_IDX]))
@@ -15501,6 +15664,19 @@ static uint32_t get_tile_id(const uint32_t *col_bd, int n_cols,
     return (uint32_t)tr * (uint32_t)n_cols + (uint32_t)tc;
 }
 
+static uint32_t tile_col_span(const uint32_t *col_bd, int n_cols, uint32_t cx,
+                              uint32_t *width)
+{
+    int i;
+    for (i = 0; i < n_cols; i++)
+        if (cx >= col_bd[i] && cx < col_bd[i + 1]) {
+            *width = col_bd[i + 1] - col_bd[i];
+            return col_bd[i];
+        }
+    *width = 1;
+    return cx;
+}
+
 static int build_tile_scan(heic_ctx *ctx, const uint32_t *col_bd, int n_cols,
                            const uint32_t *row_bd, int n_rows,
                            uint32_t **out_xy, int *out_n)
@@ -15660,6 +15836,8 @@ int heic_hevc_picture_decode_segment(
     const heic_pps *pps;
     heic_frame *out;
     uint32_t ctb = 0, total, start, pic_w, pic_h, ctb_sz;
+
+    uint32_t row_x0 = 0, row_w = 1;
     int tiles, wpp;
     int tile_scan_pos = 0;
     int tile_start = 0;
@@ -15746,6 +15924,10 @@ int heic_hevc_picture_decode_segment(
         sc->ctb_x = start % pic_w;
     }
 
+    row_x0 = tiles ? tile_col_span(work->col_bd, work->n_cols, sc->ctb_x, &row_w)
+                   : 0;
+    if (!tiles) row_w = pic_w;
+
     if (!sh->dependent_slice_segment_flag || tile_start) {
         heic_cabac_init_contexts(sc->models, sh->slice_type,
                                  sh->cabac_init_flag, sh->slice_qp_y);
@@ -15767,13 +15949,14 @@ int heic_hevc_picture_decode_segment(
         sc->cu_qp_offset_cr = 0;
         memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
         work->filter_sh = work->sh;
-    } else if (wpp && sc->ctb_x == 0 && sc->ctb_y > 0) {
+    } else if (wpp && sc->ctb_x == row_x0 && !tile_start
+               && (tiles || sc->ctb_y > 0)) {
 
-        if (pic_w > 1 && work->wpp_have_saved) {
+        if (row_w > 1 && work->wpp_have_saved) {
             memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
             memcpy(sc->stat_coeff, work->wpp_stat_coeff,
                    sizeof(sc->stat_coeff));
-        } else if (pic_w == 1) {
+        } else if (row_w == 1) {
             heic_cabac_init_contexts(sc->models, sh->slice_type,
                                      sh->cabac_init_flag, sh->slice_qp_y);
             memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
@@ -15832,7 +16015,7 @@ int heic_hevc_picture_decode_segment(
         work->ctb_decoded[addr_rs] = 1;
         ctb++;
 
-        if (wpp && sc->ctb_x == 1 && sc->ctb_y + 1 < pic_h) {
+        if (wpp && sc->ctb_x == row_x0 + 1 && sc->ctb_y + 1 < pic_h) {
             memcpy(work->wpp_saved, sc->models, sizeof(work->wpp_saved));
             memcpy(work->wpp_stat_coeff, sc->stat_coeff,
                    sizeof(work->wpp_stat_coeff));
@@ -15879,6 +16062,30 @@ int heic_hevc_picture_decode_segment(
                     sc->is_cu_chroma_qp_offset_coded = 0;
                     sc->cu_qp_offset_cb = 0;
                     sc->cu_qp_offset_cr = 0;
+                    row_x0 = tile_col_span(work->col_bd, work->n_cols,
+                                           sc->ctb_x, &row_w);
+                } else if (wpp && sc->ctb_y != prev_y) {
+
+                    (void)heic_cabac_decode_terminate(&sc->cabac);
+                    if (row_w > 1 && work->wpp_have_saved) {
+                        memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
+                        memcpy(sc->stat_coeff, work->wpp_stat_coeff,
+                               sizeof(sc->stat_coeff));
+                    } else if (row_w == 1) {
+                        heic_cabac_init_contexts(sc->models, sh->slice_type,
+                                                 sh->cabac_init_flag,
+                                                 sh->slice_qp_y);
+                        memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
+                    }
+                    if (entry_idx < n_entry) {
+                        uint32_t ebsp = work->entry_cum[entry_idx];
+                        uint32_t rbsp = ep_positions && n_ep > 0
+                                           ? ebsp_to_rbsp(ep_positions, n_ep, ebsp)
+                                           : ebsp;
+                        heic_cabac_seek(&sc->cabac, rbsp);
+                        heic_cabac_reinit(&sc->cabac);
+                        entry_idx++;
+                    }
                 }
             }
         } else {
@@ -16487,8 +16694,9 @@ static inline int clampi(int v, int lo, int hi)
 
 static inline int iabs(int v) { return v < 0 ? -v : v; }
 
-static int chroma_qp_mapping(int qp_i)
+static int chroma_qp_mapping(int qp_i, int chroma_format)
 {
+    if (chroma_format != 1) return qp_i > 51 ? 51 : qp_i;
     if (qp_i < 30) return qp_i;
     if (qp_i >= 43) return qp_i - 6;
     return CHROMA_QP_TABLE[qp_i - 30];
@@ -16827,7 +17035,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             for (c_idx = 0; c_idx < 2; c_idx++) {
                 int qp_offset = c_idx == 0 ? cb_qp_offset : cr_qp_offset;
                 int qp_i = ((qp_q + qp_p + 1) >> 1) + qp_offset;
-                int qp_c = chroma_qp_mapping(qp_i);
+                int qp_c = chroma_qp_mapping(qp_i, frame->chroma_format);
                 int tc_offset = q_filter ? q_filter->tc_offset : 0;
                 int q_tc = clampi(qp_c + 2 + tc_offset, 0, 53);
                 int tc = ((int)TC_PRIME[q_tc]) << (bit_depth_c - 8);
@@ -16898,7 +17106,7 @@ static void apply_chroma_deblocking(heic_frame *frame, const uint8_t *flags,
             for (c_idx = 0; c_idx < 2; c_idx++) {
                 int qp_offset = c_idx == 0 ? cb_qp_offset : cr_qp_offset;
                 int qp_i = ((qp_q + qp_p + 1) >> 1) + qp_offset;
-                int qp_c = chroma_qp_mapping(qp_i);
+                int qp_c = chroma_qp_mapping(qp_i, frame->chroma_format);
                 int tc_offset = q_filter ? q_filter->tc_offset : 0;
                 int q_tc = clampi(qp_c + 2 + tc_offset, 0, 53);
                 int tc = ((int)TC_PRIME[q_tc]) << (bit_depth_c - 8);
@@ -17178,6 +17386,16 @@ static const heic_frame *find_prev_tid0(const heic_frame *const *refs,
         return refs[i];
     }
     return NULL;
+}
+
+int heic_hevc_frame_unreferenced(const heic_frame *f)
+{
+    return f && f->dpb_mark == 1;
+}
+
+int heic_hevc_frame_is_poc_anchor(const heic_frame *f)
+{
+    return find_prev_tid0(&f, 1) != NULL;
 }
 
 #define HEIC_DPB_UNMANAGED 0
@@ -17524,6 +17742,20 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
         }
     }
 
+    for (i = 0; i < n_nals; i++) {
+        heic_bs sb;
+        uint32_t id;
+        if (!heic_nal_is_slice(nals[i].type) || nals[i].nuh_layer_id != 0)
+            continue;
+        heic_bs_init(&sb, nals[i].payload, nals[i].payload_len);
+        (void)heic_bs_bit(&sb);
+        if (nals[i].type >= HEIC_NAL_BLA_W_LP && nals[i].type <= HEIC_NAL_CRA)
+            (void)heic_bs_bit(&sb);
+        id = heic_bs_ue(&sb);
+        if (!sb.error && id < HEIC_PARAM_MAX_PPS && pc->pps_valid[id])
+            active_pps_id = (int)id;
+        break;
+    }
     if (active_pps_id < 0) {
         for (i = 0; i < HEIC_PARAM_MAX_PPS; i++)
             if (pc->pps_valid[i]) {
@@ -18703,6 +18935,43 @@ static void plane_tile_dims(int plane, int sampling, uint32_t tw, uint32_t th,
     *ph = th;
 }
 
+static uint64_t unci_min_payload_bytes(const heic_uncc *uncc, const int *plane_map,
+                                       const int *bit_depth, const uint8_t *align,
+                                       int ncomp, int interleave, int sampling,
+                                       uint32_t tile_w, uint32_t tile_h,
+                                       uint64_t tiles)
+{
+    uint64_t per_tile = 0;
+    int i, chroma_done = 0;
+    if (interleave == 1) {
+        uint64_t px_bits = 0;
+        for (i = 0; i < ncomp; i++) {
+            uint64_t b = (uint64_t)bit_depth[i];
+            if (align[i] && (uint64_t)align[i] * 8 > b) b = (uint64_t)align[i] * 8;
+            px_bits += b;
+        }
+        if ((uint64_t)uncc->pixel_size * 8 > px_bits)
+            px_bits = (uint64_t)uncc->pixel_size * 8;
+        return ((uint64_t)tile_w * px_bits + 7) / 8 * tile_h * tiles;
+    }
+    for (i = 0; i < ncomp; i++) {
+        uint32_t pw, ph;
+        uint64_t b = (uint64_t)bit_depth[i];
+        int plane = plane_map[i];
+        plane_tile_dims(plane, sampling, tile_w, tile_h, &pw, &ph);
+        if (interleave == 2 && (plane == 1 || plane == 2)) {
+
+            if (chroma_done) continue;
+            chroma_done = 1;
+            per_tile += ((uint64_t)pw * 2 * b + 7) / 8 * ph;
+            continue;
+        }
+        if (align[i] && (uint64_t)align[i] * 8 > b) b = (uint64_t)align[i] * 8;
+        per_tile += ((uint64_t)pw * b + 7) / 8 * ph;
+    }
+    return per_tile * tiles;
+}
+
 static int sampling_to_chroma(int sampling)
 {
     if (sampling == 1) return 2;
@@ -19008,6 +19277,16 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
         pix = owned;
     }
 
+    if (uncc->block_size == 0
+        && unci_min_payload_bytes(uncc, plane_map, bit_depth, align, ncomp,
+                                  interleave, sampling, tile_w, tile_h,
+                                  (uint64_t)tile_cols * tile_rows)
+               > (uint64_t)pix_len) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "unci: truncated image data");
+        heic_free_buf(ctx, owned);
+        return -1;
+    }
+
     chroma_fmt = sampling_to_chroma(sampling);
     if (heic_frame_alloc(ctx, out, (int)width, (int)height, 8, chroma_fmt) != 0) {
         heic_free_buf(ctx, owned);
@@ -19244,13 +19523,25 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
     }
 
 done:
-    if (!has_rgb && !has_yuv && ncomp == 1) {
-        size_t k, n = (size_t)out->c_width * (size_t)out->c_height;
-        for (k = 0; k < n; k++) {
-            out->cb[k] = 128;
-            out->cr[k] = 128;
+
+    {
+        int have[3] = {0, 0, 0};
+        size_t k;
+        for (i = 0; i < ncomp; i++)
+            if (plane_map[i] >= 0 && plane_map[i] < 3) have[plane_map[i]] = 1;
+        if (!have[0]) {
+            size_t n = (size_t)out->y_stride * (size_t)out->height;
+            for (k = 0; k < n; k++) out->y[k] = 0;
         }
-        out->matrix_coeffs = 6;
+        if (out->cb && out->cr && (!have[1] || !have[2])) {
+            size_t n = (size_t)out->c_stride * (size_t)out->c_height;
+            uint16_t fill = has_rgb ? 0 : 128;
+            for (k = 0; k < n; k++) {
+                if (!have[1]) out->cb[k] = fill;
+                if (!have[2]) out->cr[k] = fill;
+            }
+            if (!has_rgb) out->matrix_coeffs = 6;
+        }
     }
     heic_free_buf(ctx, owned);
     return 0;
