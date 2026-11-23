@@ -194,7 +194,8 @@ heic_image *heic_doc_decode_abortable(heic_doc *doc, heic_format format,
 void heic_image_destroy(heic_ctx *ctx, heic_image *img);
 
 /* heic_doc_output_size: bytes for a tightly packed image
-   (width * height * bytes-per-pixel), or 0 on error.
+   (width * height * bytes-per-pixel), or 0 on error, including an image
+   larger than the context limits (which heic_doc_decode_into would refuse).
    heic_doc_decode_into: decode the primary image into a caller-owned buffer.
    stride <= 0 means tight (width * bytes-per-pixel); then
    heic_doc_output_size is enough. Otherwise buf_size must be at least

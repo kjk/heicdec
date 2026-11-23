@@ -1668,6 +1668,31 @@ static int do_api_surface_test(const uint8_t *data, size_t len)
         heic_ctx_free(ctx);
         return 1;
     }
+    {
+        /* heic_doc_output_size is the tight size within the limits, and 0
+           for an image the limits forbid (decode must then fail too). */
+        heic_image_info info;
+        heic_limits narrow, back;
+        if (heic_doc_info(doc, &info) != 0
+            || heic_doc_output_size(doc, HEIC_FORMAT_BGRA)
+                   != (size_t)info.width * info.height * 4) {
+            fprintf(stderr, "api: output_size is not width*height*4\n");
+            ok = 0;
+        }
+        memset(&narrow, 0, sizeof(narrow));
+        narrow.max_width = info.width > 1 ? info.width - 1 : 1;
+        heic_ctx_set_limits(ctx, &narrow);
+        img = info.width > 1 ? heic_doc_decode(doc, HEIC_FORMAT_BGRA) : NULL;
+        if (info.width > 1
+            && (heic_doc_output_size(doc, HEIC_FORMAT_BGRA) != 0 || img)) {
+            fprintf(stderr, "api: image wider than max_width was accepted\n");
+            if (img) heic_image_destroy(ctx, img);
+            ok = 0;
+        }
+        memset(&back, 0, sizeof(back));
+        back.max_width = 16384;
+        heic_ctx_set_limits(ctx, &back);
+    }
     img = heic_doc_decode(doc, HEIC_FORMAT_BGR);
     if (!img || !img->data) {
         fprintf(stderr, "api: BGR decode failed\n");

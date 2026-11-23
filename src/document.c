@@ -281,9 +281,21 @@ size_t heic_doc_output_size(const heic_doc *doc, heic_format format)
 {
     heic_image_info info;
     int bpp;
-    if (heic_doc_info(doc, &info) != 0) return 0;
+    const heic_limits *lim;
+    uint64_t pixels;
+    if (!doc || heic_doc_info(doc, &info) != 0) return 0;
     bpp = (format == HEIC_FORMAT_RGBA || format == HEIC_FORMAT_BGRA) ? 4 : 3;
-    return (size_t)info.width * (size_t)info.height * (size_t)bpp;
+    /* The declared size comes straight from the file. An image beyond the
+       context limits cannot be decoded, so do not hand the caller a buffer
+       size for it (it used to be the raw product, which also wrapped for
+       absurd dimensions). */
+    lim = &doc->ctx->limits;
+    pixels = (uint64_t)info.width * (uint64_t)info.height;
+    if (!info.width || !info.height || info.width > lim->max_width
+        || info.height > lim->max_height || pixels > lim->max_pixels
+        || pixels > SIZE_MAX / (uint64_t)bpp)
+        return 0;
+    return (size_t)pixels * (size_t)bpp;
 }
 
 int heic_doc_exif(heic_doc *doc, uint8_t **out, size_t *out_len)

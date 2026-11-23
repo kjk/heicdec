@@ -100,8 +100,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             ? ((sel & 2) ? HEIC_FORMAT_BGRA : HEIC_FORMAT_RGBA)
             : ((sel & 2) ? HEIC_FORMAT_BGR : HEIC_FORMAT_RGB);
         size_t tight = heic_doc_output_size(doc, fmt);
-        /* heic_doc_output_size reports the declared ispe size, which is not
-           bounded by the limits; keep the caller buffer within budget. */
+        /* Keep the caller buffer within the allocator budget. */
         if ((sel & 1) && tight && info.height &&
             tight <= FUZZ_MEM_BUDGET / 2) {
             int stride = (int)(tight / info.height) + 5;
