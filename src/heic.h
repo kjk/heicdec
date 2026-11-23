@@ -137,10 +137,15 @@ typedef struct {
 
 /* ----- image sequences ----- */
 
-/* Sequence timing uses timescale ticks. repetition_count is 1 without an
-   edit-list loop, 0 for an unrecognized edit pattern, or UINT32_MAX for an
-   indefinite loop. frame_count describes one bounded presentation pass;
-   callers repeat that pass according to repetition_count. */
+/* Sequence timing uses timescale ticks. repetition_count (same meaning as
+   libheif's heif_track_get_number_of_repetitions):
+     1           no edit list: play once
+     0           an edit list is present but is not a recognized loop
+                 (including a plain, non-repeating edit): play once
+     UINT32_MAX  indefinite loop
+     otherwise   the number of times the pass is played
+   frame_count describes one bounded presentation pass; callers repeat that
+   pass according to repetition_count. */
 typedef struct {
     uint32_t frame_count;
     uint32_t timescale;
