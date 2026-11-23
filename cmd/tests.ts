@@ -1096,19 +1096,9 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
  * They are reported as skips; one that starts matching is a failure until it
  * is removed from here, so the list cannot go stale.
  */
-const REXT_KNOWN_DIFF: Record<string, string> = Object.fromEntries(
-  [
-    "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_16BIT_RExt_Sony_1",
-    "EXTPREC_MAIN_444_16_INTRA_16BIT_RExt_Sony_1",
-    "GENERAL_16b_400_RExt_Sony_1",
-    "GENERAL_16b_444_RExt_Sony_2",
-    "GENERAL_16b_444_highThroughput_RExt_Sony_2",
-    "WAVETILES_RExt_Sony_2",
-  ].map((n) => [
-    n,
-    "16-bit samples: 0xFFFF doubles as the 'not decoded yet' marker",
-  ]),
-);
+const REXT_KNOWN_DIFF: Record<string, string> = {
+  /* none: all 48 streams match. Entry form:  "<stream name>": "<reason>" */
+};
 
 /**
  * Decode every RExt conformance stream and compare the MD5 of our YUV with

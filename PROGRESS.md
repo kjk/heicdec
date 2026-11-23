@@ -235,13 +235,16 @@
       for 4:2:2/4:4:4 (H.265 8.7.2.5.5: QpC = Min(qPi, 51) there). Now matches
       the conformance MD5 and is pinned.
 - [x] JCT-VC RExt conformance set wired into `tests.ts -all` (48 streams,
-      compared with the MD5 in each zip): 42 exact. Fixed on the way: QpC for
+      compared with the MD5 in each zip): all exact. Fixed on the way: QpC for
       4:2:2/4:4:4 chroma deblocking, transform-skip rotation after scaling,
       4:4:4 32x32 chroma scaling factors, tiles + WPP.
-- [ ] 16-bit HEVC: the six 16-bit conformance streams differ
-      (`REXT_KNOWN_DIFF`). Suspected cause: `HEIC_UNINIT_SAMPLE` (0xFFFF) is
-      both a legal 16-bit sample and the intra "not decoded yet" marker; the
-      outputs do contain 65535 samples. Not confirmed.
+- [x] 16-bit HEVC: all six 16-bit conformance streams exact (48/48 RExt).
+      Two causes: residuals were held in int16 without
+      `extended_precision_processing` (a 16-bit residual spans +-65535), now
+      32-bit above 12 bits; and intra availability used the 0xFFFF plane
+      fill as "not decoded", which is a legal 16-bit sample, now derived
+      from z-order position. Inter prediction above 12 bits still uses
+      16-bit intermediates and has no dedicated test stream.
 - [ ] Remaining HEVC FATE gaps: `DELTAQP_A_BRCM_4` (see isolation above; not
       pinned).
 - [x] Enforce `heic_limits.max_memory_bytes`: size-header tracked alloc/free
