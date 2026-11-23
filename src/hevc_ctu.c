@@ -373,7 +373,17 @@ static void decode_quant_params(heic_slice_ctx *sc, uint32_t x0,
         sc->current_qg_y = y_qg;
     }
 
-    first_in_ctb_row = (x_qg == 0 && (y_qg & ctb_mask) == 0);
+    /* First QG of a CTB row within a tile: with tiles, rows restart at every
+       tile column boundary, not only at x = 0. */
+    first_in_ctb_row = (y_qg & ctb_mask) == 0
+        && (x_qg == 0
+            || (sc->pps->tiles_enabled_flag && (x_qg & ctb_mask) == 0
+                && tile_axis_starts_at(
+                       (uint32_t)x_qg >> sc->sps->log2_ctb_size,
+                       sc->sps->pic_width_in_ctbs,
+                       (uint32_t)sc->pps->num_tile_columns_minus1 + 1,
+                       sc->pps->uniform_spacing_flag,
+                       sc->pps->column_width_minus1)));
     slice_sx = (sc->sh->slice_address % sc->sps->pic_width_in_ctbs)
                * ctb_size_px(sc->sps);
     slice_sy = (sc->sh->slice_address / sc->sps->pic_width_in_ctbs)
@@ -3127,6 +3137,20 @@ static uint32_t get_tile_id(const uint32_t *col_bd, int n_cols,
     return (uint32_t)tr * (uint32_t)n_cols + (uint32_t)tc;
 }
 
+/* First CTB column and width (in CTBs) of the tile column holding `cx`. */
+static uint32_t tile_col_span(const uint32_t *col_bd, int n_cols, uint32_t cx,
+                              uint32_t *width)
+{
+    int i;
+    for (i = 0; i < n_cols; i++)
+        if (cx >= col_bd[i] && cx < col_bd[i + 1]) {
+            *width = col_bd[i + 1] - col_bd[i];
+            return col_bd[i];
+        }
+    *width = 1;
+    return cx;
+}
+
 static int build_tile_scan(heic_ctx *ctx, const uint32_t *col_bd, int n_cols,
                            const uint32_t *row_bd, int n_rows,
                            uint32_t **out_xy, int *out_n)
@@ -3289,6 +3313,9 @@ int heic_hevc_picture_decode_segment(
     const heic_pps *pps;
     heic_frame *out;
     uint32_t ctb = 0, total, start, pic_w, pic_h, ctb_sz;
+    /* First CTB column and width of the current CTB row: the picture's, or
+       the tile's when tiles are enabled. */
+    uint32_t row_x0 = 0, row_w = 1;
     int tiles, wpp;
     int tile_scan_pos = 0;
     int tile_start = 0;
@@ -3375,6 +3402,10 @@ int heic_hevc_picture_decode_segment(
         sc->ctb_x = start % pic_w;
     }
 
+    row_x0 = tiles ? tile_col_span(work->col_bd, work->n_cols, sc->ctb_x, &row_w)
+                   : 0;
+    if (!tiles) row_w = pic_w;
+
     if (!sh->dependent_slice_segment_flag || tile_start) {
         heic_cabac_init_contexts(sc->models, sh->slice_type,
                                  sh->cabac_init_flag, sh->slice_qp_y);
@@ -3396,16 +3427,18 @@ int heic_hevc_picture_decode_segment(
         sc->cu_qp_offset_cr = 0;
         memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
         work->filter_sh = work->sh;
-    } else if (wpp && sc->ctb_x == 0 && sc->ctb_y > 0) {
+    } else if (wpp && sc->ctb_x == row_x0 && !tile_start
+               && (tiles || sc->ctb_y > 0)) {
         /* WPP sync at first CTB of a row (H.265 9.3.2.4 / libde265
          * decode_substream). Dependent segments that start on a new row
-         * take this path too — including PicWidthInCtbsY==1, where there
-         * is no (1,y-1) neighbour and contexts re-init like slice start. */
-        if (pic_w > 1 && work->wpp_have_saved) {
+         * take this path too — including a row that is one CTB wide, where
+         * there is no (x0+1,y-1) neighbour and contexts re-init like slice
+         * start. With tiles a row is a CTB row of the tile. */
+        if (row_w > 1 && work->wpp_have_saved) {
             memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
             memcpy(sc->stat_coeff, work->wpp_stat_coeff,
                    sizeof(sc->stat_coeff));
-        } else if (pic_w == 1) {
+        } else if (row_w == 1) {
             heic_cabac_init_contexts(sc->models, sh->slice_type,
                                      sh->cabac_init_flag, sh->slice_qp_y);
             memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
@@ -3465,8 +3498,9 @@ int heic_hevc_picture_decode_segment(
         work->ctb_decoded[addr_rs] = 1;
         ctb++;
 
-        /* WPP: save contexts after CTB column 1 (for next row restore) */
-        if (wpp && sc->ctb_x == 1 && sc->ctb_y + 1 < pic_h) {
+        /* WPP: save contexts after the second CTB of the row (of the tile,
+           with tiles) for the next row's restore. */
+        if (wpp && sc->ctb_x == row_x0 + 1 && sc->ctb_y + 1 < pic_h) {
             memcpy(work->wpp_saved, sc->models, sizeof(work->wpp_saved));
             memcpy(work->wpp_stat_coeff, sc->stat_coeff,
                    sizeof(work->wpp_stat_coeff));
@@ -3514,6 +3548,34 @@ int heic_hevc_picture_decode_segment(
                     sc->is_cu_chroma_qp_offset_coded = 0;
                     sc->cu_qp_offset_cb = 0;
                     sc->cu_qp_offset_cr = 0;
+                    row_x0 = tile_col_span(work->col_bd, work->n_cols,
+                                           sc->ctb_x, &row_w);
+                } else if (wpp && sc->ctb_y != prev_y) {
+                    /* Tiles + WPP: every CTB row of a tile is its own
+                       substream. Same steps as the picture-wide rows below:
+                       end_of_subset_one_bit, sync from the second CTB of
+                       the row above (or re-init when the tile is one CTB
+                       wide), then the next entry point. */
+                    (void)heic_cabac_decode_terminate(&sc->cabac);
+                    if (row_w > 1 && work->wpp_have_saved) {
+                        memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
+                        memcpy(sc->stat_coeff, work->wpp_stat_coeff,
+                               sizeof(sc->stat_coeff));
+                    } else if (row_w == 1) {
+                        heic_cabac_init_contexts(sc->models, sh->slice_type,
+                                                 sh->cabac_init_flag,
+                                                 sh->slice_qp_y);
+                        memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
+                    }
+                    if (entry_idx < n_entry) {
+                        uint32_t ebsp = work->entry_cum[entry_idx];
+                        uint32_t rbsp = ep_positions && n_ep > 0
+                                           ? ebsp_to_rbsp(ep_positions, n_ep, ebsp)
+                                           : ebsp;
+                        heic_cabac_seek(&sc->cabac, rbsp);
+                        heic_cabac_reinit(&sc->cabac);
+                        entry_idx++;
+                    }
                 }
             }
         } else {
