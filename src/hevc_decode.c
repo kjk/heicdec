@@ -450,7 +450,24 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
         }
     }
 
-    /* Pick active PPS (last loaded, or first valid) and its SPS. */
+    /* The picture's PPS is the one its first slice names. "Last parsed" (a
+       cache miss) or "lowest id" (a cache hit) are only fallbacks: with two
+       PPS in one hvcC they picked different ones for the first and the later
+       tiles of a grid, so one of the two always failed. */
+    for (i = 0; i < n_nals; i++) {
+        heic_bs sb;
+        uint32_t id;
+        if (!heic_nal_is_slice(nals[i].type) || nals[i].nuh_layer_id != 0)
+            continue;
+        heic_bs_init(&sb, nals[i].payload, nals[i].payload_len);
+        (void)heic_bs_bit(&sb); /* first_slice_segment_in_pic_flag */
+        if (nals[i].type >= HEIC_NAL_BLA_W_LP && nals[i].type <= HEIC_NAL_CRA)
+            (void)heic_bs_bit(&sb); /* no_output_of_prior_pics_flag (IRAP) */
+        id = heic_bs_ue(&sb);
+        if (!sb.error && id < HEIC_PARAM_MAX_PPS && pc->pps_valid[id])
+            active_pps_id = (int)id;
+        break;
+    }
     if (active_pps_id < 0) {
         for (i = 0; i < HEIC_PARAM_MAX_PPS; i++)
             if (pc->pps_valid[i]) {
