@@ -2931,8 +2931,12 @@ int heic_container_find_aux(const heic_container *c, uint32_t target_id,
         for (j = 0; j < r->n_to; j++) {
             if (r->to_item_ids[j] != target_id) continue;
             if (heic_container_get_item(c, r->from_item_id, &item) != 0) continue;
-            if (urn_prefix && item.auxc && item.auxc->aux_type &&
-                strncmp(item.auxc->aux_type, urn_prefix, plen) != 0)
+            /* An auxiliary item is identified by its auxC URN. One without
+               an auxC has no known type: it must not match every query (it
+               used to count as alpha and as a gain map at once). */
+            if (urn_prefix &&
+                (!item.auxc || !item.auxc->aux_type ||
+                 strncmp(item.auxc->aux_type, urn_prefix, plen) != 0))
                 continue;
             if (n < max_out && out_ids) out_ids[n] = r->from_item_id;
             n++;
