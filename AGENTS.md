@@ -88,6 +88,12 @@ Corpus (used by `tests.ts` / `bench.ts` via `cmd/corpus.ts`):
 - `deps/testimages/avif/**`, `deps/testimages/unci_block/**`,
   `deps/testimages/mini/**`
 
+`tests.ts -all` also decodes raw HEVC streams with `heic_test -hevc-sequence`:
+the pinned FATE/ITU list in `deps/testimages/hevc_sequence`, and the JCT-VC
+range-extensions conformance set in `deps/testimages/hevc_rext`, each compared
+with the reference decoder MD5 shipped in its zip (streams that do not match
+yet are listed with the reason in `REXT_KNOWN_DIFF`).
+
 Override with `HEIC_SPECS=<dir>`.
 
 **Script convention:** every corpus script does nothing by default — prints usage

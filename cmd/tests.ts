@@ -26,7 +26,12 @@ import {
   defaultUseClang,
   cleanBuildOutput,
 } from "./build";
-import { getDeps, TESTIMAGES_DIR } from "./get-deps";
+import {
+  getDeps,
+  HEVC_REXT_CONFORMANCE,
+  HEVC_REXT_DIR,
+  TESTIMAGES_DIR,
+} from "./get-deps";
 import {
   EXPECT_FAIL,
   hasSelection,
@@ -1086,6 +1091,89 @@ async function runHevcSequenceTests(exe: string): Promise<[number, number]> {
   return [ok, fail];
 }
 
+/**
+ * RExt conformance streams that do not match their MD5 yet, with the reason.
+ * They are reported as skips; one that starts matching is a failure until it
+ * is removed from here, so the list cannot go stale.
+ */
+const REXT_KNOWN_DIFF: Record<string, string> = Object.fromEntries(
+  [
+    "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_16BIT_RExt_Sony_1",
+    "EXTPREC_MAIN_444_16_INTRA_16BIT_RExt_Sony_1",
+    "GENERAL_16b_400_RExt_Sony_1",
+    "GENERAL_16b_444_RExt_Sony_2",
+    "GENERAL_16b_444_highThroughput_RExt_Sony_2",
+    "WAVETILES_RExt_Sony_2",
+  ].map((n) => [
+    n,
+    "16-bit samples: 0xFFFF doubles as the 'not decoded yet' marker",
+  ]),
+);
+
+/**
+ * Decode every RExt conformance stream and compare the MD5 of our YUV with
+ * the reference decoder's MD5 that ships in the stream's zip.
+ * Returns [ok, fail, skip].
+ */
+async function runRextConformanceTests(
+  exe: string,
+): Promise<[number, number, number]> {
+  const root = join(import.meta.dir, "..");
+  const runOne = async (name: string) => {
+    const bit = join(HEVC_REXT_DIR, `${name}.bit`);
+    const md5File = join(HEVC_REXT_DIR, `${name}.md5`);
+    if (!existsSync(bit) || !existsSync(md5File))
+      return { kind: "fail", line: `[fail] RExt ${name} missing (get-deps did not install it)` };
+    /* The MD5 file lists the YUV and usually the bitstream itself. */
+    const bitMd5 = new Bun.CryptoHasher("md5")
+      .update(new Uint8Array(await Bun.file(bit).arrayBuffer()))
+      .digest("hex");
+    const want = new Set(
+      [...readFileSync(md5File, "latin1").matchAll(/\b[0-9a-fA-F]{32}\b/g)]
+        .map((m) => m[0].toLowerCase())
+        .filter((h) => h !== bitMd5),
+    );
+    if (!want.size)
+      return { kind: "fail", line: `[fail] RExt ${name} has no reference MD5` };
+    const out = join(root, "out", `rext-${name}.yuv`);
+    rmSync(out, { force: true });
+    const p = await Bun.$`${exe} -hevc-sequence -hevc-frames 512 -out ${out} ${bit}`
+      .nothrow()
+      .quiet();
+    let got = "";
+    if (p.exitCode === 0 && existsSync(out)) {
+      const hasher = new Bun.CryptoHasher("md5");
+      for await (const chunk of Bun.file(out).stream()) hasher.update(chunk);
+      got = hasher.digest("hex");
+    }
+    rmSync(out, { force: true });
+    const known = REXT_KNOWN_DIFF[name];
+    const frames = /frames=(\d+)/.exec(p.stdout.toString())?.[1] ?? "?";
+    if (got && want.has(got)) {
+      if (known)
+        return {
+          kind: "fail",
+          line: `[fail] RExt ${name} now matches; remove it from REXT_KNOWN_DIFF`,
+        };
+      return { kind: "ok", line: `[ok] RExt ${name} frames=${frames} md5=${got}` };
+    }
+    if (known) return { kind: "skip", line: `[skip] RExt ${name} known difference: ${known}` };
+    const detail = got
+      ? `md5=${got} not in {${[...want].join(", ")}}`
+      : `decode failed\n${(p.stderr.toString() + p.stdout.toString()).trim().slice(-300)}`;
+    return { kind: "fail", line: `[fail] RExt ${name} ${detail}` };
+  };
+  let ok = 0, fail = 0, skip = 0;
+  for (const pending of startPool(HEVC_REXT_CONFORMANCE, TEST_JOBS, runOne)) {
+    const r = await pending;
+    if (r.kind === "ok") ok++;
+    else if (r.kind === "skip") skip++;
+    else fail++;
+    console.log(r.line);
+  }
+  return [ok, fail, skip];
+}
+
 const HEIF_SEQUENCE_TESTS = [
   {
     name: "C026.heic", frames: 8, duration: 160,
@@ -1431,6 +1519,10 @@ async function main() {
     const [seqOk, seqFail] = await runHevcSequenceTests(exe);
     ok += seqOk;
     fail += seqFail;
+    const [rextOk, rextFail, rextSkip] = await runRextConformanceTests(exe);
+    ok += rextOk;
+    fail += rextFail;
+    skip += rextSkip;
     const [apiOk, apiFail] = await runHeifSequenceApiTests(exe);
     ok += apiOk;
     fail += apiFail;
@@ -1479,7 +1571,7 @@ async function main() {
     }
     extra =
       HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 2
-      + surface.length;
+      + surface.length + HEVC_REXT_CONFORMANCE.length;
   }
 
   console.log(

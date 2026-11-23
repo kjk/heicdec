@@ -156,7 +156,7 @@ const LIBAVIF_SAMPLES = [
 
 const STAMP = ".heic_testimages_stamp";
 const STAMP_WANT =
-  "v42-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+deltaqp-ab+slist+persist-rparam+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+main422b+family-coverage+exact-pins+rpsd-rap-nooutprior";
+  "v43-avif-fox+grid+alpha+meta-moov-sequence+sequence-alpha;unci-block;mini-hevc+av1;hevc-sequences+pcm+dependent-slices+wpp+wpp-main10+deltaqp-ab+slist+persist-rparam+transquant-bypass+transform-skip+rext-tools+ccp+chroma-qp-heif+cabac-align+extprec+highprec-wp+sao-scale+constrained-intra+loop-filter-boundaries+slice-deblock+sao-diagonal-boundaries+vixs-deblock+parallel-merge+cra-poc+rext-rdpcm+amvp+mvclip+mvedge+main422+main422b+family-coverage+exact-pins+rpsd-rap-nooutprior+rext-conformance";
 const HEVC_SEQUENCE_BASE = "https://fate-suite.ffmpeg.org/hevc-conformance";
 const HEVC_V1_BASE =
   "https://www.itu.int/wftp3/av-arch/jctvc-site/" +
@@ -323,7 +323,80 @@ async function download(
     : new Error(`GET ${url} failed: ${String(lastErr)}`);
 }
 
-function extractZipEntry(zipPath: string, entrySuffix: string, dest: string): void {
+/**
+ * The JCT-VC range-extensions conformance streams (HEVC_REXT_BASE). Every zip
+ * carries the MD5 of the reference decoder's output next to the bitstream;
+ * tests.ts decodes each stream and compares against that MD5, so nothing is
+ * pinned by hand. ExplicitRdpcm_A_BBC_1 is left out: 600 frames, more than
+ * the harness keeps.
+ */
+export const HEVC_REXT_CONFORMANCE = [
+  "ADJUST_IPRED_ANGLE_A_RExt_Mitsubishi_2",
+  "Bitdepth_A_RExt_Sony_1",
+  "Bitdepth_B_RExt_Sony_1",
+  "CCP_10bit_RExt_QCOM_1",
+  "CCP_12bit_RExt_QCOM_1",
+  "CCP_8bit_RExt_QCOM_1",
+  "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_10BIT_RExt_Sony_1",
+  "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_12BIT_RExt_Sony_1",
+  "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_16BIT_RExt_Sony_1",
+  "EXTPREC_HIGHTHROUGHPUT_444_16_INTRA_8BIT_RExt_Sony_1",
+  "EXTPREC_MAIN_444_16_INTRA_10BIT_RExt_Sony_1",
+  "EXTPREC_MAIN_444_16_INTRA_12BIT_RExt_Sony_1",
+  "EXTPREC_MAIN_444_16_INTRA_16BIT_RExt_Sony_1",
+  "EXTPREC_MAIN_444_16_INTRA_8BIT_RExt_Sony_1",
+  "ExplicitRdpcm_B_BBC_2",
+  "GENERAL_10b_420_RExt_Sony_1",
+  "GENERAL_10b_422_RExt_Sony_1",
+  "GENERAL_10b_444_RExt_Sony_2",
+  "GENERAL_12b_400_RExt_Sony_1",
+  "GENERAL_12b_420_RExt_Sony_1",
+  "GENERAL_12b_422_RExt_Sony_1",
+  "GENERAL_12b_444_RExt_Sony_2",
+  "GENERAL_16b_400_RExt_Sony_1",
+  "GENERAL_16b_444_RExt_Sony_2",
+  "GENERAL_16b_444_highThroughput_RExt_Sony_2",
+  "GENERAL_8b_400_RExt_Sony_1",
+  "GENERAL_8b_420_RExt_Sony_1",
+  "GENERAL_8b_444_RExt_Sony_2",
+  "IPCM_A_RExt_NEC_2",
+  "IPCM_B_RExt_NEC",
+  "Main_422_10_A_RExt_Sony_2",
+  "Main_422_10_B_RExt_Sony_2",
+  "PERSIST_RPARAM_A_RExt_Sony_3",
+  "QMATRIX_A_RExt_Sony_1",
+  "SAO_A_RExt_MediaTek_1",
+  "TSCTX_10bit_I_RExt_SHARP_1",
+  "TSCTX_10bit_RExt_SHARP_1",
+  "TSCTX_12bit_I_RExt_SHARP_1",
+  "TSCTX_12bit_RExt_SHARP_1",
+  "TSCTX_8bit_I_RExt_SHARP_1",
+  "TSCTX_8bit_RExt_SHARP_1",
+  "WAVETILES_RExt_Sony_2",
+  "WPP_AND_TILE_10Bit422Test_HIGH_TP_444_10BIT_RExt_Apple_2",
+  "WPP_AND_TILE_AND_CABAC_BYPASS_ALIGN_0_HIGH_TP_444_14BIT_RExt_Apple_2",
+  "WPP_AND_TILE_AND_CABAC_BYPASS_ALIGN_1_HIGH_TP_444_14BIT_RExt_Apple_2",
+  "WPP_AND_TILE_AND_CABAC_EXT_PREC_1_HIGH_TP_444_14BIT_RExt_Apple_2",
+  "WPP_AND_TILE_HIGH_TP_444_8BIT_RExt_Apple_2",
+  "WPP_HIGH_TP_444_8BIT_RExt_Apple_2",
+] as const;
+
+/** deps/testimages/hevc_rext/<name>.bit + <name>.md5 (the zip's MD5 text). */
+export const HEVC_REXT_DIR = join(TESTIMAGES_DIR, "hevc_rext");
+
+/** Extract the first entry whose name ends with `entry` (string) or matches
+ *  it (RegExp); directory entries never match. With `all`, every matching
+ *  entry is written, one after the other. */
+function extractZipEntry(
+  zipPath: string,
+  entry: string | RegExp,
+  dest: string,
+  all = false,
+): void {
+  const found: Uint8Array[] = [];
+  const wanted = (name: string) =>
+    !name.endsWith("/")
+    && (typeof entry === "string" ? name.endsWith(entry) : entry.test(name));
   const zip = new Uint8Array(readFileSync(zipPath));
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   let eocd = -1;
@@ -347,22 +420,29 @@ function extractZipEntry(zipPath: string, entrySuffix: string, dest: string): vo
     const commentLen = view.getUint16(pos + 32, true);
     const localOffset = view.getUint32(pos + 42, true);
     const name = decoder.decode(zip.subarray(pos + 46, pos + 46 + nameLen));
-    if (name.endsWith(entrySuffix)) {
+    if (wanted(name)) {
       const localNameLen = view.getUint16(localOffset + 26, true);
       const localExtraLen = view.getUint16(localOffset + 28, true);
       const dataOffset = localOffset + 30 + localNameLen + localExtraLen;
       const compressed = zip.subarray(dataOffset, dataOffset + compressedSize);
       if (method === 0)
-        writeFileSync(dest, compressed);
+        found.push(compressed);
       else if (method === 8)
-        writeFileSync(dest, inflateRawSync(compressed));
+        found.push(inflateRawSync(compressed));
       else
         throw new Error(`unsupported ZIP method ${method}: ${zipPath}`);
-      return;
+      if (!all) break;
     }
     pos += 46 + nameLen + extraLen + commentLen;
   }
-  throw new Error(`ZIP entry ${entrySuffix} not found in ${zipPath}`);
+  if (!found.length)
+    throw new Error(`ZIP entry ${entry} not found in ${zipPath}`);
+  writeFileSync(
+    dest,
+    all
+      ? Buffer.concat(found.flatMap((f) => [f, Buffer.from("\n")]))
+      : found[0]!,
+  );
 }
 
 function findAnnexBSequenceStarts(data: Uint8Array): number[] {
@@ -429,6 +509,11 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   if (
     !opts.force &&
     existsSync(stampPath) &&
+    HEVC_REXT_CONFORMANCE.every(
+      (n) =>
+        existsSync(join(HEVC_REXT_DIR, `${n}.bit`))
+        && existsSync(join(HEVC_REXT_DIR, `${n}.md5`)),
+    ) &&
     existsSync(join(avifDir, "grid_2x2.avif")) &&
     existsSync(join(avifDir, "alpha.avif")) &&
     existsSync(join(avifDir, "sequence_inter.avif")) &&
@@ -475,6 +560,20 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   mkdirSync(unciDir, { recursive: true });
   mkdirSync(miniDir, { recursive: true });
   mkdirSync(hevcSequenceDir, { recursive: true });
+  mkdirSync(HEVC_REXT_DIR, { recursive: true });
+
+  for (const name of HEVC_REXT_CONFORMANCE) {
+    const bit = join(HEVC_REXT_DIR, `${name}.bit`);
+    const md5 = join(HEVC_REXT_DIR, `${name}.md5`);
+    if (existsSync(bit) && existsSync(md5) && !opts.force) continue;
+    const zip = join(HEVC_REXT_DIR, `${name}.zip`);
+    console.log(`deps/testimages: fetching ${name}.zip…`);
+    await download(`${HEVC_REXT_BASE}/${name}.zip`, zip);
+    extractZipEntry(zip, /\.(bit|bin)$/i, bit);
+    /* Some zips keep the bitstream MD5 and the YUV MD5 in separate files. */
+    extractZipEntry(zip, /md5[^/]*$/i, md5, true);
+    rmSync(zip, { force: true });
+  }
 
   for (const name of FOX_SAMPLES) {
     const dest =
