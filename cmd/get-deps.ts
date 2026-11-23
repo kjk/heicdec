@@ -516,6 +516,8 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
         && existsSync(join(HEVC_REXT_DIR, `${n}.md5`)),
     ) &&
     existsSync(join(root, "regress", "two_pps_grid.heic")) &&
+    existsSync(join(root, "regress", "two_ipma_grid.heic")) &&
+    existsSync(join(root, "regress", "_info", "grid_no_ispe.heic")) &&
     existsSync(join(root, "regress", "_info", "aux_no_auxc.heic")) &&
     existsSync(join(unciDir, "mono_alpha_comp.heif")) &&
     existsSync(join(unciDir, "rgb8_truncated.heif")) &&

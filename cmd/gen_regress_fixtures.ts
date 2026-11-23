@@ -9,6 +9,11 @@
 //                            slices use id 0. The first tile misses the
 //                            parameter-set cache and the second hits it, and
 //                            those two paths used to pick different PPS.
+//   two_ipma_grid.heic       the same grid with its property associations in
+//                            two ipma boxes; the second used to replace the
+//                            first.
+//   _info/grid_no_ispe.heic  the grid without an ispe property on the grid item;
+//                            its size must come from the grid descriptor.
 //   _info/aux_no_auxc.heic   the image plus a copy referenced as `auxl` with
 //                            no auxC property. It used to be reported (and
 //                            decoded) as alpha and as an HDR gain map.
@@ -204,7 +209,14 @@ function hvccWithSecondPps(hvcC: Uint8Array): Uint8Array {
 
 /* --- container assembly --- */
 
-type Item = { id: number; type: string; props: number[]; idat?: Uint8Array };
+type Item = {
+  id: number;
+  type: string;
+  props: number[];
+  idat?: Uint8Array;
+  /** put this item's associations in a second ipma (16-bit indices) */
+  secondIpma?: boolean;
+};
 
 function infe(id: number, type: string): Uint8Array {
   return fullbox("infe", 2, 0, concat(be16(id), be16(0), ascii(type), new Uint8Array([0])));
@@ -233,12 +245,22 @@ function assemble(items: Item[], ipco: Uint8Array[], iref: Uint8Array, payload: 
   const hdlr = fullbox("hdlr", 0, 0, concat(be32(0), ascii("pict"), new Uint8Array(13)));
   const pitm = fullbox("pitm", 0, 0, be16(items[0]!.id));
   const iinf = fullbox("iinf", 0, 0, concat(be16(items.length), ...items.map((i) => infe(i.id, i.type))));
-  const ipma = fullbox("ipma", 0, 0, concat(
-    be32(items.length),
-    ...items.map((i) =>
-      concat(be16(i.id), new Uint8Array([i.props.length, ...i.props.map((p) => 0x80 | p)]))),
-  ));
-  const iprp = box("iprp", concat(box("ipco", concat(...ipco)), ipma));
+  const first = items.filter((i) => !i.secondIpma);
+  const second = items.filter((i) => i.secondIpma);
+  const ipmaBoxes = [
+    fullbox("ipma", 0, 0, concat(
+      be32(first.length),
+      ...first.map((i) =>
+        concat(be16(i.id), new Uint8Array([i.props.length, ...i.props.map((p) => 0x80 | p)]))),
+    )),
+  ];
+  if (second.length)
+    ipmaBoxes.push(fullbox("ipma", 0, 1, concat(
+      be32(second.length),
+      ...second.map((i) =>
+        concat(be16(i.id), new Uint8Array([i.props.length]), ...i.props.map((p) => be16(0x8000 | p)))),
+    )));
+  const iprp = box("iprp", concat(box("ipco", concat(...ipco)), ...ipmaBoxes));
   const meta = (mdatOffset: number) =>
     fullbox("meta", 0, 0, concat(
       hdlr, pitm, iloc(mdatOffset), iinf, iprp, iref,
@@ -272,6 +294,40 @@ export function generateRegressFixtures(
         { id: 3, type: "hvc1", props: [1, 2] },
       ],
       [src.ispe, hvccWithSecondPps(src.hvcC), gridIspe],
+      fullbox("iref", 0, 0, box("dimg", concat(be16(1), be16(2), be16(2), be16(3)))),
+      src.payload,
+    ));
+  }
+
+  /* The same grid with plain hvcC, its associations split over two ipma
+     boxes (flags 0 for the grid item, flags 1 for the tiles). The second box
+     used to replace the first, so the grid lost its ispe. */
+  {
+    const grid = concat(new Uint8Array([0, 0, 0, 1]), be16(src.width * 2), be16(src.height));
+    const gridIspe = fullbox("ispe", 0, 0, concat(be32(src.width * 2), be32(src.height)));
+    write(join(outDir, "two_ipma_grid.heic"), assemble(
+      [
+        { id: 1, type: "grid", props: [3], idat: grid },
+        { id: 2, type: "hvc1", props: [1, 2], secondIpma: true },
+        { id: 3, type: "hvc1", props: [1, 2], secondIpma: true },
+      ],
+      [src.ispe, src.hvcC, gridIspe],
+      fullbox("iref", 0, 0, box("dimg", concat(be16(1), be16(2), be16(2), be16(3)))),
+      src.payload,
+    ));
+  }
+
+  /* The grid with no ispe on the grid item itself. heic_doc_info used to
+     report the first tile's size instead of the grid's. */
+  {
+    const grid = concat(new Uint8Array([0, 0, 0, 1]), be16(src.width * 2), be16(src.height));
+    write(join(outDir, "_info", "grid_no_ispe.heic"), assemble(
+      [
+        { id: 1, type: "grid", props: [], idat: grid },
+        { id: 2, type: "hvc1", props: [1, 2] },
+        { id: 3, type: "hvc1", props: [1, 2] },
+      ],
+      [src.ispe, src.hvcC],
       fullbox("iref", 0, 0, box("dimg", concat(be16(1), be16(2), be16(2), be16(3)))),
       src.payload,
     ));

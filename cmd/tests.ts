@@ -1172,6 +1172,14 @@ async function runRextConformanceTests(
   return [ok, fail, skip];
 }
 
+/** [file in regress/_info, label, what -info must say, decoded size] */
+const REGRESS_INFO_CHECKS: [string, string, RegExp, string][] = [
+  /* An auxl item without auxC has no known type: neither alpha nor gain map. */
+  ["aux_no_auxc.heic", "aux item without auxC ignored", /alpha=0 gain_map=0/, "64x64"],
+  /* A grid without ispe: -info must report the grid's size, not a tile's. */
+  ["grid_no_ispe.heic", "grid without ispe reports its own size", /^128x64 /, "128x64"],
+];
+
 const HEIF_SEQUENCE_TESTS = [
   {
     name: "C026.heic", frames: 8, duration: 160,
@@ -1554,23 +1562,26 @@ async function main() {
       ],
       ["api allocator+abort", ["-api", sample]],
     ];
-    /* An `auxl` item without auxC has no known type: it must not be
-       reported as alpha or as a gain map, and the primary must still decode.
-       libheif rejects this file, so it is checked here rather than through
-       -verify. */
-    {
-      const aux = join(TESTIMAGES_DIR, "regress", "_info", "aux_no_auxc.heic");
-      const ip = await Bun.$`${exe} -info ${aux}`.nothrow().quiet();
-      const dp = await Bun.$`${exe} -verify ${aux}`.nothrow().quiet();
+    /* Generated files libheif rejects (regress/_info), so -verify cannot
+       judge them: each must decode, and -info / the decoded size must show
+       what the fix guarantees. */
+    for (const [file, label, wantInfo, wantSize] of REGRESS_INFO_CHECKS) {
+      const path = join(TESTIMAGES_DIR, "regress", "_info", file);
+      const ip = await Bun.$`${exe} -info ${path}`.nothrow().quiet();
+      const dp = await Bun.$`${exe} -verify ${path}`.nothrow().quiet();
       const info = ip.stdout.toString().trim();
+      const dec = dp.stdout.toString().trim();
       /* -verify exit 4 = we decoded, libheif did not. */
-      if (ip.exitCode === 0 && /alpha=0 gain_map=0/.test(info) && dp.exitCode === 4) {
+      if (
+        ip.exitCode === 0 && wantInfo.test(info)
+        && dp.exitCode === 4 && dec.includes(`size=${wantSize}`)
+      ) {
         ok++;
-        console.log(`[ok] aux item without auxC ignored: ${info}`);
+        console.log(`[ok] ${label}: ${info}`);
       } else {
         fail++;
         console.log(
-          `[fail] aux item without auxC: info="${info}" verify exit ${dp.exitCode}`,
+          `[fail] ${label}: info="${info}" verify exit ${dp.exitCode} "${dec}"`,
         );
       }
     }
@@ -1589,7 +1600,8 @@ async function main() {
     }
     extra =
       HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 2
-      + surface.length + HEVC_REXT_CONFORMANCE.length + 1;
+      + surface.length + HEVC_REXT_CONFORMANCE.length
+      + REGRESS_INFO_CHECKS.length;
   }
 
   console.log(
