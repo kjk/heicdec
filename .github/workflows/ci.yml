@@ -1,5 +1,7 @@
 # CI for heicdec — host build, amalgamation, full pixel-oracle tests against
 # libheif on Windows, Linux, and macOS, plus fuzz crash regression and WASM.
+# The JCT-VC range-extensions conformance set runs on Linux only
+# (HEIC_SKIP_REXT=1 on the other two).
 #
 # `bun cmd/tests.ts -all` builds the oracle stack (dav1d + libde265 + libheif)
 # and needs deps/ + deps/testimages. Both are cached per OS so cold runs pay
@@ -24,6 +26,10 @@ jobs:
     name: Windows MSVC + tests
     runs-on: windows-latest
     timeout-minutes: 120
+    # The RExt conformance set (49 streams) runs on Linux only: it checks the
+    # portable C decoder against MD5s and tripled the run time here.
+    env:
+      HEIC_SKIP_REXT: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -141,6 +147,10 @@ jobs:
     name: macOS clang + tests
     runs-on: macos-latest
     timeout-minutes: 120
+    # The RExt conformance set (49 streams) runs on Linux only: it checks the
+    # portable C decoder against MD5s and tripled the run time here.
+    env:
+      HEIC_SKIP_REXT: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2

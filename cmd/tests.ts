@@ -30,6 +30,7 @@ import {
   getDeps,
   HEVC_REXT_CONFORMANCE,
   HEVC_REXT_DIR,
+  SKIP_REXT,
   TESTIMAGES_DIR,
 } from "./get-deps";
 import {
@@ -1557,10 +1558,16 @@ async function main() {
     const [seqOk, seqFail] = await runHevcSequenceTests(exe);
     ok += seqOk;
     fail += seqFail;
-    const [rextOk, rextFail, rextSkip] = await runRextConformanceTests(exe);
-    ok += rextOk;
-    fail += rextFail;
-    skip += rextSkip;
+    if (SKIP_REXT) {
+      console.log(
+        `[not run] RExt conformance set (${HEVC_REXT_CONFORMANCE.length} streams): HEIC_SKIP_REXT=1`,
+      );
+    } else {
+      const [rextOk, rextFail, rextSkip] = await runRextConformanceTests(exe);
+      ok += rextOk;
+      fail += rextFail;
+      skip += rextSkip;
+    }
     const [apiOk, apiFail] = await runHeifSequenceApiTests(exe);
     ok += apiOk;
     fail += apiFail;
@@ -1632,7 +1639,7 @@ async function main() {
     }
     extra =
       HEVC_SEQUENCE_TESTS.length + HEIF_SEQUENCE_TESTS.length + 2
-      + surface.length + HEVC_REXT_CONFORMANCE.length
+      + surface.length + (SKIP_REXT ? 0 : HEVC_REXT_CONFORMANCE.length)
       + REGRESS_INFO_CHECKS.length;
   }
 

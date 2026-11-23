@@ -102,7 +102,9 @@ range-extensions conformance set in `deps/testimages/hevc_rext`, each compared
 with the reference decoder MD5 shipped in its zip (streams that do not match
 yet are listed with the reason in `REXT_KNOWN_DIFF`). The checked-in streams
 in `test/streams` run with the FATE/ITU list, pinned to the MD5 of the encoder's
-reference decoder.
+reference decoder. `HEIC_SKIP_REXT=1` skips downloading and running the
+range-extensions set; CI sets it on Windows and macOS, so that set runs on
+Linux only.
 
 Override with `HEIC_SPECS=<dir>`.
 

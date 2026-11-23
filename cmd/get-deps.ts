@@ -330,6 +330,10 @@ async function download(
  * tests.ts decodes each stream and compares against that MD5, so nothing is
  * pinned by hand.
  */
+/** HEIC_SKIP_REXT=1: neither download nor run the RExt conformance set (CI
+ * runs it on one platform; the decoder is the same C code on all of them). */
+export const SKIP_REXT = process.env.HEIC_SKIP_REXT === "1";
+
 export const HEVC_REXT_CONFORMANCE = [
   "ADJUST_IPRED_ANGLE_A_RExt_Mitsubishi_2",
   "Bitdepth_A_RExt_Sony_1",
@@ -510,7 +514,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   if (
     !opts.force &&
     existsSync(stampPath) &&
-    HEVC_REXT_CONFORMANCE.every(
+    (SKIP_REXT ? [] : HEVC_REXT_CONFORMANCE).every(
       (n) =>
         existsSync(join(HEVC_REXT_DIR, `${n}.bit`))
         && existsSync(join(HEVC_REXT_DIR, `${n}.md5`)),
@@ -572,7 +576,7 @@ export async function ensureTestImages(opts: { force?: boolean } = {}): Promise<
   mkdirSync(hevcSequenceDir, { recursive: true });
   mkdirSync(HEVC_REXT_DIR, { recursive: true });
 
-  for (const name of HEVC_REXT_CONFORMANCE) {
+  for (const name of SKIP_REXT ? [] : HEVC_REXT_CONFORMANCE) {
     const bit = join(HEVC_REXT_DIR, `${name}.bit`);
     const md5 = join(HEVC_REXT_DIR, `${name}.md5`);
     if (existsSync(bit) && existsSync(md5) && !opts.force) continue;
