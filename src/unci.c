@@ -470,6 +470,49 @@ static void plane_tile_dims(int plane, int sampling, uint32_t tw, uint32_t th,
     *ph = th;
 }
 
+/* Lower bound on the bytes an unblocked layout reads: every row of every
+   tile is byte aligned, so it is the sum of the rounded-up row sizes (row,
+   tile and pixel padding only add to it). A shorter payload is truncated:
+   the bit reader returns zeros past the end, which used to "decode" as a
+   black image, and a huge declared size with an empty payload spun through
+   every sample one bit at a time. */
+static uint64_t unci_min_payload_bytes(const heic_uncc *uncc, const int *plane_map,
+                                       const int *bit_depth, const uint8_t *align,
+                                       int ncomp, int interleave, int sampling,
+                                       uint32_t tile_w, uint32_t tile_h,
+                                       uint64_t tiles)
+{
+    uint64_t per_tile = 0;
+    int i, chroma_done = 0;
+    if (interleave == 1) {
+        uint64_t px_bits = 0;
+        for (i = 0; i < ncomp; i++) {
+            uint64_t b = (uint64_t)bit_depth[i];
+            if (align[i] && (uint64_t)align[i] * 8 > b) b = (uint64_t)align[i] * 8;
+            px_bits += b;
+        }
+        if ((uint64_t)uncc->pixel_size * 8 > px_bits)
+            px_bits = (uint64_t)uncc->pixel_size * 8;
+        return ((uint64_t)tile_w * px_bits + 7) / 8 * tile_h * tiles;
+    }
+    for (i = 0; i < ncomp; i++) {
+        uint32_t pw, ph;
+        uint64_t b = (uint64_t)bit_depth[i];
+        int plane = plane_map[i];
+        plane_tile_dims(plane, sampling, tile_w, tile_h, &pw, &ph);
+        if (interleave == 2 && (plane == 1 || plane == 2)) {
+            /* One stream of Cb/Cr pairs at the first chroma entry's depth. */
+            if (chroma_done) continue;
+            chroma_done = 1;
+            per_tile += ((uint64_t)pw * 2 * b + 7) / 8 * ph;
+            continue;
+        }
+        if (align[i] && (uint64_t)align[i] * 8 > b) b = (uint64_t)align[i] * 8;
+        per_tile += ((uint64_t)pw * b + 7) / 8 * ph;
+    }
+    return per_tile * tiles;
+}
+
 static int sampling_to_chroma(int sampling)
 {
     if (sampling == 1) return 2; /* 422 */
@@ -778,6 +821,16 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
         if (unci_decompress_payload(ctx, cmpc, icef, data, len, &owned, &pix_len) != 0)
             return -1;
         pix = owned;
+    }
+
+    if (uncc->block_size == 0
+        && unci_min_payload_bytes(uncc, plane_map, bit_depth, align, ncomp,
+                                  interleave, sampling, tile_w, tile_h,
+                                  (uint64_t)tile_cols * tile_rows)
+               > (uint64_t)pix_len) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR, "unci: truncated image data");
+        heic_free_buf(ctx, owned);
+        return -1;
     }
 
     chroma_fmt = sampling_to_chroma(sampling);
