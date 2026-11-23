@@ -25,7 +25,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -47,7 +47,7 @@ jobs:
       # deps/ is self-healing: get-deps.ts moves each checkout to its pinned
       # commit and refreshes testimages by stamp, so a prefix restore is safe.
       - name: Cache deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: deps
           key: deps-v2-windows-${{ hashFiles('cmd/get-deps.ts', 'cmd/gen_*.ts') }}
@@ -56,7 +56,7 @@ jobs:
       # Oracle builds are not: build.ts skips a build whose library exists, so
       # restoring one made with other flags would be used as is. Exact key only.
       - name: Cache oracle builds
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             out/dav1d_build
@@ -78,7 +78,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -107,7 +107,7 @@ jobs:
       # deps/ is self-healing: get-deps.ts moves each checkout to its pinned
       # commit and refreshes testimages by stamp, so a prefix restore is safe.
       - name: Cache deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: deps
           key: deps-v2-linux-${{ hashFiles('cmd/get-deps.ts', 'cmd/gen_*.ts') }}
@@ -116,7 +116,7 @@ jobs:
       # Oracle builds are not: build.ts skips a build whose library exists, so
       # restoring one made with other flags would be used as is. Exact key only.
       - name: Cache oracle builds
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             out/dav1d_build
@@ -142,7 +142,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -151,7 +151,7 @@ jobs:
       # deps/ is self-healing: get-deps.ts moves each checkout to its pinned
       # commit and refreshes testimages by stamp, so a prefix restore is safe.
       - name: Cache deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: deps
           key: deps-v2-macos-${{ hashFiles('cmd/get-deps.ts', 'cmd/gen_*.ts') }}
@@ -160,7 +160,7 @@ jobs:
       # Oracle builds are not: build.ts skips a build whose library exists, so
       # restoring one made with other flags would be used as is. Exact key only.
       - name: Cache oracle builds
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             out/dav1d_build
@@ -184,7 +184,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -193,7 +193,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang
       - name: Cache deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: deps
           key: deps-v2-linux-wasm-${{ hashFiles('cmd/get-deps.ts', 'cmd/build-wasm.ts') }}
