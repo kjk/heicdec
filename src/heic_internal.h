@@ -1193,7 +1193,8 @@ heic_hevc_picture *heic_hevc_picture_new(
     const heic_frame *const *l0, int n_l0,
     const heic_frame *const *l1, int n_l1, heic_frame *out);
 int heic_hevc_picture_decode_segment(
-    heic_hevc_picture *picture, const heic_slice_header *sh,
+    heic_hevc_picture *picture, const heic_pps *slice_pps,
+    const heic_slice_header *sh,
     const uint8_t *data, size_t len,
     const uint32_t *ep_positions, int n_ep,
     const heic_frame *const *l0, int n_l0,

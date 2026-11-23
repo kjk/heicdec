@@ -3343,6 +3343,7 @@ typedef struct {
     int              finished;
     heic_slice_header sh;
     heic_slice_header filter_sh;
+    const heic_pps *pic_pps; /* PPS of the picture's first slice */
 } heic_slice_work;
 
 struct heic_hevc_picture {
@@ -3375,6 +3376,7 @@ heic_hevc_picture *heic_hevc_picture_new(
             cw->sh.entry_point_offsets = NULL;
             cw->sh.num_entry_point_offsets = 0;
             cw->filter_sh = cw->sh;
+            cw->pic_pps = pps;
             if (slice_ctx_reset(&cw->sc, ctx, sps, pps, &cw->sh,
                                 l0, n_l0, l1, n_l1, out) == 0) {
                 memset(cw->ctb_decoded, 0, total);
@@ -3410,6 +3412,7 @@ heic_hevc_picture *heic_hevc_picture_new(
         work->sh.entry_point_offsets = NULL;
         work->sh.num_entry_point_offsets = 0;
         work->filter_sh = work->sh;
+        work->pic_pps = pps;
         if (slice_ctx_init(&work->sc, ctx, sps, pps, &work->sh,
                            l0, n_l0, l1, n_l1, out) != 0)
             goto fail;
@@ -3435,8 +3438,46 @@ fail:
     return NULL;
 }
 
+/* What the picture-level stages take from "the" PPS. Slices of a picture
+   may name different PPS, but only ones that agree on these: the tile
+   layout and entropy sync (which H.265 requires to match anyway), and the
+   chroma QP offsets and tile-edge filtering that deblocking applies per
+   picture here. */
+static int pps_picture_level_equal(const heic_pps *a, const heic_pps *b)
+{
+    if (a == b) return 1;
+    if (a->tiles_enabled_flag != b->tiles_enabled_flag
+        || a->entropy_coding_sync_enabled_flag
+               != b->entropy_coding_sync_enabled_flag
+        || a->pps_cb_qp_offset != b->pps_cb_qp_offset
+        || a->pps_cr_qp_offset != b->pps_cr_qp_offset
+        || a->loop_filter_across_tiles_enabled_flag
+               != b->loop_filter_across_tiles_enabled_flag)
+        return 0;
+    if (a->tiles_enabled_flag) {
+        if (a->num_tile_columns_minus1 != b->num_tile_columns_minus1
+            || a->num_tile_rows_minus1 != b->num_tile_rows_minus1
+            || a->uniform_spacing_flag != b->uniform_spacing_flag)
+            return 0;
+        if (!a->uniform_spacing_flag) {
+            int k;
+            if (!a->column_width_minus1 || !b->column_width_minus1
+                || !a->row_height_minus1 || !b->row_height_minus1)
+                return 0;
+            for (k = 0; k < (int)a->num_tile_columns_minus1; k++)
+                if (a->column_width_minus1[k] != b->column_width_minus1[k])
+                    return 0;
+            for (k = 0; k < (int)a->num_tile_rows_minus1; k++)
+                if (a->row_height_minus1[k] != b->row_height_minus1[k])
+                    return 0;
+        }
+    }
+    return 1;
+}
+
 int heic_hevc_picture_decode_segment(
-    heic_hevc_picture *picture, const heic_slice_header *sh,
+    heic_hevc_picture *picture, const heic_pps *slice_pps,
+    const heic_slice_header *sh,
     const uint8_t *data, size_t len,
     const uint32_t *ep_positions, int n_ep,
     const heic_frame *const *l0, int n_l0,
@@ -3465,9 +3506,18 @@ int heic_hevc_picture_decode_segment(
     sc = &work->sc;
     ctx = sc->hctx;
     sps = sc->sps;
-    pps = sc->pps;
     out = sc->frame;
-    if (!ctx || !sps || !pps || !out || work->finished) return -1;
+    if (!ctx || !sps || !sc->pps || !out || work->finished) return -1;
+    if (slice_pps && slice_pps != sc->pps) {
+        if (!pps_picture_level_equal(work->pic_pps, slice_pps)) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "slices of one picture use PPS that differ in tile "
+                       "layout or chroma QP offsets (not supported)");
+            return -1;
+        }
+        sc->pps = slice_pps;
+    }
+    pps = sc->pps;
     if (sh->slice_type != HEIC_SLICE_I && (!l0 || n_l0 <= 0)) {
         heic_error(ctx, HEIC_SEVERITY_ERROR,
                    "predictive slice missing L0 reference frame");
