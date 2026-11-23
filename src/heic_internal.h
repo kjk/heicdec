@@ -52,6 +52,9 @@
 #define HEIC_MAX_ICC_SIZE         (4 * 1024 * 1024)
 
 /* HEVC UNINIT sentinel (must never leak to output). */
+/* Fill value of freshly allocated planes. It only means "not written" for
+   bit depths below 16; nothing may use it to decide whether a sample has
+   been decoded (intra prediction derives that from positions). */
 #define HEIC_UNINIT_SAMPLE 0xFFFFu
 
 /* ---- fourcc ---- */

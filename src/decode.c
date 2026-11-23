@@ -981,7 +981,8 @@ done:
 /* Scale alpha sample to primary bit depth (shift left/right). */
 static uint16_t scale_alpha_sample(uint16_t v, int src_bd, int dst_bd)
 {
-    if (v == HEIC_UNINIT_SAMPLE) return 0;
+    /* Not-written marker, except at 16 bits where 0xFFFF is fully opaque. */
+    if (v == HEIC_UNINIT_SAMPLE && src_bd < 16) return 0;
     if (src_bd == dst_bd || src_bd <= 0 || dst_bd <= 0) return v;
     if (src_bd < dst_bd) return (uint16_t)(v << (dst_bd - src_bd));
     return (uint16_t)(v >> (src_bd - dst_bd));

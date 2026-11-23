@@ -500,6 +500,7 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
 {
     int x0, y0, x1, y1, w, h;
     int y_shift, c_shift;
+    int y_uninit, c_uninit;
     int full;
     int matrix;
     int bpp;
@@ -517,6 +518,10 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
     h = y1 - y0;
     y_shift = f->bit_depth > 8 ? f->bit_depth - 8 : 0;
     c_shift = f->chroma_bit_depth > 8 ? f->chroma_bit_depth - 8 : 0;
+    /* 0xFFFF marks a sample nothing wrote, except at 16 bits, where it is
+       an ordinary (full-scale) value. */
+    y_uninit = f->bit_depth < 16;
+    c_uninit = f->chroma_bit_depth < 16;
     full = f->full_range;
     matrix = f->matrix_coeffs;
     /* matrix 0 is GBR identity; only valid for 4:4:4. Otherwise fall back to
@@ -574,12 +579,13 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                 uint16_t ys = yp[x];
                 int Y;
                 uint8_t r, g, b, av = 255;
-                if (ys == HEIC_UNINIT_SAMPLE) ys = 0;
+                if (ys == HEIC_UNINIT_SAMPLE && y_uninit) ys = 0;
                 Y = (int)(ys >> y_shift);
                 r = g = b = gray[Y > 255 ? 255 : Y];
                 if (ap) {
                     uint16_t as = ap[x];
-                    if (as != HEIC_UNINIT_SAMPLE) av = (uint8_t)(as >> y_shift);
+                    if (as != HEIC_UNINIT_SAMPLE || !y_uninit)
+                        av = (uint8_t)(as >> y_shift);
                 }
                 ycc_store(row, is_bgr, has_a, r, g, b, av);
                 row += bpp;
@@ -612,7 +618,7 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                 uint16_t ys = f->y[(size_t)sy * (size_t)f->y_stride + (size_t)sx];
                 int cx = sx >> 1, cy = sy;
                 uint16_t cbs, crs;
-                if (ys == HEIC_UNINIT_SAMPLE) ys = 0;
+                if (ys == HEIC_UNINIT_SAMPLE && y_uninit) ys = 0;
                 Y = (int)(ys >> y_shift);
                 if (cx >= f->c_width) cx = f->c_width - 1;
                 if (cy >= f->c_height) cy = f->c_height - 1;
@@ -620,8 +626,10 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                 if (cy < 0) cy = 0;
                 cbs = f->cb[(size_t)cy * (size_t)f->c_stride + (size_t)cx];
                 crs = f->cr[(size_t)cy * (size_t)f->c_stride + (size_t)cx];
-                if (cbs == HEIC_UNINIT_SAMPLE) cbs = (uint16_t)(128u << c_shift);
-                if (crs == HEIC_UNINIT_SAMPLE) crs = (uint16_t)(128u << c_shift);
+                if (cbs == HEIC_UNINIT_SAMPLE && c_uninit)
+                    cbs = (uint16_t)(128u << c_shift);
+                if (crs == HEIC_UNINIT_SAMPLE && c_uninit)
+                    crs = (uint16_t)(128u << c_shift);
                 Cb = (int)(cbs >> c_shift);
                 Cr = (int)(crs >> c_shift);
                 ycc_pixel(&cc, Y, Cb, Cr, &r, &g, &b);
@@ -629,7 +637,8 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                     uint16_t as =
                         f->a[(size_t)sy * (size_t)(f->a_stride ? f->a_stride : f->y_stride) +
                              (size_t)sx];
-                    if (as != HEIC_UNINIT_SAMPLE) av = (uint8_t)(as >> y_shift);
+                    if (as != HEIC_UNINIT_SAMPLE || !y_uninit)
+                        av = (uint8_t)(as >> y_shift);
                 }
                 ycc_store(row, is_bgr, has_a, r, g, b, av);
                 row += bpp;

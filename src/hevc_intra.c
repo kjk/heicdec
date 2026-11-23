@@ -140,6 +140,70 @@ static int sample_is_intra(const heic_frame *frame, uint8_t c_idx,
     return idx < pred_mode_n && pred_mode_map[idx] == HEIC_PRED_INTRA;
 }
 
+/* "Has this neighbouring sample been reconstructed yet?" (the z-scan order
+   part of H.265 6.4.1). This used to be answered by the sample value itself:
+   planes start out filled with 0xFFFF and anything else counted as decoded.
+   At 16 bits 0xFFFF is a legal sample, so such neighbours were treated as
+   missing and replaced. Now derived from positions alone:
+   - inside the current CTB, a 4x4 luma unit is decoded iff it precedes the
+     current block in z-order (Morton order of the unit coordinates);
+   - any other CTB is decoded iff its decode has started, which the filter
+     map records (CTBs are decoded one at a time). */
+typedef struct {
+    uint32_t sub_x, sub_y;       /* plane -> luma coordinate scale */
+    uint32_t ctb_mask, ctb_shift;
+    uint32_t ctb_x0, ctb_y0;     /* luma origin of the current CTB */
+    uint32_t cur_z;              /* z-order index of the current block */
+    uint32_t cur_addr, pic_width_in_ctbs;
+    const heic_ctb_filter_info *filter_map;
+} intra_avail;
+
+static uint32_t intra_z_index(uint32_t ux, uint32_t uy)
+{
+    /* Bits of a 4-bit unit coordinate spread to the even positions. */
+    static const uint8_t SPREAD[16] = {
+        0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15,
+        0x40, 0x41, 0x44, 0x45, 0x50, 0x51, 0x54, 0x55
+    };
+    return (uint32_t)SPREAD[ux & 15] | ((uint32_t)SPREAD[uy & 15] << 1);
+}
+
+static void intra_avail_init(intra_avail *a, const heic_frame *frame,
+                             uint8_t c_idx, uint32_t x, uint32_t y,
+                             uint32_t pic_width_in_ctbs, uint32_t ctb_size,
+                             const heic_ctb_filter_info *filter_map)
+{
+    uint32_t xl, yl;
+    a->sub_x = a->sub_y = 1;
+    if (c_idx != 0) {
+        if (frame->chroma_format == 1 || frame->chroma_format == 2) a->sub_x = 2;
+        if (frame->chroma_format == 1) a->sub_y = 2;
+    }
+    a->ctb_mask = ctb_size - 1;
+    a->ctb_shift = 0;
+    while ((1u << a->ctb_shift) < ctb_size) a->ctb_shift++;
+    xl = x * a->sub_x;
+    yl = y * a->sub_y;
+    a->ctb_x0 = xl & ~a->ctb_mask;
+    a->ctb_y0 = yl & ~a->ctb_mask;
+    a->cur_z = intra_z_index((xl & a->ctb_mask) >> 2, (yl & a->ctb_mask) >> 2);
+    a->pic_width_in_ctbs = pic_width_in_ctbs;
+    a->cur_addr = (yl >> a->ctb_shift) * pic_width_in_ctbs + (xl >> a->ctb_shift);
+    a->filter_map = filter_map;
+}
+
+static inline int intra_decoded(const intra_avail *a, uint32_t x, uint32_t y)
+{
+    uint32_t xl = x * a->sub_x, yl = y * a->sub_y;
+    uint32_t addr;
+    if ((xl & ~a->ctb_mask) == a->ctb_x0 && (yl & ~a->ctb_mask) == a->ctb_y0)
+        return intra_z_index((xl & a->ctb_mask) >> 2, (yl & a->ctb_mask) >> 2)
+               < a->cur_z;
+    addr = (yl >> a->ctb_shift) * a->pic_width_in_ctbs + (xl >> a->ctb_shift);
+    if (a->filter_map) return a->filter_map[addr].slice_address != UINT32_MAX;
+    return addr < a->cur_addr;
+}
+
 static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size,
                         uint8_t c_idx, int32_t *border, int center,
                         uint32_t slice_address, uint32_t pic_width_in_ctbs,
@@ -158,7 +222,10 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
     int corner_ok = 0;
     uint32_t i;
     const heic_ctb_filter_info *current_filter = NULL;
+    intra_avail av;
 
+    intra_avail_init(&av, frame, c_idx, x, y, pic_width_in_ctbs, ctb_size,
+                     filter_map);
     if (c_idx == 0) {
         plane = frame->y;
         stride = frame->y_stride;
@@ -211,7 +278,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
     if (avail_tl) {
         uint16_t raw =
             plane[(size_t)(y - 1) * (size_t)stride + (size_t)(x - 1)];
-        if (raw != HEIC_UNINIT_SAMPLE) {
+        if (intra_decoded(&av, x - 1, y - 1)) {
             border[center] = raw;
             corner_ok = 1;
             avail_count++;
@@ -245,7 +312,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
             if (top_count > guaranteed) {
                 for (i = guaranteed; i < top_count; i++) {
                     uint16_t raw = top_row[i];
-                    if (raw != HEIC_UNINIT_SAMPLE) {
+                    if (intra_decoded(&av, x + i, y - 1)) {
                         border[center + 1 + (int)i] = raw;
                         avail[center + 1 + (int)i] = 1;
                     }
@@ -256,7 +323,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
         } else {
             for (i = 0; i < top_count; i++) {
                 uint16_t raw = top_row[i];
-                if (raw != HEIC_UNINIT_SAMPLE
+                if (intra_decoded(&av, x + i, y - 1)
                     && sample_in_slice(frame, c_idx, x + i, y - 1,
                                        slice_address, pic_width_in_ctbs,
                                        ctb_size, filter_map, current_filter)
@@ -292,7 +359,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
             avail_count += guaranteed;
             for (i = guaranteed; i < left_count; i++) {
                 uint16_t raw = left_p[(size_t)i * (size_t)stride];
-                if (raw != HEIC_UNINIT_SAMPLE) {
+                if (intra_decoded(&av, x - 1, y + i)) {
                     border[center - 1 - (int)i] = raw;
                     avail[center - 1 - (int)i] = 1;
                     avail_count++;
@@ -301,7 +368,7 @@ static void fill_border(heic_frame *frame, uint32_t x, uint32_t y, uint32_t size
         } else {
             for (i = 0; i < left_count; i++) {
                 uint16_t raw = left_p[(size_t)i * (size_t)stride];
-                if (raw != HEIC_UNINIT_SAMPLE
+                if (intra_decoded(&av, x - 1, y + i)
                     && sample_in_slice(frame, c_idx, x - 1, y + i,
                                        slice_address, pic_width_in_ctbs,
                                        ctb_size, filter_map, current_filter)
