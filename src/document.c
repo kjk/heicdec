@@ -3,29 +3,29 @@
 
 static heic_kind brand_kind(const heic_container *c)
 {
+    /* Major brand first (i == -1), then every compatible brand. */
     int i;
-    heic_fourcc brands[16];
-    int n = 0;
     if (c->is_sequence) return HEIC_KIND_SEQUENCE;
-    brands[n++] = c->brand;
-    for (i = 0; i < c->n_compatible_brands && n < 16; i++)
-        brands[n++] = c->compatible_brands[i];
-    for (i = 0; i < n; i++) {
-        if (brands[i] == HEIC_FCC('a', 'v', 'i', 'f') ||
-            brands[i] == HEIC_FCC('a', 'v', 'i', 's'))
+#define BRAND_AT(i) ((i) < 0 ? c->brand : c->compatible_brands[i])
+    for (i = -1; i < c->n_compatible_brands; i++) {
+        heic_fourcc b = BRAND_AT(i);
+        if (b == HEIC_FCC('a', 'v', 'i', 'f') ||
+            b == HEIC_FCC('a', 'v', 'i', 's'))
             return HEIC_KIND_AVIF;
     }
-    for (i = 0; i < n; i++) {
-        if (brands[i] == HEIC_FCC('h', 'e', 'i', 'c') ||
-            brands[i] == HEIC_FCC('h', 'e', 'i', 'x') ||
-            brands[i] == HEIC_FCC('h', 'e', 'v', 'c') ||
-            brands[i] == HEIC_FCC('h', 'e', 'v', 'x'))
+    for (i = -1; i < c->n_compatible_brands; i++) {
+        heic_fourcc b = BRAND_AT(i);
+        if (b == HEIC_FCC('h', 'e', 'i', 'c') ||
+            b == HEIC_FCC('h', 'e', 'i', 'x') ||
+            b == HEIC_FCC('h', 'e', 'v', 'c') ||
+            b == HEIC_FCC('h', 'e', 'v', 'x'))
             return HEIC_KIND_HEIC;
     }
-    for (i = 0; i < n; i++) {
-        if (brands[i] == HEIC_FCC('m', 's', 'f', '1'))
+    for (i = -1; i < c->n_compatible_brands; i++) {
+        if (BRAND_AT(i) == HEIC_FCC('m', 's', 'f', '1'))
             return HEIC_KIND_SEQUENCE;
     }
+#undef BRAND_AT
     return HEIC_KIND_HEIF;
 }
 

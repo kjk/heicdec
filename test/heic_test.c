@@ -698,6 +698,15 @@ static int do_bench(const uint8_t *data, size_t len)
 #endif
     int r;
 
+    /* The session helpers can fail before touching their output (e.g. an
+       empty file); the error strings below must not be read uninitialized. */
+#ifdef HEIC_HAVE_LIBHEIF
+    memset(libraw, 0, sizeof(libraw));
+#endif
+#ifdef _WIN32
+    memset(wic, 0, sizeof(wic));
+#endif
+
     printf("(bench: session open/decode/close)\n");
 
 #ifdef _WIN32
@@ -1439,9 +1448,10 @@ static int do_api_surface_test(const uint8_t *data, size_t len)
                 track.n_alloc, track.n_free);
         ok = 0;
     }
-    /* freess should not wildly under-count (size-header free path). */
-    if (track.n_free > track.n_alloc) {
-        fprintf(stderr, "api: free count %d > alloc %d\n", track.n_free, track.n_alloc);
+    /* Everything is closed: every allocation must have been freed once. */
+    if (track.n_free != track.n_alloc) {
+        fprintf(stderr, "api: free count %d != alloc %d (leak or double free)\n",
+                track.n_free, track.n_alloc);
         ok = 0;
     }
     if (ok)
@@ -1726,6 +1736,7 @@ int main(int argc, char **argv)
         uint32_t frame;
         if (heic_doc_sequence_info(doc, &info) != 0) {
             fprintf(stderr, "sequence info failed\n");
+            rc = 1; /* an earlier mode (-info) may have set rc = 0 */
             goto done;
         }
         printf("sequence frames=%u timescale=%u duration=%llu repetitions=%u\n",
@@ -1737,6 +1748,7 @@ int main(int argc, char **argv)
             if (heic_doc_sequence_frame_info(doc, frame, &fi) != 0) {
                 fprintf(stderr, "sequence frame info failed at %u\n",
                         (unsigned)frame);
+                rc = 1;
                 goto done;
             }
             printf("frame %u time=%llu duration=%u sync=%d\n",
@@ -1753,11 +1765,13 @@ int main(int argc, char **argv)
             doc, (uint32_t)sequence_frame, fmt);
         if (!img) {
             fprintf(stderr, "sequence frame decode failed\n");
+            rc = 1;
             goto done;
         }
         if (out_path && write_ppm(out_path, img) != 0) {
             fprintf(stderr, "write %s failed\n", out_path);
             heic_image_destroy(ctx, img);
+            rc = 1;
             goto done;
         }
         printf("sequence frame %d decoded %ux%u%s%s\n", sequence_frame,

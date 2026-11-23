@@ -589,21 +589,20 @@ static int heic_hevc_decode_impl(heic_ctx *ctx, const heic_hvcc *cfg,
                     nals[i].ep_positions[e] - (uint32_t)e;
                 if (rbsp_pos < off) ep_in_hdr++;
             }
-            for (e = 0; e < nals[i].n_ep_positions; e++) {
+            /* One allocation: growing by one entry per emulation-prevention
+               byte is quadratic on a NAL stuffed with 00 00 03. */
+            if (nals[i].n_ep_positions > ep_in_hdr) {
+                eps = (uint32_t *)heic_alloc(
+                    ctx, (size_t)(nals[i].n_ep_positions - ep_in_hdr) *
+                             sizeof(uint32_t));
+                if (!eps) failed = 1;
+            }
+            for (e = 0; !failed && e < nals[i].n_ep_positions; e++) {
                 uint32_t p = nals[i].ep_positions[e];
                 uint32_t rbsp_pos = p - (uint32_t)e;
                 uint32_t slice_ebsp_start =
                     (uint32_t)off + (uint32_t)ep_in_hdr;
-                uint32_t *np;
                 if (rbsp_pos < off || p < slice_ebsp_start) continue;
-                np = (uint32_t *)heic_realloc_buf(
-                    ctx, eps, (size_t)ne * sizeof(uint32_t),
-                    (size_t)(ne + 1) * sizeof(uint32_t));
-                if (!np) {
-                    failed = 1;
-                    break;
-                }
-                eps = np;
                 eps[ne++] = p - slice_ebsp_start;
             }
             if (!failed && !picture) {
@@ -685,17 +684,6 @@ int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      heic_frame *out, const heic_abort *ab)
 {
     return heic_hevc_decode_impl(ctx, cfg, data, len, NULL, 0, out, ab);
-}
-
-int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
-                         const uint8_t *data, size_t len,
-                         const heic_frame *ref, heic_frame *out,
-                         const heic_abort *ab)
-{
-    const heic_frame *refs[1];
-    refs[0] = ref;
-    return heic_hevc_decode_impl(ctx, cfg, data, len,
-                                 ref ? refs : NULL, ref ? 1 : 0, out, ab);
 }
 
 int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,

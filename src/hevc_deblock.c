@@ -1,6 +1,6 @@
 /* hevc_deblock.c -- Deblocking filter (H.265 8.7.2)
  *
- * Port of imazen/heic deblock.rs. Handles intra and single-reference P pictures.
+ * Port of imazen/heic deblock.rs. Handles intra, uni- and bi-predicted pictures.
  */
 #include "heic_internal.h"
 

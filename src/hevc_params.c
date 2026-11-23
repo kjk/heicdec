@@ -1,4 +1,4 @@
-/* hevc_params.c -- SPS/PPS parse (subset needed for still HEIC; expand over time) */
+/* hevc_params.c -- SPS/PPS parse (incl. range extensions) */
 #include "heic_internal.h"
 
 /* Skip profile_tier_level (H.265 7.3.3) for max_sub_layers_minus1. */
@@ -417,6 +417,23 @@ int heic_parse_sps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_sps *out
         out->conf_win_right_offset = heic_bs_ue(&bs);
         out->conf_win_top_offset = heic_bs_ue(&bs);
         out->conf_win_bottom_offset = heic_bs_ue(&bs);
+        {
+            /* H.265 7.4.3.2.1: the window must leave at least one sample.
+               Unchecked, the crop offsets index outside the picture planes. */
+            uint64_t sub_w = (out->chroma_format_idc == 1 ||
+                              out->chroma_format_idc == 2) ? 2 : 1;
+            uint64_t sub_h = out->chroma_format_idc == 1 ? 2 : 1;
+            if (sub_w * ((uint64_t)out->conf_win_left_offset +
+                         out->conf_win_right_offset) >=
+                    out->pic_width_in_luma_samples ||
+                sub_h * ((uint64_t)out->conf_win_top_offset +
+                         out->conf_win_bottom_offset) >=
+                    out->pic_height_in_luma_samples) {
+                heic_error(ctx, HEIC_SEVERITY_ERROR,
+                           "SPS invalid conformance window");
+                return -1;
+            }
+        }
     }
 
     out->bit_depth_luma_minus8 = (uint8_t)heic_bs_ue(&bs);
@@ -711,7 +728,17 @@ int heic_parse_pps(heic_ctx *ctx, const uint8_t *rbsp, size_t len, heic_pps *out
         if (parse_scaling_list_data(&bs, &out->scaling_list) != 0)
             goto fail;
     out->lists_modification_present_flag = heic_bs_bit(&bs);
-    out->log2_parallel_merge_level_minus2 = (uint8_t)heic_bs_ue(&bs);
+    {
+        /* Log2ParMrgLevel <= CtbLog2SizeY (max 6); larger values would be
+           used as a shift count >= 32. */
+        uint32_t v = heic_bs_ue(&bs);
+        if (v > 4) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "PPS log2_parallel_merge_level out of range");
+            goto fail;
+        }
+        out->log2_parallel_merge_level_minus2 = (uint8_t)v;
+    }
     out->slice_segment_header_extension_present_flag = heic_bs_bit(&bs);
     if (heic_bs_bit(&bs)) { /* pps_extension_present_flag */
         int unsupported_extension;

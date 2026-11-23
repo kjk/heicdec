@@ -40,8 +40,6 @@ void heic_simd_init(void)
 #endif
 }
 
-int heic_simd_enabled(void) { return g_simd; }
-
 #if HEIC_X86
 
 static inline __m128i hs_mul(__m128i a, int32_t c)
@@ -483,7 +481,7 @@ int heic_simd_add_residual(uint16_t *plane, int stride, int x0, int y0,
     return 1;
 }
 
-/* Gather 4 LUT entries for indices taken from u16 plane samples (low 8 bits). */
+/* Clamp four epi32 lanes to 0..255. */
 static inline __m128i clamp_u8_epi32(__m128i v)
 {
     v = _mm_max_epi32(v, _mm_setzero_si128());
@@ -619,9 +617,11 @@ int heic_simd_ycc_444_row(const uint16_t *yp, const uint16_t *cbp, const uint16_
 /* Expand 2 or 3 subsampled chroma samples into 4 epi32 lanes with 4:2:0 phase. */
 static inline __m128i chroma420_epi32(const uint16_t *p, int phase)
 {
-    int a = (int)(p[0] & 255), b = (int)(p[1] & 255), c = (int)(p[2] & 255);
+    int a = (int)(p[0] & 255), b = (int)(p[1] & 255);
+    /* p[2] only exists for the odd phase; at phase 0 it can be one sample
+       past the end of the chroma plane. */
     if (phase)
-        return _mm_setr_epi32(a, b, b, c);
+        return _mm_setr_epi32(a, b, b, (int)(p[2] & 255));
     return _mm_setr_epi32(a, a, b, b);
 }
 
@@ -1007,8 +1007,7 @@ int heic_simd_luma_filter4(uint16_t *plane, size_t base_p, size_t base_q,
             store4_along(plane, base_q, step_along, q0n);
             if (d_ep) {
                 int tch = tc >> 1;
-                __m128i dp = _mm_srai_epi32(_mm_add_epi32(p2, p0), 1); /* (p2+p0)>>1 approx; need +1 */
-                dp = _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(p2, p0), _mm_set1_epi32(1)), 1);
+                __m128i dp = _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(p2, p0), _mm_set1_epi32(1)), 1);
                 dp = _mm_sub_epi32(dp, p1);
                 dp = _mm_add_epi32(dp, delta);
                 dp = _mm_srai_epi32(dp, 1);
@@ -1140,7 +1139,8 @@ int heic_simd_border_top_ext(const uint16_t *src, int32_t *border, int *avail, i
         ok = _mm_xor_si128(ok, _mm_set1_epi16(-1)); /* FFFF if valid */
         {
             int32_t t[4];
-            int16_t s[4], m[4];
+            uint16_t s[4]; /* unsigned: samples >= 0x8000 at 16-bit depth */
+            int16_t m[4];
             _mm_storel_epi64((__m128i *)s, v);
             _mm_storel_epi64((__m128i *)m, ok);
             t[0] = s[0];

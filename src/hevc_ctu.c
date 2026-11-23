@@ -1,4 +1,4 @@
-/* hevc_ctu.c -- I-slice CTU / CU / transform tree (port of imazen/heic ctu.rs) */
+/* hevc_ctu.c -- CTU / CU / PU / transform tree for I/P/B slices (port of imazen/heic ctu.rs) */
 #include "heic_internal.h"
 #include "hevc_cabac_inline.h"
 
@@ -46,6 +46,7 @@ typedef struct {
 
     heic_sao_info *sao_map;
     uint32_t sao_stride; /* pic_width_in_ctbs */
+    size_t   sao_n;      /* CTBs in sao_map / filter_map */
     heic_ctb_filter_info *filter_map;
 
     /* Deblock maps at 4x4 luma granularity */
@@ -1448,7 +1449,7 @@ static int apply_motion(heic_slice_ctx *sc, const heic_pu *pu,
         return 0;
     }
     /* Uni-pred: always use 14-bit intermediate + put_unweighted so 10-bit
-       rounding matches H.265 / libde265 (direct heic_mc_luma path diverges). */
+       rounding matches H.265 / libde265. */
     if (predict_internal_from_list(sc, pu, motion, list) != 0) return -1;
     put_unweighted_internal(sc, pu, list);
     return 0;
@@ -2819,6 +2820,7 @@ static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps
 
     sc->sao_stride = sps->pic_width_in_ctbs;
     sao_n = (size_t)sps->pic_width_in_ctbs * sps->pic_height_in_ctbs;
+    sc->sao_n = sao_n;
     sc->sao_map = (heic_sao_info *)heic_zalloc(ctx, sao_n * sizeof(heic_sao_info));
     sc->filter_map = (heic_ctb_filter_info *)heic_zalloc(
         ctx, sao_n * sizeof(heic_ctb_filter_info));
@@ -2926,8 +2928,9 @@ static int slice_ctx_geometry_match(const heic_slice_ctx *sc, const heic_sps *sp
         && sc->sao_map && sc->filter_map
         && sc->deblock_flags && sc->cbf_map && sc->pcm_map && sc->deblock_qp
         && sc->intra_chroma_mode_map
-        && (!sps->pic_width_in_ctbs
-            || (size_t)sc->sao_stride * sps->pic_height_in_ctbs == sao_n);
+        /* Same picture size with a different CTB size has a different CTB
+           count; the per-CTB maps (and ctb_decoded) must not be reused. */
+        && sc->sao_n == sao_n;
 }
 
 /* Re-init maps in-place for the next equal-size tile (grid stills). */
@@ -3358,6 +3361,7 @@ int heic_hevc_picture_decode_segment(
     if (!sh->dependent_slice_segment_flag || tile_start) {
         heic_cabac_init_contexts(sc->models, sh->slice_type,
                                  sh->cabac_init_flag, sh->slice_qp_y);
+        memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
     } else if (!work->have_segment) {
         heic_error(ctx, HEIC_SEVERITY_ERROR,
                    "dependent slice precedes independent slice");
@@ -3483,6 +3487,7 @@ int heic_hevc_picture_decode_segment(
                     }
                     heic_cabac_init_contexts(sc->models, sh->slice_type, sh->cabac_init_flag,
                                              sh->slice_qp_y);
+                    memset(sc->stat_coeff, 0, sizeof(sc->stat_coeff));
                     sc->current_qpy = sh->slice_qp_y;
                     sc->last_qpy_in_prev_qg = sh->slice_qp_y;
                     sc->current_qg_x = -1;

@@ -1,7 +1,9 @@
 /* heic_internal.h -- single internal header for all decoder modules.
  *
- * Every src .c file includes only this header. Keep file-local (static)
- * symbols unique across translation units so the amalgamation builds.
+ * Every src .c file includes this header for all cross-module declarations
+ * (the CABAC files add hevc_cabac_inline.h / hevc_cabac_init.inc). Keep
+ * file-local (static) symbols unique across translation units so the
+ * amalgamation builds.
  */
 #ifndef HEIC_INTERNAL_H
 #define HEIC_INTERNAL_H
@@ -290,11 +292,11 @@ typedef struct {
 } heic_clap;
 
 typedef struct {
-    uint16_t angle; /* 0, 90, 180, 270 CCW */
+    uint16_t angle; /* 0, 90, 180, 270 clockwise (irot is CCW; converted at parse) */
 } heic_irot;
 
 typedef struct {
-    uint8_t axis; /* 0 = vertical axis (L-R), 1 = horizontal (T-B) */
+    uint8_t axis; /* 0 = top-bottom flip, 1 = left-right flip (as libheif) */
 } heic_imir;
 
 typedef enum {
@@ -563,10 +565,6 @@ int  heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
 int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
                      const uint8_t *data, size_t len,
                      heic_frame *out, const heic_abort *ab);
-int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
-                         const uint8_t *data, size_t len,
-                         const heic_frame *ref, heic_frame *out,
-                         const heic_abort *ab);
 int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,
                           const uint8_t *data, size_t len,
                           const heic_frame *const *refs, int n_refs,
@@ -589,7 +587,7 @@ int heic_av1_sequence_receive(heic_av1_sequence_state *state,
                               heic_frame *out, uint32_t *out_sample,
                               const heic_abort *ab);
 
-/* Decode uncompressed HEIF (unci / ISO 23001-17). Interleave 0/1/3/4,
+/* Decode uncompressed HEIF (unci / ISO 23001-17). Interleave 0/1/2/3/4,
    multi-tile, 1..16-bit; optional zlib/deflate (HEIC_HAVE_ZLIB) and brotli
    (HEIC_HAVE_BROTLI); icef multi-unit when present. */
 int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc,
@@ -677,9 +675,7 @@ int      heic_bs_bit(heic_bs *bs);
 uint32_t heic_bs_bits(heic_bs *bs, int n);
 uint32_t heic_bs_ue(heic_bs *bs);
 int32_t  heic_bs_se(heic_bs *bs);
-int      heic_bs_byte_aligned(const heic_bs *bs);
 void     heic_bs_byte_align(heic_bs *bs);
-size_t   heic_bs_bits_left(const heic_bs *bs);
 
 /* ---- SPS/PPS (hevc_params.c) ---- */
 
@@ -1032,8 +1028,6 @@ void heic_dequantize_scaled_extended(
 void heic_inverse_transform_nnz(const int16_t *coeffs, int16_t *output, int size,
                                 int bit_depth, int is_intra_4x4_luma,
                                 int num_nonzero);
-void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,
-                            int bit_depth, int is_intra_4x4_luma);
 void heic_inverse_transform_extended(
     const int32_t *coeffs, int32_t *output, int size, int bit_depth,
     int max_transform_range, int is_intra_4x4_luma);
@@ -1042,7 +1036,7 @@ void heic_add_residual(uint16_t *plane, int stride, int x0, int y0,
 
 /* ---- SIMD (hevc_simd.c); return 1 if handled, 0 = use scalar ---- */
 void heic_simd_init(void);
-int  heic_simd_enabled(void);
+void heic_cabac_global_init(void); /* build CABAC init tables (heic_init) */
 int  heic_simd_idct8(const int16_t *coeffs, int16_t *out, int bit_depth);
 int  heic_simd_idct16(const int16_t *coeffs, int16_t *out, int bit_depth);
 int  heic_simd_idct32(const int16_t *coeffs, int16_t *out, int bit_depth);
@@ -1083,7 +1077,7 @@ int  heic_simd_intra_ang_row(uint16_t *dst, const int32_t *ref, int n, int a, in
 int  heic_simd_u16_to_i32_avail(const uint16_t *src, int32_t *border, int *avail, int n);
 /* Top extension: copy if != UNINIT; returns how many were valid. */
 int  heic_simd_border_top_ext(const uint16_t *src, int32_t *border, int *avail, int n);
-/* Angular mode&lt;18: per-pixel angle index along a row (row_base + f(px)). */
+/* Angular mode<18: per-pixel angle index along a row (row_base + f(px)). */
 int  heic_simd_intra_ang_row_var(uint16_t *dst, const int32_t *ref, int n, int row_base,
                                  int32_t angle, int max_val);
 /* SAO band interior row: x0..x1 on one scanline. */
@@ -1163,12 +1157,6 @@ void heic_apply_deblock(heic_frame *frame, const uint8_t *flags, const int8_t *q
 
 /* ---- inter prediction / CTU decode (hevc_inter.c, hevc_ctu.c) ---- */
 
-int heic_mc_luma(const heic_frame *ref, heic_frame *dst, heic_mv mv,
-                 uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                 int32_t *scratch, size_t scratch_n);
-int heic_mc_chroma(const heic_frame *ref, heic_frame *dst, heic_mv mv,
-                   uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-                   int32_t *scratch, size_t scratch_n);
 int heic_mc_luma_internal(const heic_frame *ref, heic_mv mv,
                           uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                           int16_t *out, uint32_t out_stride,

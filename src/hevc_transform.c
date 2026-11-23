@@ -653,13 +653,6 @@ void heic_inverse_transform_extended(
     heic_transform_clip_bits = 15;
 }
 
-void heic_inverse_transform(const int16_t *coeffs, int16_t *output, int size,
-                            int bit_depth, int is_intra_4x4_luma)
-{
-    heic_inverse_transform_nnz(coeffs, output, size, bit_depth,
-                               is_intra_4x4_luma, -1);
-}
-
 /* Like heic_inverse_transform, but num_nonzero from residual CABAC skips the
  * full-block zero scan used by pure-DC detection (big for 16/32 transforms).
  * Pass num_nonzero < 0 when the count is unknown. */

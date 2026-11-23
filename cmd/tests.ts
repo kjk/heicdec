@@ -4,7 +4,7 @@
 //   bun cmd/tests.ts file.heic ...        # same for listed files
 //   bun cmd/tests.ts -rand 10
 //   bun cmd/tests.ts -info -all           # open/-info probe only (no decode)
-//   bun cmd/tests.ts -mse 8 -all          # allow mse up to 8 (default 4)
+//   bun cmd/tests.ts -mse 8 -all          # set the mse threshold (default 8)
 //
 // Default (like bench.ts): build dav1d+libheif harness, run heic_test -verify
 // on each file. Success = both decode RGB and mse <= threshold.
@@ -1172,7 +1172,6 @@ async function runGainMapTest(exe: string): Promise<[number, number]> {
 
 async function main() {
   const argv = process.argv.slice(2);
-  if (argv.includes("-clean")) cleanBuildOutput();
   const useClang =
     argv.includes("-clang") ? true : argv.includes("-msvc") ? false : defaultUseClang;
   /* Default = decode + pixel compare (bench-shaped). -info = probe only. */
@@ -1192,7 +1191,11 @@ async function main() {
       `  -mse N       pixel mse threshold (default 8)\n` +
       `  -clang|-msvc toolchain\n` +
       `corpus: ${corpusSummary()}`,
+    ["-rand", "-mse"],
   );
+  /* After selection: a bare `-clean` must not wipe the oracle builds and
+     then exit with usage. */
+  if (argv.includes("-clean")) cleanBuildOutput();
 
   let exe: string;
   if (infoOnly) {
@@ -1287,8 +1290,9 @@ async function main() {
 
     if (kind === "libheif_fail") {
       if (wantFail) {
-        ok++;
-        console.log(`[ok-expect-fail] ${f} (libheif fail)`);
+        /* We decoded a file we are required to reject. */
+        fail++;
+        console.log(`[fail] expected fail but heic decoded (libheif fail): ${f}`);
       } else {
         const alt = await compareAltOracle(exe, f, name);
         if (!alt) {
@@ -1307,8 +1311,8 @@ async function main() {
 
     if (kind === "size_mismatch") {
       if (wantFail) {
-        ok++;
-        console.log(`[ok-expect-fail] ${f} (size mismatch)`);
+        fail++;
+        console.log(`[fail] expected fail but heic decoded (size mismatch): ${f}`);
       } else {
         fail++;
         console.log(`[fail] ${f} ${out}`);
@@ -1328,9 +1332,9 @@ async function main() {
           console.log(`[ok] ${f} ${out}`);
         }
       } else if (wantFail) {
-        ok++;
+        fail++;
         console.log(
-          `[ok-expect-fail] ${f} mse=${mse.toFixed(4)} > ${mseThreshold}`,
+          `[fail] expected fail but heic decoded (mse=${mse.toFixed(4)}): ${f}`,
         );
       } else if (knownOracleDifference(name)) {
         ok++;

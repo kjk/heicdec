@@ -19,8 +19,12 @@ static int g_inited;
 
 void heic_init(void)
 {
-    g_inited = 1;
+    /* heic_doc_open calls this on every open; redoing the setup would
+       rewrite globals that other threads are reading mid-decode. */
+    if (g_inited) return;
     heic_simd_init();
+    heic_cabac_global_init();
+    g_inited = 1;
 }
 
 const char *heic_version(void)
@@ -191,11 +195,11 @@ void heic_error(heic_ctx *ctx, heic_severity sev, const char *fmt, ...)
 
 void heic_image_destroy(heic_ctx *ctx, heic_image *img)
 {
-    if (!img) return;
-    if (ctx) heic_free_buf(ctx, img->data);
-    else free(img->data);
-    if (ctx) heic_free_buf(ctx, img);
-    else free(img);
+    /* Images are always allocated through a ctx (size-header blocks, maybe a
+       custom allocator); without it they cannot be freed correctly. */
+    if (!img || !ctx) return;
+    heic_free_buf(ctx, img->data);
+    heic_free_buf(ctx, img);
 }
 
 void heic_frame_free(heic_ctx *ctx, heic_frame *f)
@@ -227,7 +231,9 @@ int heic_frame_alloc(heic_ctx *ctx, heic_frame *f, int w, int h,
     int cw, ch;
     size_t y_n, c_n;
     if (!ctx || !f || w <= 0 || h <= 0) return -1;
-    if (w > (int)ctx->limits.max_width || h > (int)ctx->limits.max_height) return -1;
+    if ((uint32_t)w > ctx->limits.max_width ||
+        (uint32_t)h > ctx->limits.max_height)
+        return -1;
     if ((uint64_t)w * (uint64_t)h > ctx->limits.max_pixels) return -1;
 
     frame_chroma_dims(w, h, chroma_format, &cw, &ch);
@@ -271,7 +277,9 @@ int heic_frame_prepare(heic_ctx *ctx, heic_frame *f, int w, int h,
     int cw, ch;
     size_t y_n, c_n;
     if (!ctx || !f || w <= 0 || h <= 0) return -1;
-    if (w > (int)ctx->limits.max_width || h > (int)ctx->limits.max_height) return -1;
+    if ((uint32_t)w > ctx->limits.max_width ||
+        (uint32_t)h > ctx->limits.max_height)
+        return -1;
     if ((uint64_t)w * (uint64_t)h > ctx->limits.max_pixels) return -1;
     frame_chroma_dims(w, h, chroma_format, &cw, &ch);
     if (cw < 0) return -1;

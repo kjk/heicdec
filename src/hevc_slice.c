@@ -1,4 +1,4 @@
-/* hevc_slice.c -- slice segment header (I-slice / HEIC still focus) */
+/* hevc_slice.c -- slice segment header (I/P/B) */
 #include "heic_internal.h"
 
 static int ceil_log2(uint32_t x)
@@ -421,7 +421,10 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
     if (pps->slice_segment_header_extension_present_flag) {
         uint32_t ext_len = heic_bs_ue(&bs); /* length in bytes */
         uint32_t b;
-        for (b = 0; b < ext_len; b++)
+        /* H.265 7.4.7.1: 0..256. Unbounded, a 2^32-byte "extension" spins
+           here for minutes on a tiny slice. */
+        if (ext_len > 256) bs.error = 1;
+        for (b = 0; b < ext_len && !bs.error; b++)
             (void)heic_bs_bits(&bs, 8);
     }
 
@@ -433,7 +436,12 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
     (void)heic_bs_bit(&bs); /* alignment_bit_equal_to_one */
     heic_bs_byte_align(&bs);
 
-    if (bs.error) return -1;
+    if (bs.error) {
+        heic_free_buf(ctx, out->entry_point_offsets);
+        out->entry_point_offsets = NULL;
+        out->num_entry_point_offsets = 0;
+        return -1;
+    }
     out->data_offset = bs.byte_pos;
     out->slice_qp_y = 26 + (int)pps->init_qp_minus26 + (int)out->slice_qp_delta;
     return 0;

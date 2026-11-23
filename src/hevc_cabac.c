@@ -78,6 +78,11 @@ static void cabac_build_init_tables(void)
     g_cabac_init_ready = 1;
 }
 
+void heic_cabac_global_init(void)
+{
+    if (!g_cabac_init_ready) cabac_build_init_tables();
+}
+
 void heic_cabac_init_contexts(heic_ctx_model *ctx, int slice_type, int cabac_init_flag,
                               int slice_qp)
 {

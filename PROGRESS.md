@@ -219,7 +219,7 @@
       Prior clamp broke 12-bit 4:4:4 chroma dequant. FATE
       `PERSIST_RPARAM_A_RExt_Sony_3` (12-bit 4:4:4 + persistent Rice) exact
       MD5 vs libde265; Y was already exact, chroma now matches.
-- [x] Full HEVC sequence pin suite: **107** entries (106 exact MD5 + CCP mse≤0.01;
+- [x] Full HEVC sequence pin suite: **107** entries (106 exact MD5 + CCP mse≤0.001;
       no skips). Covers WPP Main/Main10, SLIST A–D, PERSIST, RAP/NoOutPrior,
       RPS, SAO, TILES, DELTAQP_B/C, Main_422 A/B, and the rest of
       `HEVC_SEQUENCE_TESTS`.

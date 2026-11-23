@@ -544,6 +544,17 @@ static int decode_block_pixel(heic_ctx *ctx, const heic_uncc *uncc,
         heic_error(ctx, HEIC_SEVERITY_ERROR, "unci: pixel_size < block_size");
         return -1;
     }
+    {
+        /* All components must fit in one block, else the shifts below reach
+           64 or wrap. */
+        uint32_t total = 0;
+        for (i = 0; i < ncomp; i++) total += (uint32_t)bit_depth[i];
+        if (total > (uint32_t)bsz * 8u) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "unci: components do not fit in block");
+            return -1;
+        }
+    }
     /* Component bitfield placement (mirror libheif). */
     if (!uncc->block_pad_lsb) {
         uint32_t bit_offset = 0;

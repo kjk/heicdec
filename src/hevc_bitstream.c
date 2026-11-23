@@ -242,11 +242,6 @@ int32_t heic_bs_se(heic_bs *bs)
     return -(int32_t)(code >> 1);
 }
 
-int heic_bs_byte_aligned(const heic_bs *bs)
-{
-    return bs && bs->bit_pos == 0;
-}
-
 void heic_bs_byte_align(heic_bs *bs)
 {
     if (!bs) return;
@@ -254,10 +249,4 @@ void heic_bs_byte_align(heic_bs *bs)
         bs->bit_pos = 0;
         bs->byte_pos++;
     }
-}
-
-size_t heic_bs_bits_left(const heic_bs *bs)
-{
-    if (!bs || bs->byte_pos >= bs->len) return 0;
-    return (bs->len - bs->byte_pos) * 8u - (size_t)bs->bit_pos;
 }

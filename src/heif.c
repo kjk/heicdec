@@ -228,6 +228,9 @@ static int parse_ftyp(heic_ctx *ctx, const heic_box *b, heic_container *c)
     }
     c->brand = heic_read_fcc(b->content);
     c->minor_brand = heic_read_fcc(b->content + 4);
+    heic_free_buf(ctx, c->compatible_brands);
+    c->compatible_brands = NULL;
+    c->n_compatible_brands = 0;
     pos = 8;
     while (pos + 4 <= b->content_len && n < HEIC_MAX_COMPAT_BRANDS) n++, pos += 4;
     if (n > 0) {
@@ -795,21 +798,30 @@ static int parse_infe(heic_ctx *ctx, const heic_box *b, heic_item_info *info)
     if (pos >= len) {
         info->item_name = (char *)heic_zalloc(ctx, 1);
         info->content_type = (char *)heic_zalloc(ctx, 1);
-        return 0;
+        goto check;
     }
     name_end = 0;
     while (pos + name_end < len && content[pos + name_end] != 0) name_end++;
     if (name_end > HEIC_MAX_STRING_LEN) return -1;
-    info->item_name = dup_cstr_z(ctx, content + pos, name_end + 1);
+    /* name_end stops at the NUL or at the end of the box; dup_cstr_z must
+       not look at the byte after an unterminated string. */
+    info->item_name = dup_cstr_z(ctx, content + pos, name_end);
     pos += name_end + (pos + name_end < len ? 1 : 0);
     ct_end = 0;
     if (pos < len) {
         while (pos + ct_end < len && content[pos + ct_end] != 0) ct_end++;
-        if (ct_end > HEIC_MAX_STRING_LEN) return -1;
-        info->content_type = dup_cstr_z(ctx, content + pos, ct_end + 1);
+        if (ct_end <= HEIC_MAX_STRING_LEN)
+            info->content_type = dup_cstr_z(ctx, content + pos, ct_end);
     } else
         info->content_type = (char *)heic_zalloc(ctx, 1);
-    if (!info->item_name || !info->content_type) return -1;
+check:
+    if (!info->item_name || !info->content_type) {
+        heic_free_buf(ctx, info->item_name);
+        heic_free_buf(ctx, info->content_type);
+        info->item_name = NULL;
+        info->content_type = NULL;
+        return -1;
+    }
     return 0;
 }
 
@@ -847,7 +859,11 @@ static int parse_iinf(heic_ctx *ctx, const heic_box *b, heic_container *c,
         if (heic_abort_check(ab)) return -1;
         if (child.type != HEIC_BOX_INFE) continue;
         if (parse_infe(ctx, &child, &info) != 0) continue;
-        if ((uint32_t)c->n_item_infos >= entry_count) break;
+        if ((uint32_t)c->n_item_infos >= entry_count) {
+            heic_free_buf(ctx, info.item_name);
+            heic_free_buf(ctx, info.content_type);
+            break;
+        }
         c->item_infos[c->n_item_infos++] = info;
     }
     return 0;
@@ -911,13 +927,11 @@ static int parse_hvcc(heic_ctx *ctx, const heic_box *b, heic_hvcc *out)
                     (size_t)cap * sizeof(uint8_t *), (size_t)ncap * sizeof(uint8_t *));
                 size_t *nl = (size_t *)heic_realloc_buf(ctx, nal_lens,
                     (size_t)cap * sizeof(size_t), (size_t)ncap * sizeof(size_t));
-                if (!nn || !nl) {
-                    heic_free_buf(ctx, nn);
-                    heic_free_buf(ctx, nl);
-                    goto fail;
-                }
-                nals = nn;
-                nal_lens = nl;
+                /* A successful realloc already freed the old block, so adopt
+                   each result on its own before bailing out. */
+                if (nn) nals = nn;
+                if (nl) nal_lens = nl;
+                if (!nn || !nl) goto fail;
                 cap = ncap;
             }
             copy = (uint8_t *)heic_zalloc(ctx, nalu_len);
@@ -1041,12 +1055,16 @@ static int parse_auxc(heic_ctx *ctx, const heic_box *b, heic_auxc *out)
     end = 0;
     while (end < dlen && data[end] != 0) end++;
     if (end > HEIC_MAX_STRING_LEN) return -1;
-    out->aux_type = dup_cstr_z(ctx, data, end + 1);
+    out->aux_type = dup_cstr_z(ctx, data, end);
     if (!out->aux_type) return -1;
     if (end + 1 < dlen) {
         out->subtype_len = dlen - (end + 1);
         out->subtype_data = (uint8_t *)heic_zalloc(ctx, out->subtype_len);
-        if (!out->subtype_data) return -1;
+        if (!out->subtype_data) {
+            heic_free_buf(ctx, out->aux_type);
+            memset(out, 0, sizeof(*out));
+            return -1;
+        }
         memcpy(out->subtype_data, data + end + 1, out->subtype_len);
     }
     return 0;
@@ -1170,6 +1188,10 @@ static int parse_icef(heic_ctx *ctx, const heic_box *b, heic_icef *out)
     if (n > 1000000) return -1;
     bitpos = 40; /* 1 byte codes + 4 byte count, in bits */
     if (n == 0) return 0;
+    /* The unit table must actually be present: icef_read_bits returns 0 past
+       the end, so without this a 13-byte box allocates n zeroed units. */
+    if ((uint64_t)n * (uint64_t)(off_bits + sz_bits) > (uint64_t)(len - 5) * 8)
+        return -1;
     out->units = (heic_icef_unit *)heic_zalloc(ctx, (size_t)n * sizeof(heic_icef_unit));
     if (!out->units) return -1;
     out->n_units = (int)n;
@@ -1268,11 +1290,21 @@ static int parse_ipco(heic_ctx *ctx, const heic_box *b, heic_container *c,
             heic_property *np = (heic_property *)heic_realloc_buf(
                 ctx, props, (size_t)cap * sizeof(heic_property),
                 (size_t)ncap * sizeof(heic_property));
-            if (!np) goto fail;
+            if (!np) {
+                free_property(ctx, &prop);
+                goto fail;
+            }
             props = np;
             cap = ncap;
         }
         props[n++] = prop;
+    }
+    {
+        /* A repeated ipco replaces the earlier one; do not leak it. */
+        int i;
+        for (i = 0; i < c->n_properties; i++)
+            free_property(ctx, &c->properties[i]);
+        heic_free_buf(ctx, c->properties);
     }
     c->properties = props;
     c->n_properties = n;
@@ -1425,6 +1457,13 @@ static int parse_iref(heic_ctx *ctx, const heic_box *b, heic_container *c,
             }
             refs[n++] = r;
         }
+    }
+    {
+        /* A repeated iref replaces the earlier one; do not leak it. */
+        int i;
+        for (i = 0; i < c->n_item_references; i++)
+            heic_free_buf(ctx, c->item_references[i].to_item_ids);
+        heic_free_buf(ctx, c->item_references);
     }
     c->item_references = refs;
     c->n_item_references = n;

@@ -1,20 +1,6 @@
-/* decode.c -- primary image decode orchestration (grid, iden, transforms) */
+/* decode.c -- primary image + sequence decode orchestration (grid, iovl,
+   iden, alpha, transforms) */
 #include "heic_internal.h"
-
-int heic_hevc_decode(heic_ctx *ctx, const heic_hvcc *cfg,
-                     const uint8_t *data, size_t len,
-                     heic_frame *out, const heic_abort *ab);
-int heic_hevc_decode_ref(heic_ctx *ctx, const heic_hvcc *cfg,
-                         const uint8_t *data, size_t len,
-                         const heic_frame *ref, heic_frame *out,
-                         const heic_abort *ab);
-int heic_hevc_decode_refs(heic_ctx *ctx, const heic_hvcc *cfg,
-                          const uint8_t *data, size_t len,
-                          const heic_frame *const *refs, int n_refs,
-                          heic_frame *out, const heic_abort *ab);
-int heic_av1_decode(heic_ctx *ctx, const heic_av1c *cfg,
-                    const uint8_t *data, size_t len,
-                    heic_frame *out, const heic_abort *ab);
 
 static int decode_item(heic_doc *doc, const heic_item *item, heic_frame *frame,
                        const heic_abort *ab, int depth);
@@ -226,6 +212,16 @@ static int frame_mirror_lr(heic_ctx *ctx, heic_frame *f)
             }
         }
     }
+    if (f->a) {
+        for (y = 0; y < h; y++) {
+            uint16_t *row = f->a + (size_t)y * (size_t)f->a_stride;
+            for (x = 0; x < w / 2; x++) {
+                uint16_t t = row[x];
+                row[x] = row[w - 1 - x];
+                row[w - 1 - x] = t;
+            }
+        }
+    }
     {
         int tmp = f->crop_left;
         f->crop_left = f->crop_right;
@@ -265,6 +261,17 @@ static int frame_mirror_tb(heic_ctx *ctx, heic_frame *f)
             }
         }
     }
+    if (f->a) {
+        for (y = 0; y < h / 2; y++) {
+            uint16_t *a = f->a + (size_t)y * (size_t)f->a_stride;
+            uint16_t *b = f->a + (size_t)(h - 1 - y) * (size_t)f->a_stride;
+            for (x = 0; x < w; x++) {
+                uint16_t t = a[x];
+                a[x] = b[x];
+                b[x] = t;
+            }
+        }
+    }
     {
         int tmp = f->crop_top;
         f->crop_top = f->crop_bottom;
@@ -273,45 +280,75 @@ static int frame_mirror_tb(heic_ctx *ctx, heic_frame *f)
     return 0;
 }
 
-static int frame_rotate_90_cw(heic_ctx *ctx, heic_frame *f)
+/* Rotate by a quarter turn: clockwise when `cw`, else counter-clockwise
+   (= 270 CW). 4:2:2 has no rotated equivalent (it would be 4:4:0), so such a
+   frame comes out 4:4:4 with horizontally replicated chroma. */
+static int frame_rotate_quarter(heic_ctx *ctx, heic_frame *f, int cw)
 {
     heic_frame g;
     int ow = f->width, oh = f->height;
     int nw = oh, nh = ow;
+    int is422 = f->chroma_format == 2;
     int dy, dx;
-    if (heic_frame_alloc(ctx, &g, nw, nh, f->bit_depth, f->chroma_format) != 0)
+    if (heic_frame_alloc(ctx, &g, nw, nh, f->bit_depth,
+                         is422 ? 3 : f->chroma_format) != 0)
         return -1;
     g.chroma_bit_depth = f->chroma_bit_depth;
     g.full_range = f->full_range;
     g.matrix_coeffs = f->matrix_coeffs;
     g.color_primaries = f->color_primaries;
     g.transfer_characteristics = f->transfer_characteristics;
-    /* dst(dx,dy) = src(dy, oh-1-dx) */
+    if (f->a) {
+        g.a = (uint16_t *)heic_alloc(
+            ctx, (size_t)nw * (size_t)nh * sizeof(uint16_t));
+        if (!g.a) {
+            heic_frame_free(ctx, &g);
+            return -1;
+        }
+        g.a_stride = nw;
+    }
+    /* CW: dst(dx,dy) = src(dy, oh-1-dx); CCW: dst(dx,dy) = src(ow-1-dy, dx) */
     for (dy = 0; dy < nh; dy++) {
         for (dx = 0; dx < nw; dx++) {
-            int sx = dy, sy = oh - 1 - dx;
+            int sx = cw ? dy : ow - 1 - dy;
+            int sy = cw ? oh - 1 - dx : dx;
             g.y[(size_t)dy * (size_t)g.y_stride + (size_t)dx] =
                 f->y[(size_t)sy * (size_t)f->y_stride + (size_t)sx];
+            if (g.a)
+                g.a[(size_t)dy * (size_t)g.a_stride + (size_t)dx] =
+                    f->a[(size_t)sy * (size_t)f->a_stride + (size_t)sx];
         }
     }
-    if (f->cb && f->cr && f->c_width > 0) {
+    if (f->cb && f->cr && g.cb && g.cr && f->c_width > 0) {
         int ocw = f->c_width, och = f->c_height;
-        int ncw = och, nch = ocw;
-        for (dy = 0; dy < nch; dy++) {
-            for (dx = 0; dx < ncw; dx++) {
-                int sx = dy, sy = och - 1 - dx;
-                size_t si = (size_t)sy * (size_t)f->c_stride + (size_t)sx;
-                size_t di = (size_t)dy * (size_t)g.c_stride + (size_t)dx;
+        for (dy = 0; dy < g.c_height; dy++) {
+            for (dx = 0; dx < g.c_width; dx++) {
+                int sx, sy = cw ? och - 1 - dx : dx;
+                size_t si, di;
+                if (is422)
+                    sx = (cw ? dy : ow - 1 - dy) >> 1;
+                else
+                    sx = cw ? dy : ocw - 1 - dy;
+                si = (size_t)sy * (size_t)f->c_stride + (size_t)sx;
+                di = (size_t)dy * (size_t)g.c_stride + (size_t)dx;
                 g.cb[di] = f->cb[si];
                 g.cr[di] = f->cr[si];
             }
         }
     }
-    /* crop 90 CW (imazen/libheif): L←B, R←T, T←L, B←R */
-    g.crop_left = f->crop_bottom;
-    g.crop_right = f->crop_top;
-    g.crop_top = f->crop_left;
-    g.crop_bottom = f->crop_right;
+    if (cw) {
+        /* crop 90 CW (imazen/libheif): L<-B, R<-T, T<-L, B<-R */
+        g.crop_left = f->crop_bottom;
+        g.crop_right = f->crop_top;
+        g.crop_top = f->crop_left;
+        g.crop_bottom = f->crop_right;
+    } else {
+        /* crop 270 CW: L<-T, R<-B, T<-R, B<-L */
+        g.crop_left = f->crop_top;
+        g.crop_right = f->crop_bottom;
+        g.crop_top = f->crop_right;
+        g.crop_bottom = f->crop_left;
+    }
     heic_frame_free(ctx, f);
     *f = g;
     return 0;
@@ -321,50 +358,6 @@ static int frame_rotate_180(heic_ctx *ctx, heic_frame *f)
 {
     if (frame_mirror_lr(ctx, f) != 0) return -1;
     return frame_mirror_tb(ctx, f);
-}
-
-static int frame_rotate_270_cw(heic_ctx *ctx, heic_frame *f)
-{
-    /* Direct 270 CW (= 90 CCW): dst(dx,dy) = src(ow-1-dy, dx). */
-    heic_frame g;
-    int ow = f->width, oh = f->height;
-    int nw = oh, nh = ow;
-    int dy, dx;
-    if (heic_frame_alloc(ctx, &g, nw, nh, f->bit_depth, f->chroma_format) != 0)
-        return -1;
-    g.chroma_bit_depth = f->chroma_bit_depth;
-    g.full_range = f->full_range;
-    g.matrix_coeffs = f->matrix_coeffs;
-    g.color_primaries = f->color_primaries;
-    g.transfer_characteristics = f->transfer_characteristics;
-    for (dy = 0; dy < nh; dy++) {
-        for (dx = 0; dx < nw; dx++) {
-            int sx = ow - 1 - dy, sy = dx;
-            g.y[(size_t)dy * (size_t)g.y_stride + (size_t)dx] =
-                f->y[(size_t)sy * (size_t)f->y_stride + (size_t)sx];
-        }
-    }
-    if (f->cb && f->cr && f->c_width > 0) {
-        int ocw = f->c_width, och = f->c_height;
-        int ncw = och, nch = ocw;
-        for (dy = 0; dy < nch; dy++) {
-            for (dx = 0; dx < ncw; dx++) {
-                int sx = ocw - 1 - dy, sy = dx;
-                size_t si = (size_t)sy * (size_t)f->c_stride + (size_t)sx;
-                size_t di = (size_t)dy * (size_t)g.c_stride + (size_t)dx;
-                g.cb[di] = f->cb[si];
-                g.cr[di] = f->cr[si];
-            }
-        }
-    }
-    /* crop 270 CW: L←T, R←B, T←R, B←L */
-    g.crop_left = f->crop_top;
-    g.crop_right = f->crop_bottom;
-    g.crop_top = f->crop_right;
-    g.crop_bottom = f->crop_left;
-    heic_frame_free(ctx, f);
-    *f = g;
-    return 0;
 }
 
 static int apply_transforms(heic_ctx *ctx, heic_frame *f, const heic_item *item)
@@ -384,13 +377,13 @@ static int apply_transforms(heic_ctx *ctx, heic_frame *f, const heic_item *item)
                 return -1;
             switch (t->irot.angle) {
             case 90:
-                if (frame_rotate_90_cw(ctx, f) != 0) return -1;
+                if (frame_rotate_quarter(ctx, f, 1) != 0) return -1;
                 break;
             case 180:
                 if (frame_rotate_180(ctx, f) != 0) return -1;
                 break;
             case 270:
-                if (frame_rotate_270_cw(ctx, f) != 0) return -1;
+                if (frame_rotate_quarter(ctx, f, 0) != 0) return -1;
                 break;
             default:
                 break;
@@ -412,7 +405,7 @@ static void blit_tile(heic_frame *out, const heic_frame *tile, int tile_idx,
     uint32_t tile_col = (uint32_t)tile_idx % cols;
     uint32_t dst_x = tile_col * tile_w;
     uint32_t dst_y = tile_row * tile_h;
-    uint32_t copy_w, copy_h, row, col;
+    uint32_t copy_w, copy_h, row;
     uint32_t src_x0 = (uint32_t)tile->crop_left;
     uint32_t src_y0 = (uint32_t)tile->crop_top;
     uint32_t tw = (uint32_t)frame_cropped_w(tile);
@@ -448,6 +441,11 @@ static void blit_tile(heic_frame *out, const heic_frame *tile, int tile_idx,
         c_dst_y = dst_y / sub_y;
         c_src_x = src_x0 / sub_x;
         c_src_y = src_y0 / sub_y;
+        /* A tile whose chroma layout differs from the canvas can put the
+           source/destination column outside its plane. */
+        if (c_dst_x >= (uint32_t)out->c_width ||
+            c_src_x >= (uint32_t)tile->c_width)
+            return;
         if (c_dst_x + c_copy_w > (uint32_t)out->c_width)
             c_copy_w = (uint32_t)out->c_width - c_dst_x;
         if (c_src_x + c_copy_w > (uint32_t)tile->c_width)
@@ -465,7 +463,6 @@ static void blit_tile(heic_frame *out, const heic_frame *tile, int tile_idx,
             memcpy(dr, sr, (size_t)c_copy_w * sizeof(uint16_t));
         }
     }
-    (void)col;
 }
 
 /* ---- grid ---- */
@@ -585,7 +582,13 @@ static int decode_grid(heic_doc *doc, const heic_item *grid_item, heic_frame *ou
                 heic_frame_free(doc->ctx, out);
                 return -1;
             }
-            /* heic_frame_prepare reuses tile planes when tile size matches. */
+            /* Only the HEVC decoder reuses the previous tile's planes
+               (heic_frame_prepare); every other decoder starts from a
+               zeroed frame and would leak them. */
+            if (!tile_item.hvcc || tile_item.item_type == HEIC_TYPE_GRID ||
+                tile_item.item_type == HEIC_TYPE_IDEN ||
+                tile_item.item_type == HEIC_TYPE_TMAP)
+                heic_frame_free(doc->ctx, &tile_frame);
             if (decode_item(doc, &tile_item, &tile_frame, ab, depth + 1) != 0) {
                 heic_frame_free(doc->ctx, &tile_frame);
                 heic_frame_free(doc->ctx, out);
@@ -755,6 +758,10 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
         heic_free_buf(doc->ctx, (void *)data);
         owned = 0;
     }
+    if (i < n_tiles) {
+        heic_error(doc->ctx, HEIC_SEVERITY_ERROR, "overlay offsets truncated");
+        return -1;
+    }
 
     /* Reject oversize canvas before any plane allocation (iovl_huge_canvas). */
     if (canvas_w == 0 || canvas_h == 0) {
@@ -790,7 +797,10 @@ static int decode_iovl(heic_doc *doc, const heic_item *iovl_item, heic_frame *ou
                                      ? chroma_bit_depth - 8 : 0));
     fill_cr = fill_cb;
     n = (size_t)out->width * (size_t)out->height;
-    for (i = 0; i < (int)n; i++) out->y[i] = fill_y;
+    {
+        size_t k;
+        for (k = 0; k < n; k++) out->y[k] = fill_y;
+    }
     if (out->cb) {
         size_t cn = (size_t)out->c_width * (size_t)out->c_height;
         size_t k;
@@ -1062,8 +1072,6 @@ int heic_decode_primary(heic_doc *doc, heic_format format,
     if (heic_doc_info(doc, &info) != 0) return -1;
 
     bpp = (format == HEIC_FORMAT_RGBA || format == HEIC_FORMAT_BGRA) ? 4 : 3;
-    need_stride = into_stride > 0 ? into_stride : (int)info.width * bpp;
-    need = (size_t)need_stride * (size_t)info.height;
 
     if (heic_abort_check(ab)) return -1;
     rc = decode_item(doc, &item, &frame, ab, 0);
@@ -1079,7 +1087,6 @@ int heic_decode_primary(heic_doc *doc, heic_format format,
         heic_frame_free(doc->ctx, &frame);
         return -1;
     }
-    /* Prefer actual decoded dims if transforms swapped them */
     need_stride = into_stride > 0 ? into_stride : out_w * bpp;
     need = (size_t)need_stride * (size_t)out_h;
 

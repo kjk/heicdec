@@ -70,7 +70,7 @@ Smoke that path with `heic_test -sumatra file.heic` (or `bun cmd/verify-release.
 | In scope | Notes |
 |----------|--------|
 | HEVC stills (`hvc1`/`heic`/`heix`/`mif1`) | I-frames, grids, tiles, WPP (entry points), P-item predictives |
-| AV1 stills (`av01`/`avif`) | via **dav1d** (`HEIC_HAVE_DAV1D` + link dav1d; not in amalgamation/WASM); layered AVIF decodes the top layer only |
+| AV1 stills (`av01`/`avif`) | via **dav1d** (`HEIC_HAVE_DAV1D` + link dav1d; dav1d itself is not bundled with the amalgamation, and the WASM build has no AV1); layered AVIF decodes the top layer only |
 | unci (ISO 23001-17) | planar/pixel/row/tile; zlib/deflate with `HEIC_HAVE_ZLIB`, brotli with `HEIC_HAVE_BROTLI` |
 | Alpha | `auxl` HEVC/AVIF; AVIF alpha sequences |
 | EXIF / XMP / ICC / clap / irot / imir / iovl | EXIF returns TIFF only; an Exif item without the HEIF offset header (raw TIFF) reports `has_exif=1` but `heic_doc_exif` returns 0 |
@@ -116,7 +116,7 @@ bun cmd/verify-release.ts        # Sumatra/API/memory-limit + amalgamation + WAS
 Fuzzing notes: first run builds optional dav1d/zlib/brotli when missing, seeds
 `fuzz/corpus/` from the corpus, then mutates until you Ctrl-C (rerun resumes).
 Crashes land in `fuzz/crashes/` (commit them). Useful flags: `-jobs N`,
-`-repro FILE`, `-minimize`, `-no-deps` (HEVC-only, skip codec builds).
+`-repro FILE`, `-minimize`, `-no-deps` (skip auto-building dav1d/zlib/brotli; already-built ones are still linked).
 
 On macOS you can also use AFL++ (`brew install afl++`, then once
 `sudo afl-system-config`): `bun cmd/fuzz-afl.ts` builds the same

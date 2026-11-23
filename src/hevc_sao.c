@@ -1,6 +1,6 @@
 /* hevc_sao.c -- Sample Adaptive Offset filter (H.265 8.7.3)
  *
- * Port of imazen/heic sao.rs. Applied after CTU reconstruction (deblock later).
+ * Port of imazen/heic sao.rs. Applied after deblocking.
  */
 #include "heic_internal.h"
 #include <string.h>

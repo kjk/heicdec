@@ -31,8 +31,18 @@ function binName(base: string): string {
   return isWindows ? `${base}.exe` : base;
 }
 
-const INTERNAL_H = `${ROOT}/src/heic_internal.h`;
-const PUBLIC_H = `${ROOT}/src/heic.h`;
+// Every header a translation unit can include (src/*.h, src/*.inc, test/*.h).
+// Tracking only heic.h + heic_internal.h left stale objects after edits to
+// hevc_cabac_inline.h / hevc_cabac_init.inc / the harness headers.
+function trackedHeaders(): string[] {
+  const out: string[] = [];
+  for (const dir of ["src", "test"]) {
+    for (const name of readdirSync(`${ROOT}/${dir}`)) {
+      if (/\.(h|inc)$/.test(name)) out.push(`${ROOT}/${dir}/${name}`);
+    }
+  }
+  return out;
+}
 
 // Translation units (order matches amalgamation).
 export const SRCS = [
@@ -349,8 +359,9 @@ async function buildClang(opts: BuildOpts = {}): Promise<string> {
     for (const p of heif.heifInc) inc += ` -I${p}`;
   }
   const units = cUnits(dir, "o", withLibheif);
+  const hdrs = trackedHeaders();
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
+    if (!needsRebuild(u.obj, u.src, ...hdrs)) continue;
     await runCmd(
       `clang ${clangCFlags()}${def}${inc} -c -o ${u.obj} ${u.src}`,
     );
@@ -367,7 +378,9 @@ async function buildClang(opts: BuildOpts = {}): Promise<string> {
     linkLibs.push(...comp.libs);
   }
   if (!isWindows) linkLibs.push("-lpthread", "-lm");
-  else linkLibs.push(...wicLinkLibs());
+  /* The clang driver wants -lfoo: a bare foo.lib is treated as an input file
+     path and fails with "no such file or directory". */
+  else linkLibs.push(...wicLinkLibs().map((l) => `-l${l.replace(/\.lib$/, "")}`));
   const linkExtra = linkLibs.length ? ` ${linkLibs.join(" ")}` : "";
   const linkCmd = withLibheif ? "clang++" : "clang";
   /* Windows: -g + -gcodeview → heic_test_clang.pdb next to the exe. */
@@ -432,8 +445,9 @@ async function buildMsvc(opts: BuildOpts = {}): Promise<string> {
   /* One PDB for all objs + the final exe (winperf symbolicates from this). */
   const pdb = `${dir}/heic_test_msvc.pdb`;
   const clC = `${msvcC}${def}${inc} -Fo${dir}/ -Fd${pdb} -c`;
+  const hdrs = trackedHeaders();
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
+    if (!needsRebuild(u.obj, u.src, ...hdrs)) continue;
     const rel = u.src.startsWith(`${ROOT}/`)
       ? u.src.slice(ROOT.length + 1)
       : u.src;
@@ -822,7 +836,7 @@ export async function buildFuzz(clean = false): Promise<string> {
     inc += dav1dIncFlags(dav1d);
   }
 
-  const headers = [INTERNAL_H, PUBLIC_H];
+  const headers = trackedHeaders();
   const objStale = (u: { src: string; obj: string }) =>
     needsRebuild(u.obj, u.src, ...headers);
   const staleObj = units.some(objStale);
@@ -980,7 +994,7 @@ export async function buildAflFuzz(
     inc += dav1dIncFlags(dav1d);
   }
 
-  const headers = [INTERNAL_H, PUBLIC_H];
+  const headers = trackedHeaders();
   const objStale = (u: { src: string; obj: string }) =>
     needsRebuild(u.obj, u.src, ...headers);
   const staleObj = units.some(objStale);

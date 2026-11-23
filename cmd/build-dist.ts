@@ -192,11 +192,13 @@ export async function buildDist(): Promise<void> {
 
   if (isWindows) {
     const r2 = await runCmd(
-      `cl ${HEIC_MSVC_CL_C} -c dist/heic.c -Fodist/heic_verify.obj`,
+      `cl ${HEIC_MSVC_CL_C} -c dist/heic.c -Fodist/heic_verify.obj ` +
+        `-Fddist/heic_verify.pdb`,
       ROOT,
     );
-    if (existsSync(join(DIST, "heic_verify.obj")))
-      rmSync(join(DIST, "heic_verify.obj"));
+    /* -Zi without -Fd would drop vc140.pdb into the repo root. */
+    for (const f of ["heic_verify.obj", "heic_verify.pdb"])
+      if (existsSync(join(DIST, f))) rmSync(join(DIST, f));
     if (r2 !== 0) {
       console.error("amalgamation FAILED to compile (msvc)");
       process.exit(1);

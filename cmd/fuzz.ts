@@ -89,9 +89,10 @@ function intArg(v: string | undefined, name: string): number {
   return n;
 }
 
-// Artifact kinds libFuzzer writes on a finding (all reproducible by replay).
+// Artifact kinds libFuzzer writes on a finding (all reproducible by replay),
+// plus crashes imported by fuzz-afl.ts (afl-<sha1>).
 const isArtifact = (name: string) =>
-  /^(crash|timeout|oom|leak|slow-unit)-/.test(name);
+  /^(crash|timeout|oom|leak|slow-unit|afl)-/.test(name);
 
 function listArtifacts(): string[] {
   if (!existsSync(CRASHES)) return [];

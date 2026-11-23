@@ -13,7 +13,7 @@
 import { $ } from "bun";
 import { existsSync } from "fs";
 import { join } from "path";
-import { build, defaultUseClang } from "./build";
+import { build, buildDav1d, defaultUseClang } from "./build";
 import { getDeps } from "./get-deps";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
@@ -30,6 +30,7 @@ async function run(label: string, cmd: string): Promise<void> {
 
 await getDeps();
 /* Full library surface for Sumatra/API (HEVC + AV1); oracle not required. */
+await buildDav1d(); /* build() only links dav1d, it does not build it */
 const harness = await build(defaultUseClang, { withDav1d: true });
 const h = harness.replaceAll("\\", "/");
 
