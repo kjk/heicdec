@@ -1,3 +1,5 @@
+.DS_Store
+
 # build outputs (harness objects + exes, oracle builds, scratch decodes)
 out/
 *.lib
