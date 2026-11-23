@@ -27,15 +27,13 @@ import {
   cleanBuildOutput,
 } from "./build";
 import { getDeps, TESTIMAGES_DIR } from "./get-deps";
-import { hasSelection, selectFiles, corpusSummary } from "./corpus";
+import {
+  EXPECT_FAIL,
+  hasSelection,
+  selectFiles,
+  corpusSummary,
+} from "./corpus";
 
-/** Intentionally invalid / malformed fixtures (ok-expect-fail when we fail). */
-const EXPECT_FAIL = new Set([
-  "meta_size_zero.avif",
-  "mini_size_zero.avif",
-  "iovl_badver.heic",
-  "iovl_huge_canvas.heic",
-]);
 
 /**
  * Valid files for which some libheif versions produce a known-wrong bitmap.

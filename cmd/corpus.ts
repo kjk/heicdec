@@ -44,6 +44,19 @@ function walk(dir: string): string[] {
   return out;
 }
 
+/**
+ * Intentionally invalid / malformed fixtures, by basename. tests.ts counts
+ * them as ok only when our decoder rejects them; bench.ts leaves them out of
+ * the failure count. The two .avif entries live in libheif/tests/data, which
+ * is only in the corpus when HEIC_SPECS points there.
+ */
+export const EXPECT_FAIL = new Set([
+  "meta_size_zero.avif",
+  "mini_size_zero.avif",
+  "iovl_badver.heic",
+  "iovl_huge_canvas.heic",
+]);
+
 export function corpusFiles(): string[] {
   if (process.env.HEIC_SPECS) return walk(process.env.HEIC_SPECS).sort();
   const seen = new Set<string>();

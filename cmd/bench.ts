@@ -26,6 +26,7 @@ import {
   corpusSummary,
   fileLabel,
   fileNameLabel,
+  EXPECT_FAIL,
   fileRel,
   hasSelection,
   selectFiles,
@@ -51,17 +52,6 @@ function enterDirAndName(
   }
 }
 
-/**
- * Intentionally invalid fixtures (malformed / oversize). Both heic and libheif
- * reject them; do not treat as decoder failures in the bench table.
- * Keep in sync with EXPECT_FAIL decode-rejects in tests.ts.
- */
-const BENCH_EXPECT_REJECT = new Set([
-  "meta_size_zero.avif",
-  "mini_size_zero.avif",
-  "iovl_badver.heic",
-  "iovl_huge_canvas.heic",
-]);
 
 type BenchTimes = {
   open: number;
@@ -301,7 +291,7 @@ ${corpusSummary()}`,
     const out = (r.stdout?.toString() ?? "") + (r.stderr?.toString() ?? "");
     const result = parseBenchResult(out);
     const name = basename(file);
-    const expectReject = BENCH_EXPECT_REJECT.has(name);
+    const expectReject = EXPECT_FAIL.has(name);
 
     if (!result) {
       if (expectReject) {
