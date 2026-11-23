@@ -1024,13 +1024,28 @@ int heic_unci_decode(heic_ctx *ctx, const heic_uncc *uncc, const heic_cmpc *cmpc
     }
 
 done:
-    if (!has_rgb && !has_yuv && ncomp == 1) {
-        size_t k, n = (size_t)out->c_width * (size_t)out->c_height;
-        for (k = 0; k < n; k++) {
-            out->cb[k] = 128;
-            out->cr[k] = 128;
+    /* Planes no component wrote still hold the 0xFFFF "uninitialized" fill,
+       which rendered as a colour cast (mono + alpha came out magenta).
+       Without chroma the image is grey: neutral chroma, BT.601 like libheif's
+       default nclx. A missing RGB channel is simply zero. */
+    {
+        int have[3] = {0, 0, 0};
+        size_t k;
+        for (i = 0; i < ncomp; i++)
+            if (plane_map[i] >= 0 && plane_map[i] < 3) have[plane_map[i]] = 1;
+        if (!have[0]) {
+            size_t n = (size_t)out->y_stride * (size_t)out->height;
+            for (k = 0; k < n; k++) out->y[k] = 0;
         }
-        out->matrix_coeffs = 6; /* mono → grey; BT.601 like libheif default nclx */
+        if (out->cb && out->cr && (!have[1] || !have[2])) {
+            size_t n = (size_t)out->c_stride * (size_t)out->c_height;
+            uint16_t fill = has_rgb ? 0 : 128;
+            for (k = 0; k < n; k++) {
+                if (!have[1]) out->cb[k] = fill;
+                if (!have[2]) out->cr[k] = fill;
+            }
+            if (!has_rgb) out->matrix_coeffs = 6;
+        }
     }
     heic_free_buf(ctx, owned);
     return 0;
