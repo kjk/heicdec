@@ -620,7 +620,7 @@ const HEVC_SEQUENCE_TESTS: readonly {
   /* Two slices per picture; the second reverses L0 with
    * ref_pic_list_modification, so the slices of a picture use different
    * reference lists (deblocking across the slice edge, collocated MVs).
-   * HM 18.0 stream rewritten by test/streams/rewrite_slices.py; MD5 is the
+   * HM 18.0 stream rewritten by test/streams/rewrite_slices.ts; MD5 is the
    * output of HM's decoder, which ffmpeg reproduces. */
   {
     name: "SLICE_REFLIST_MOD_HM18.bit",

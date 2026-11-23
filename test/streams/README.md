@@ -39,7 +39,7 @@ TAppEncoder -c cfg/encoder_lowdelay_main.cfg -i in8.yuv -wdt 128 -hgt 96 -fr 30 
   --InputBitDepth=8 -q 30 --MaxCUWidth=16 --MaxCUHeight=16 --MaxPartitionDepth=2 \
   --QuadtreeTULog2MaxSize=4 --SliceMode=1 --SliceArgument=24 \
   --LFCrossSliceBoundaryFlag=1 --SEIDecodedPictureHash=0 -b base.bit
-python rewrite_slices.py base.bit SLICE_REFLIST_MOD_offsets.txt lists SLICE_REFLIST_MOD_HM18.bit
+bun rewrite_slices.ts base.bit SLICE_REFLIST_MOD_offsets.txt lists SLICE_REFLIST_MOD_HM18.bit
 ```
 
 `in8.yuv` is the pattern of `gen_hbd_yuv.py` at 8 bits, 4:2:0.
