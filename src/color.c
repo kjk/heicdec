@@ -335,6 +335,66 @@ static void convert_420(const heic_frame *f, const ycc_coeffs *cc, int x0, int y
     }
 }
 
+/* 8-bit 4:2:0 / 4:4:4 to BGR / RGBA / BGRA: run the LUT/SIMD RGB kernels on
+   a strip of rows, then reorder (and add alpha) into the caller's buffer.
+   Returns -1 if the strip buffer cannot be allocated; the caller then uses
+   the general per-pixel path. */
+#define YCC_STRIP_ROWS 16
+static int convert_8_via_rgb(heic_ctx *ctx, const heic_frame *f,
+                             const ycc_lut *lut, int x0, int y0, int w, int h,
+                             uint8_t *dst, int stride, int bpp, int is_bgr)
+{
+    uint8_t *strip;
+    int y, r, x;
+    int ri = is_bgr ? 2 : 0, bi = is_bgr ? 0 : 2;
+    strip = (uint8_t *)heic_alloc(ctx, (size_t)w * 3 * YCC_STRIP_ROWS);
+    if (!strip) return -1;
+    for (y = 0; y < h; y += YCC_STRIP_ROWS) {
+        int n = h - y < YCC_STRIP_ROWS ? h - y : YCC_STRIP_ROWS;
+        if (f->chroma_format == 3)
+            convert_444_8_rgb(f, lut, x0, y0 + y, w, n, strip, w * 3);
+        else
+            convert_420_8_rgb(f, lut, x0, y0 + y, w, n, strip, w * 3);
+        for (r = 0; r < n; r++) {
+            const uint8_t *s = strip + (size_t)r * (size_t)w * 3;
+            uint8_t *d = dst + (size_t)(y + r) * (size_t)stride;
+            if (bpp == 3) {
+                for (x = 0; x < w; x++) {
+                    d[0] = s[2];
+                    d[1] = s[1];
+                    d[2] = s[0];
+                    s += 3;
+                    d += 3;
+                }
+            } else if (f->a) {
+                const uint16_t *ap =
+                    f->a + (size_t)(y0 + y + r) *
+                               (size_t)(f->a_stride ? f->a_stride : f->y_stride) +
+                    (size_t)x0;
+                for (x = 0; x < w; x++) {
+                    d[ri] = s[0];
+                    d[1] = s[1];
+                    d[bi] = s[2];
+                    d[3] = (uint8_t)ap[x];
+                    s += 3;
+                    d += 4;
+                }
+            } else {
+                for (x = 0; x < w; x++) {
+                    d[ri] = s[0];
+                    d[1] = s[1];
+                    d[bi] = s[2];
+                    d[3] = 255;
+                    s += 3;
+                    d += 4;
+                }
+            }
+        }
+    }
+    heic_free_buf(ctx, strip);
+    return 0;
+}
+
 int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                       uint8_t *dst, int stride)
 {
@@ -347,7 +407,6 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
     int has_a;
     ycc_coeffs cc;
 
-    (void)ctx;
     if (!f || !f->y || !dst) return -1;
     x0 = f->crop_left;
     y0 = f->crop_top;
@@ -372,22 +431,36 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
 
     ycc_select(matrix, full, &cc);
 
-    /* Fast 8-bit RGB (no alpha/BGR): one LUT build, then table-driven convert. */
-    if (y_shift == 0 && c_shift == 0 && !has_a && !is_bgr && matrix != 0
+    /* Fast 8-bit path: one LUT build, then table-driven / SIMD convert. RGB
+       is written directly; the other orders go through an RGB strip. */
+    if (y_shift == 0 && c_shift == 0 && matrix != 0
         && f->cb && f->cr
         && (f->chroma_format == 1 || f->chroma_format == 3)) {
         ycc_lut lut;
         ycc_build_lut(&cc, &lut);
-        if (f->chroma_format == 3)
-            convert_444_8_rgb(f, &lut, x0, y0, w, h, dst, stride);
-        else
-            convert_420_8_rgb(f, &lut, x0, y0, w, h, dst, stride);
-        return 0;
+        if (!has_a && !is_bgr) {
+            if (f->chroma_format == 3)
+                convert_444_8_rgb(f, &lut, x0, y0, w, h, dst, stride);
+            else
+                convert_420_8_rgb(f, &lut, x0, y0, w, h, dst, stride);
+            return 0;
+        }
+        if (convert_8_via_rgb(ctx, f, &lut, x0, y0, w, h, dst, stride, bpp,
+                              is_bgr) == 0)
+            return 0;
     }
 
-    /* Mono / missing chroma */
+    /* Mono / missing chroma: R = G = B depends on luma only, so convert the
+       256 possible 8-bit values once instead of running the matrix per
+       pixel. */
     if (f->chroma_format == 0 || !f->cb || !f->cr) {
         int y, x;
+        uint8_t gray[256];
+        for (x = 0; x < 256; x++) {
+            uint8_t r, g, b;
+            ycc_pixel(&cc, x, 128, 128, &r, &g, &b);
+            gray[x] = g;
+        }
         for (y = 0; y < h; y++) {
             uint8_t *row = dst + (size_t)y * (size_t)stride;
             int sy = y0 + y;
@@ -403,7 +476,7 @@ int heic_frame_to_rgb(heic_ctx *ctx, const heic_frame *f, heic_format format,
                 uint8_t r, g, b, av = 255;
                 if (ys == HEIC_UNINIT_SAMPLE) ys = 0;
                 Y = (int)(ys >> y_shift);
-                ycc_pixel(&cc, Y, 128, 128, &r, &g, &b);
+                r = g = b = gray[Y > 255 ? 255 : Y];
                 if (ap) {
                     uint16_t as = ap[x];
                     if (as != HEIC_UNINIT_SAMPLE) av = (uint8_t)(as >> y_shift);
