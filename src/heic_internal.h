@@ -166,6 +166,12 @@ struct heic_ctx {
     heic_limits   limits;
     /* Live library-owned heap (including per-block size headers). */
     size_t        live_bytes;
+    /* Reject HEVC slice data that runs out before the slice ends. Off by
+     * default: a truncated file then still gives a (partly wrong) picture,
+     * like most decoders. The differential fuzz target turns it on, because
+     * what a decoder shows for missing data is its own business and cannot
+     * be compared (test/fuzz_diff.c). */
+    uint8_t       strict_bitstream;
     /* Optional cached dav1d context (av1_dav1d.c); opaque to keep header free
      * of dav1d types. Closed in heic_ctx_free. */
     void         *dav1d_ctx;

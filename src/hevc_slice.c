@@ -433,7 +433,14 @@ int heic_parse_slice_header(heic_ctx *ctx, const heic_nal *nal,
        current byte.  When the header is already byte-aligned, the old
        "only-if-unaligned" path skipped this and CABAC started one byte early
        (nokia_grid3x2: split_cu desync, mse ~13k). */
-    (void)heic_bs_bit(&bs); /* alignment_bit_equal_to_one */
+    /* alignment_bit_equal_to_one: a 0 here means the header was parsed past
+       its real end (or is damaged), and the slice data would start at the
+       wrong byte. ffmpeg and HM reject such a stream too. */
+    if (!heic_bs_bit(&bs) && !bs.error) {
+        heic_error(ctx, HEIC_SEVERITY_ERROR,
+                   "slice header: alignment bit is not 1");
+        bs.error = 1;
+    }
     heic_bs_byte_align(&bs);
 
     if (bs.error) {

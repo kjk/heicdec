@@ -2997,6 +2997,11 @@ static int slice_ctx_alloc_mc_wide(heic_slice_ctx *sc)
     return sc->mc_wide ? 0 : -1;
 }
 
+/* strict_bitstream: bytes the arithmetic decoder may ask for past the end
+   of the slice data. It reads a little ahead, so a complete slice can come
+   up a few bytes short; more means data is missing. */
+#define HEIC_STRICT_CABAC_OVERREAD 4u
+
 static int slice_ctx_init(heic_slice_ctx *sc, heic_ctx *ctx, const heic_sps *sps,
                           const heic_pps *pps, const heic_slice_header *sh,
                           const heic_frame *const *l0, int n_l0,
@@ -3588,6 +3593,20 @@ fail:
     return NULL;
 }
 
+/* end_of_subset_one_bit (H.265 7.3.8.1), read where a tile or a wavefront
+   row ends inside a slice. It is always 1; a 0 means the slice data is
+   damaged. Only strict_bitstream makes that an error. */
+static int end_of_subset_bit(heic_slice_ctx *sc)
+{
+    if (heic_cabac_decode_terminate(&sc->cabac) == 0
+        && sc->hctx->strict_bitstream) {
+        heic_error(sc->hctx, HEIC_SEVERITY_ERROR,
+                   "end_of_subset_one_bit is not 1");
+        return -1;
+    }
+    return 0;
+}
+
 int heic_hevc_picture_decode_segment(
     heic_hevc_picture *picture, const heic_slice_header *sh,
     const uint8_t *data, size_t len,
@@ -3765,6 +3784,12 @@ int heic_hevc_picture_decode_segment(
             heic_error(ctx, HEIC_SEVERITY_ERROR, "CABAC overread during CTU decode");
             return -1;
         }
+        if (ctx->strict_bitstream
+            && sc->cabac.overread_bytes > HEIC_STRICT_CABAC_OVERREAD) {
+            heic_error(ctx, HEIC_SEVERITY_ERROR,
+                       "slice data ends before the slice does");
+            return -1;
+        }
         if (addr_rs >= total || work->ctb_decoded[addr_rs]) {
             heic_error(ctx, HEIC_SEVERITY_ERROR,
                        "slice segment overlaps decoded CTU");
@@ -3803,7 +3828,15 @@ int heic_hevc_picture_decode_segment(
         }
 
         end_flag = heic_cabac_decode_terminate(&sc->cabac);
-        if (end_flag) break;
+        if (end_flag) {
+            if (ctx->strict_bitstream
+                && sc->cabac.overread_bytes > HEIC_STRICT_CABAC_OVERREAD) {
+                heic_error(ctx, HEIC_SEVERITY_ERROR,
+                           "slice data ends before the slice does");
+                return -1;
+            }
+            break;
+        }
 
         /* advance CTB */
         if (tiles) {
@@ -3821,7 +3854,7 @@ int heic_hevc_picture_decode_segment(
                                 work->row_bd, work->n_rows,
                                 sc->ctb_x, sc->ctb_y);
                 if (ct != pt) {
-                    (void)heic_cabac_decode_terminate(&sc->cabac);
+                    if (end_of_subset_bit(sc) != 0) return -1;
                     if (entry_idx < n_entry) {
                         uint32_t ebsp = work->entry_cum[entry_idx];
                         uint32_t rbsp = ep_positions && n_ep > 0
@@ -3851,7 +3884,7 @@ int heic_hevc_picture_decode_segment(
                        end_of_subset_one_bit, sync from the second CTB of
                        the row above (or re-init when the tile is one CTB
                        wide), then the next entry point. */
-                    (void)heic_cabac_decode_terminate(&sc->cabac);
+                    if (end_of_subset_bit(sc) != 0) return -1;
                     if (row_w > 1 && work->wpp_have_saved) {
                         memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
                         memcpy(sc->stat_coeff, work->wpp_stat_coeff,
@@ -3884,7 +3917,7 @@ int heic_hevc_picture_decode_segment(
                  * that neighbour does not exist so re-init like slice start
                  * (libde265 decode_substream / initialize_CABAC_models). */
                 if (wpp && sc->ctb_y < pic_h) {
-                    (void)heic_cabac_decode_terminate(&sc->cabac); /* end_of_subset */
+                    if (end_of_subset_bit(sc) != 0) return -1;
                     if (pic_w > 1 && work->wpp_have_saved) {
                         memcpy(sc->models, work->wpp_saved, sizeof(sc->models));
                         memcpy(sc->stat_coeff, work->wpp_stat_coeff,
