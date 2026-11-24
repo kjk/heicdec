@@ -1248,7 +1248,7 @@ export async function buildAflFuzz(
     throw e;
   }
   writeFileSync(stampPath, stampWant);
-  console.log("built heic_afl");
+  console.log(`built heic_afl_${target}${cmplog ? " (cmplog)" : ""}`);
   return aflExe;
 }
 
