@@ -6,15 +6,21 @@
 //   bun cmd/fuzz-afl.ts -import     copy AFL queue/crashes into shared corpus/crashes
 //   bun cmd/fuzz-afl.ts -cmin       minimize shared corpus with afl-cmin
 //   bun cmd/fuzz-afl.ts -V 60       stop after 60 seconds (smoke / CI)
+//   bun cmd/fuzz-afl.ts -target hevc   another target (heic, container, hevc)
 //
-// Shares the seed corpus with libFuzzer:
-//   fuzz/corpus/     seeds for both bun cmd/fuzz.ts and this script
-//   fuzz/afl-out/    AFL++ state (queue, hangs, crashes, fuzzer_stats) — gitignored
-//   fuzz/crashes/    tracked regression seeds (libFuzzer + imported AFL crashes)
+// A second engine next to libFuzzer, not a replacement: different mutation
+// strategies, and CmpLog (the main instance runs with a second binary that
+// logs comparison operands, so magic values and lengths get solved instead
+// of guessed). Both engines share the corpus, so each builds on the other.
+//   fuzz/corpus[-T]/   seeds for both bun cmd/fuzz.ts and this script
+//   fuzz/afl-out[-T]/  AFL++ state (queue, hangs, crashes, fuzzer_stats) — gitignored
+//   fuzz/crashes[-T]/  tracked regression seeds (libFuzzer + imported AFL crashes)
 //
-// Same harness as libFuzzer: test/fuzz_target.c (LLVMFuzzerTestOneInput).
+// Same harnesses as libFuzzer: test/fuzz_*.c (LLVMFuzzerTestOneInput).
 // Built with afl-clang-fast -fsanitize=fuzzer → AFL++ libAFLDriver + persistent
-// mode. Resume is automatic when fuzz/afl-out already has a campaign.
+// mode. Resume is automatic when the afl-out directory already has a campaign.
+//
+// Install: macOS `brew install afl++`, Debian/Ubuntu `sudo apt install afl++`.
 //
 // macOS once-per-machine setup (raises SysV shm limits; needs root):
 //   sudo afl-system-config
@@ -30,7 +36,7 @@ import {
   rmSync,
   renameSync,
 } from "node:fs";
-import { resolve, join, basename } from "node:path";
+import { resolve, join } from "node:path";
 import { createHash } from "node:crypto";
 import {
   buildAflFuzz,
@@ -41,34 +47,42 @@ import {
   zlibPaths,
   brotliPaths,
   aflTool,
+  isFuzzTarget,
   isWindows,
   isMac,
+  FUZZ_TARGETS,
+  type FuzzTarget,
 } from "./build";
 import { getDeps } from "./get-deps";
-import { corpusFiles } from "./corpus";
-
-const FUZZ = resolve(import.meta.dir, "..", "fuzz");
-const CORPUS = join(FUZZ, "corpus");
-const CRASHES = join(FUZZ, "crashes");
-const AFL_OUT = join(FUZZ, "afl-out");
+import {
+  corpusDir,
+  crashesDir,
+  dictPath,
+  FUZZ,
+  FUZZ_DIRS,
+  seedCorpus,
+} from "./fuzz-common";
 
 function usage(): never {
   console.error(
     `usage: bun cmd/fuzz-afl.ts [options]
   (no args)      build, seed corpus if empty, afl-fuzz until killed (resumes)
+  -target T      heic (default), container or hevc (see bun cmd/fuzz.ts -h)
   -jobs N        parallel AFL instances sharing -o (1 main + N-1 secondaries)
-  -max-len N     max input size in bytes (default 1000000; AFL MAX_FILE)
+  -max-len N     max input size in bytes (default: the target's, as in
+                 bun cmd/fuzz.ts; at most 1000000, AFL MAX_FILE)
   -repro FILE    replay a single crash artifact with the AFL harness and exit
   -import        merge AFL queue → fuzz/corpus and AFL crashes → fuzz/crashes
   -cmin          minimize fuzz/corpus with afl-cmin (writes corpus, keeps backup)
   -no-asan       build without AddressSanitizer (faster)
+  -no-cmplog     do not build / use the CmpLog binary
   -no-deps       skip auto-building dav1d/zlib/brotli (HEVC-only fuzz)
   -V SEC         stop after SEC seconds of fuzz time (afl-fuzz -V)
   -clean         force rebuild of the AFL harness
   -h, --help
 
-Corpus is shared with bun cmd/fuzz.ts (fuzz/corpus/). AFL state lives in
-fuzz/afl-out/. On macOS run once: sudo afl-system-config
+Corpus is shared with bun cmd/fuzz.ts (fuzz/corpus[-T]/). AFL state lives in
+fuzz/afl-out[-T]/. On macOS run once: sudo afl-system-config
 `,
   );
   process.exit(2);
@@ -76,7 +90,9 @@ fuzz/afl-out/. On macOS run once: sudo afl-system-config
 
 const args = process.argv.slice(2);
 let jobs = 1;
-let maxLen = 1_000_000; // AFL++ default MAX_FILE; raise with care (shm budget)
+let targetArg = "";
+let maxLenArg = 0;
+let noCmplog = false;
 let repro = "";
 let doImport = false;
 let cmin = false;
@@ -88,7 +104,9 @@ let clean = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === "-jobs") jobs = intArg(args[++i], "-jobs");
-  else if (a === "-max-len") maxLen = intArg(args[++i], "-max-len");
+  else if (a === "-target") targetArg = args[++i] ?? usage();
+  else if (a === "-no-cmplog") noCmplog = true;
+  else if (a === "-max-len") maxLenArg = intArg(args[++i], "-max-len");
   else if (a === "-repro") repro = args[++i] ?? usage();
   else if (a === "-import") doImport = true;
   else if (a === "-cmin") cmin = true;
@@ -113,30 +131,26 @@ if (isWindows) {
   console.error("AFL++ fuzzing is for macOS/*nix. On Windows use: bun cmd/fuzz.ts");
   process.exit(2);
 }
+if (targetArg && (!isFuzzTarget(targetArg) || FUZZ_TARGETS[targetArg].libheif)) {
+  console.error(`unknown or unsupported AFL++ target: ${targetArg}`);
+  usage();
+}
+const target: FuzzTarget = targetArg ? (targetArg as FuzzTarget) : "heic";
+const CORPUS = corpusDir(target);
+const CRASHES = crashesDir(target);
+const AFL_OUT = join(FUZZ, target === "heic" ? "afl-out" : `afl-out-${target}`);
+// AFL++ default MAX_FILE is 1 MB; raise with care (shm budget).
+const maxLen = maxLenArg || Math.min(FUZZ_DIRS[target].maxLen, 1_000_000);
 
 function requireTool(name: string): string {
   const p = aflTool(name);
   if (!p) {
-    console.error(`${name} not found. On macOS: brew install afl++`);
+    console.error(
+      `${name} not found. macOS: brew install afl++; Debian/Ubuntu: sudo apt install afl++`,
+    );
     process.exit(2);
   }
   return p;
-}
-
-/** Seed fuzz/corpus from deps/ when empty (shared with libFuzzer). */
-function seedCorpusIfEmpty(limit: number): void {
-  mkdirSync(CORPUS, { recursive: true });
-  if (readdirSync(CORPUS).length > 0) return;
-  let n = 0;
-  for (const f of corpusFiles()) {
-    if (statSync(f).size > limit) continue;
-    const base = basename(f);
-    let dest = join(CORPUS, base);
-    if (existsSync(dest)) dest = join(CORPUS, `${n}_${base}`);
-    copyFileSync(f, dest);
-    n++;
-  }
-  console.log(`seeded corpus with ${n} file(s) from the deps/ corpus`);
 }
 
 /** List files under dir (non-recursive) that look like fuzzer inputs. */
@@ -291,7 +305,12 @@ if (!noDeps) {
   if (!brotliPaths()) await buildBrotli();
 }
 
-const exe = await buildAflFuzz({ clean, asan: !noAsan });
+const exe = await buildAflFuzz({ target, clean, asan: !noAsan });
+// CmpLog: a second, uninstrumented-for-coverage binary the main instance
+// runs alongside (afl-fuzz -c).
+const cmplogExe = noCmplog
+  ? null
+  : await buildAflFuzz({ target, clean, cmplog: true });
 mkdirSync(CORPUS, { recursive: true });
 mkdirSync(CRASHES, { recursive: true });
 mkdirSync(AFL_OUT, { recursive: true });
@@ -320,7 +339,8 @@ if (doImport && !cmin) {
 // Ensure seeds exist before cmin / fuzz.
 if (readdirSync(CORPUS).length === 0) {
   await getDeps();
-  seedCorpusIfEmpty(maxLen);
+  const n = seedCorpus(target, maxLen);
+  console.log(`seeded ${FUZZ_DIRS[target].corpus} with ${n} file(s)`);
 }
 if (readdirSync(CORPUS).length === 0) {
   console.error("corpus is empty; fetch deps (bun cmd/get-deps.ts) and retry");
@@ -332,12 +352,12 @@ if (cmin) {
   const aflCmin = requireTool("afl-cmin");
   const mapSize = await dumpMapSize(exe);
   const env = baseAflEnv(mapSize);
-  const tmp = join(FUZZ, "corpus.cmin");
+  const tmp = `${CORPUS}.cmin`;
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
   console.log("minimizing corpus (afl-cmin)...");
   const rc = await runCapture(
-    [aflCmin, "-i", "corpus", "-o", "corpus.cmin", "-t", "25000", "--", exe],
+    [aflCmin, "-i", CORPUS, "-o", tmp, "-t", "25000", "--", exe],
     env,
   );
   if (rc !== 0) {
@@ -346,13 +366,13 @@ if (cmin) {
     process.exit(rc);
   }
   const before = readdirSync(CORPUS).length;
-  const bak = join(FUZZ, "corpus.precmin");
+  const bak = `${CORPUS}.precmin`;
   rmSync(bak, { recursive: true, force: true });
   renameSync(CORPUS, bak);
   renameSync(tmp, CORPUS);
   const after = readdirSync(CORPUS).length;
   console.log(
-    `corpus minimized: ${before} -> ${after} inputs (backup: fuzz/corpus.precmin)`,
+    `corpus minimized: ${before} -> ${after} inputs (backup: ${bak})`,
   );
   if (doImport) {
     /* no-op: cmin already rewrote corpus */
@@ -405,7 +425,8 @@ const beforeCrashes = new Set(listFiles(CRASHES));
 process.on("SIGINT", () => {});
 
 console.log(
-  `AFL++ fuzzing (${jobs} ${jobs === 1 ? "instance" : "instances"}); ` +
+  `AFL++ fuzzing ${target} (${jobs} ${jobs === 1 ? "instance" : "instances"}` +
+    `${cmplogExe ? ", cmplog" : ""}); ` +
     `seeds=${CORPUS}\n  state=${AFL_OUT}\n  Ctrl-C to stop; rerun to resume; ` +
     `bun cmd/fuzz-afl.ts -import merges queue → shared corpus.`,
 );
@@ -419,18 +440,21 @@ function spawnAfl(
   quiet: boolean,
 ): ReturnType<typeof Bun.spawn> {
   const resume = existsSync(join(AFL_OUT, name, "queue"));
-  // Paths relative to cwd=FUZZ for shorter UI.
-  const iFlag = resume ? "-" : "corpus";
+  const iFlag = resume ? "-" : CORPUS;
+  const dict = dictPath(target);
   const argv = [
     aflFuzz,
     "-i",
     iFlag,
     "-o",
-    "afl-out",
+    AFL_OUT,
     role,
     name,
     "-G",
     String(maxLen),
+    ...(existsSync(dict) ? ["-x", dict] : []),
+    // CmpLog costs speed, so only the main instance runs it.
+    ...(role === "-M" && cmplogExe ? ["-c", cmplogExe] : []),
     // HEIC decode under ASan can be slow (grids, 10-bit). Fixed 5s — auto
     // scaling with '+' often drops below the slowest dry-run cases.
     "-t",
@@ -472,15 +496,15 @@ if (imported.queue > 0 || imported.crashes > 0) {
 
 const fresh = listFiles(CRASHES).filter((f) => !beforeCrashes.has(f));
 if (fresh.length > 0) {
-  console.log(`\n${fresh.length} new crash artifact(s) in fuzz/crashes:`);
+  console.log(`\n${fresh.length} new crash artifact(s) in ${CRASHES}:`);
   for (const f of fresh) {
     console.log(`  ${f}`);
     console.log(`    reproduce: ${exe} ${join(CRASHES, f)}`);
     console.log(
-      `    or:        bun cmd/fuzz-afl.ts -repro ${join("fuzz", "crashes", f)}`,
+      `    or:        bun cmd/fuzz-afl.ts -target ${target} -repro ${join(CRASHES, f)}`,
     );
     console.log(
-      `    or:        bun cmd/fuzz.ts -repro ${join("fuzz", "crashes", f)}`,
+      `    or:        bun cmd/fuzz.ts -target ${target} -repro ${join(CRASHES, f)}`,
     );
   }
   process.exit(1);

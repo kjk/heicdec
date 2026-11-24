@@ -149,36 +149,68 @@ bun cmd/verify-wasm.ts <file.heic>
 bun cmd/dump_heif.ts <file.heic>   # debug: print the ISOBMFF box tree
 ```
 
-### Fuzzing (memory-safety)
+### Fuzzing
 
-- `bun cmd/fuzz.ts` — coverage-guided fuzzing (libFuzzer + ASan).
-  `test/fuzz_target.c` opens each input as a HEIC/HEIF/AVIF, probes info,
-  decodes primary (+ thumbnail, gain map, sequence frames via both the
-  one-shot and stateful APIs), and pulls EXIF/XMP/ICC, with a budgeted
-  allocator (256 MB live). Builds into `out/fuzz/heic_fuzz.exe` via
-  `buildFuzz()`. First run seeds `fuzz/corpus/` from the deps/ corpus (files
-  over `-max-len` skipped); the corpus dir **is** the checkpoint — kill to
-  stop, rerun to resume. Auto-builds dav1d/zlib/brotli when missing so AVIF +
-  unci compression are covered (`-no-deps` skips that auto-build; codecs
-  already built under `out/` are still linked).
-- Flags: `-jobs N`, `-repro FILE`, `-check-crashes` (CI: replay all
-  `fuzz/crashes/*`, expect exit 0), `-minimize` (`-merge=1` corpus shrink),
-  `-max-len N`, `-no-deps`. Linux/macOS CI may set `HEIC_FUZZ_UBSAN=1` for
-  ASan+UBSan+fuzzer.
+Two engines, the same targets, shared corpora. `bun cmd/fuzz.ts` is libFuzzer
+(all platforms); `bun cmd/fuzz-afl.ts` is AFL++ (Linux / macOS).
+
+**Targets** (`-target T`, each `test/fuzz_*.c` with `LLVMFuzzerTestOneInput`):
+
+| Target | Input | What it runs | Corpus / crashes under `fuzz/` |
+|--------|-------|--------------|--------------------------------|
+| `heic` (default) | whole file, ≤ 256 KB | open, decode primary + thumbnail + gain map + sequence frames, EXIF/XMP/ICC | `corpus`, `crashes` |
+| `container` | whole file, ≤ 64 KB | parsing only: info, sizes, sequence tables, metadata. Thousands of runs per second | `corpus-container`, `crashes-container` |
+| `hevc` | raw Annex B, ≤ 64 KB | the HEVC decoder alone, up to 4 pictures of at most 416x240 | `corpus-hevc`, `crashes-hevc` |
+| `diff` | whole file, ≤ 256 KB | our RGB against libheif's (Linux / macOS, needs the oracle build) | `corpus-diff`, `crashes-diff` |
+
+All use a budgeted allocator (256 MB live), decode nothing above 2 Mpx, and
+abort on a leak (`test/fuzz_common.h`). Corpus directories are gitignored and
+**are** the checkpoint — kill to stop, rerun to resume. Crash directories are
+tracked: artifacts become regression inputs.
+
+- **Seeds**: the first run (or `-reseed`) fills the corpus from deps/. Files
+  over the size cap are cut to it, not skipped. `hevc` gets the conformance
+  streams, the streams of the HEIC corpus converted to Annex B, and the
+  tracked `fuzz/seeds-hevc/` (small HM streams, one per group of coding
+  tools; `fuzz/gen_hevc_seeds.ts`). `fuzz/seeds-<target>/` works for any
+  target.
+- **Dictionaries**: `fuzz/heic.dict` (box types, brands, URNs, size patterns)
+  and `fuzz/hevc.dict` (start codes, NAL headers) are passed automatically.
+- **Structure-aware mutator**: `test/fuzz_mutator.c` (libFuzzer builds of the
+  whole-file targets) mutates one box payload and repairs box sizes and
+  iloc / stco / co64 offsets, so mutations reach past the container.
+  `-no-mutator` turns it off.
+- **Sanitizers**: ASan everywhere; UBSan too on Linux / macOS, findings fatal
+  (`-no-ubsan`); `-msan` swaps ASan for MemorySanitizer (Linux; pure-C
+  build without dav1d/zlib/brotli) and checks that every decoded pixel is
+  initialized. Builds go to `out/fuzz/<asan|asan-ubsan|msan-ubsan|cov>/`.
+- **Coverage**: `bun cmd/fuzz.ts -target T -coverage` runs the corpus through
+  a coverage build and lists per-file coverage and the functions never
+  entered (HTML under `out/fuzz/cov/`). Add seeds for the blind spots.
+- **Differential target**: only inputs both decoders accept are compared, and
+  both run strict (libheif `strict_decoding`, ours the internal
+  `ctx->strict_bitstream`), because what a lenient decoder shows for a
+  damaged stream is arbitrary. Nonsense colour matrices and crop fractions,
+  and predictive images, are skipped. It runs in fork mode and keeps going
+  past findings. A finding is a lead: check it with `heic_test -verify` and
+  a third decoder (ffmpeg, HM) before calling it a bug.
+- Other flags: `-jobs N`, `-time SEC`, `-max-len N`, `-repro FILE`,
+  `-check-crashes` (CI: every tracked artifact with its target, expect exit
+  0), `-minimize`, `-build-only`, `-clean`, `-no-deps` (do not auto-build
+  dav1d/zlib/brotli; ones already under `out/` are still linked).
+- `bun cmd/fuzz-afl.ts` — the `heic`, `container` and `hevc` targets via
+  **AFL++** (`brew install afl++` / `sudo apt install afl++`). The main
+  instance runs with a CmpLog binary (`-no-cmplog` to skip) and the
+  dictionary. Shares the corpus with libFuzzer; AFL state in
+  `fuzz/afl-out[-T]/` (gitignored). On exit (and with `-import`),
+  queue/crashes merge into the shared corpus and crash directory. Flags:
+  `-target T`, `-jobs N`, `-repro FILE`, `-cmin`, `-import`, `-no-asan`,
+  `-V SEC`, `-no-deps`. Once per machine on macOS: `sudo afl-system-config`.
 - GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
   + amalgamation, Windows clang crash regression, Linux clang + full oracle +
-  amalgamation + UBSan crashes, macOS clang + full oracle + amalgamation, WASM
-  decode smoke). deps/ and oracle build trees under `out/*_build` are cached
-  per OS.
-- `bun cmd/fuzz-afl.ts` — same harness via **AFL++** (macOS/*nix;
-  `brew install afl++`). Shares `fuzz/corpus/` with libFuzzer; AFL state in
-  `fuzz/afl-out/` (gitignored). On exit (and with `-import`), queue/crashes
-  merge into the shared corpus and `fuzz/crashes/`. Flags: `-jobs N`,
-  `-repro FILE`, `-cmin`, `-import`, `-no-asan`, `-V SEC`, `-no-deps`.
-  Once per machine on macOS: `sudo afl-system-config` (raises SysV shm limits).
-- `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so crash inputs
-  become regression seeds. Reproduce with
-  `bun cmd/fuzz.ts -repro fuzz/crashes/<artifact>` (or `fuzz-afl.ts -repro`).
+  amalgamation + fuzz target builds incl. MSan + crash regression under
+  ASan/UBSan, macOS clang + full oracle + amalgamation, WASM decode smoke).
+  deps/ and oracle build trees under `out/*_build` are cached per OS.
 
 WASM: pure-C HEVC + unci only (no `HEIC_HAVE_DAV1D` / zlib / brotli).
 `bun cmd/build-dist.ts` also rebuilds split `dist/wasm/heic.js` +

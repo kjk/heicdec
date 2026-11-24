@@ -564,6 +564,25 @@
 - [x] Overlay with AV1 inputs has a fixture: generated
       `regress/iovl_avif_red_fill.avif` (two overlapping copies of a libheif
       test AVIF on a red canvas) matches libheif at maxdiff 1.
+- [x] Fuzzing rework (`cmd/fuzz.ts`, `cmd/fuzz-afl.ts`, `test/fuzz_*.c`):
+      - targets `heic` (whole file), `container` (parser only, ~8,000
+        exec/s against ~100), `hevc` (raw Annex B) and `diff` (pixels vs
+        libheif); 2 Mpx cap, 256 KB / 64 KB inputs, oversized seeds cut
+        instead of skipped
+      - dictionaries (`fuzz/*.dict`) and an ISOBMFF-aware libFuzzer mutator
+        that repairs box sizes and iloc/stco offsets (about 4% more features
+        than plain mutation in a 90 s A/B on `container`)
+      - UBSan on by default on Linux/macOS (fatal), `-msan` with an explicit
+        check that decoded pixels are initialized, `-coverage` report
+      - 14 small HM seed streams (`fuzz/seeds-hevc/`) for coding tools the
+        cut conformance streams did not reach; all 14 match HM's decoder
+      - AFL++ driver: targets, dictionary, CmpLog (not run here: no AFL++)
+      - (`HEIC_FUZZ_UBSAN` above is gone; UBSan is a flag now.)
+- [x] Found by the differential target: a slice header whose
+      alignment_bit_equal_to_one is 0 was accepted (ffmpeg and HM reject it);
+      now an error. Internal `ctx->strict_bitstream` (off by default, on in
+      the differential target) also rejects slice data that runs out and a
+      zero end_of_subset_one_bit; with it forced on, all tests still pass.
 
 ## Investigation notes
 

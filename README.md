@@ -106,9 +106,10 @@ bun cmd/tests.ts -info -all      # open/probe only
 bun cmd/build.ts -libheif        # also link strukturag libheif oracle
 bun cmd/bench.ts -rand 5         # compact best-of-3 timing vs libheif
 bun cmd/bench.ts -verbose -rand 5 # also show open/decode/close timing
-bun cmd/fuzz.ts                  # libFuzzer + ASan (seeded from deps corpus)
-bun cmd/fuzz.ts -check-crashes   # replay fuzz/crashes/* under ASan (CI)
-bun cmd/fuzz-afl.ts              # AFL++ on macOS (shares fuzz/corpus/)
+bun cmd/fuzz.ts                  # libFuzzer + ASan, whole-file target
+bun cmd/fuzz.ts -target hevc     # other targets: container, hevc, diff
+bun cmd/fuzz.ts -check-crashes   # replay the tracked crash artifacts (CI)
+bun cmd/fuzz-afl.ts              # AFL++ on Linux/macOS (shares the corpora)
 bun cmd/build-dist.ts            # amalgamation → dist/ (+ split JS/WASM demo)
 bun cmd/build-wasm.ts            # WebAssembly drop only (bootstraps emsdk if needed)
 bun cmd/run-wasm-demo.ts         # serve dist/wasm/demo.html on localhost:8000
@@ -116,16 +117,30 @@ bun cmd/verify-wasm.ts single.heic
 bun cmd/verify-release.ts        # Sumatra/API/memory-limit + amalgamation + WASM
 ```
 
-Fuzzing notes: first run builds optional dav1d/zlib/brotli when missing, seeds
-`fuzz/corpus/` from the corpus, then mutates until you Ctrl-C (rerun resumes).
-Crashes land in `fuzz/crashes/` (commit them). Useful flags: `-jobs N`,
-`-repro FILE`, `-minimize`, `-no-deps` (skip auto-building dav1d/zlib/brotli; already-built ones are still linked).
+Fuzzing notes: the first run builds optional dav1d/zlib/brotli when missing,
+seeds the target's corpus from the test files, then mutates until you Ctrl-C
+(rerun resumes). Crashes land in `fuzz/crashes[-<target>]/` (commit them).
 
-On macOS you can also use AFL++ (`brew install afl++`, then once
-`sudo afl-system-config`): `bun cmd/fuzz-afl.ts` builds the same
-`LLVMFuzzerTestOneInput` harness with `afl-clang-fast` and shares
-`fuzz/corpus/` with libFuzzer. AFL state is in `fuzz/afl-out/`; use
-`-import` (also runs on exit) to merge the queue back into the shared corpus.
+| Target | What it fuzzes |
+|--------|----------------|
+| `heic` (default) | whole files through open, decode and metadata |
+| `container` | the ISOBMFF/HEIF parser alone, thousands of inputs per second |
+| `hevc` | the HEVC decoder alone, on raw Annex B streams |
+| `diff` | decoded pixels against libheif (Linux/macOS) |
+
+Useful flags: `-jobs N`, `-time SEC`, `-repro FILE`, `-minimize`,
+`-coverage` (which code the corpus never reaches), `-msan` (MemorySanitizer,
+Linux), `-no-deps` (skip auto-building dav1d/zlib/brotli; already-built ones
+are still linked). ASan is always on; UBSan too on Linux and macOS. The
+whole-file targets use a dictionary and a mutator that keeps the box
+structure valid.
+
+AFL++ is a second engine for Linux and macOS (`sudo apt install afl++` /
+`brew install afl++`, on macOS then once `sudo afl-system-config`):
+`bun cmd/fuzz-afl.ts [-target T]` builds the same harnesses with
+`afl-clang-fast`, runs with CmpLog and the dictionary, and shares the corpus
+with libFuzzer. AFL state is in `fuzz/afl-out[-T]/`; use `-import` (also runs
+on exit) to merge the queue back into the shared corpus.
 
 ### WebAssembly demo
 

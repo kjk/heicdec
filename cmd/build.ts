@@ -809,94 +809,242 @@ function findFuzzClang(): string {
 }
 
 const FUZZ_DIR = `${OUT_ROOT}/fuzz`;
-export const FUZZ_EXE = `${FUZZ_DIR}/${isWindows ? "heic_fuzz.exe" : "heic_fuzz"}`;
 
-// libFuzzer target: SRCS + test/fuzz_target.c, ASan + fuzzer (-O1 for readable
-// traces). No main() — libFuzzer provides it. Links dav1d/zlib/brotli when
-// present so AVIF + unci compression paths are under coverage.
-export async function buildFuzz(clean = false): Promise<string> {
-  mkdirSync(FUZZ_DIR, { recursive: true });
-  const testSrc = `${ROOT}/test/fuzz_target.c`;
-  /* Windows: MSVC /MD deps need __imp__aligned_malloc; see fuzz_win_md_shim.c. */
-  const winShimSrc = `${ROOT}/test/fuzz_win_md_shim.c`;
-  const units: { src: string; obj: string }[] = [
-    ...SRCS.map((s) => ({
-      src: `${ROOT}/${s}`,
-      obj: `${FUZZ_DIR}/${objBase(s)}.o`,
-    })),
-    {
-      src: testSrc,
-      obj: `${FUZZ_DIR}/fuzz_target.o`,
-    },
-    ...(isWindows
-      ? [{ src: winShimSrc, obj: `${FUZZ_DIR}/fuzz_win_md_shim.o` }]
-      : []),
-  ];
-  if (clean) {
-    for (const u of units) rmSync(u.obj, { force: true });
-    rmSync(FUZZ_EXE, { force: true });
+/* ----- fuzz targets (shared by libFuzzer and AFL++) ----- */
+
+export type FuzzTarget = "heic" | "container" | "hevc" | "diff";
+
+export const FUZZ_TARGETS: Record<
+  FuzzTarget,
+  {
+    /** file in test/ with LLVMFuzzerTestOneInput */
+    src: string;
+    /** link test/fuzz_mutator.c (ISOBMFF-aware; libFuzzer only) */
+    mutator: boolean;
+    /** needs the libheif oracle (Linux / macOS) */
+    libheif: boolean;
+    desc: string;
   }
+> = {
+  heic: {
+    src: "fuzz_target.c",
+    mutator: true,
+    libheif: false,
+    desc: "whole file: open, decode, metadata",
+  },
+  container: {
+    src: "fuzz_container.c",
+    mutator: true,
+    libheif: false,
+    desc: "ISOBMFF/HEIF parsing only, no pixel decode",
+  },
+  hevc: {
+    src: "fuzz_hevc.c",
+    mutator: false,
+    libheif: false,
+    desc: "raw Annex B HEVC stream, no container",
+  },
+  diff: {
+    src: "fuzz_diff.c",
+    mutator: true,
+    libheif: true,
+    desc: "decoded pixels compared with libheif",
+  },
+};
 
-  const dav1d = dav1dPaths();
-  const zlib = zlibPaths();
-  const brotli = brotliPaths();
+export function isFuzzTarget(name: string): name is FuzzTarget {
+  return Object.hasOwn(FUZZ_TARGETS, name);
+}
+
+export type FuzzBuildOpts = {
+  target?: FuzzTarget;
+  /** asan (default) or msan (Linux only; pure C, no dav1d/zlib/brotli) */
+  sanitizer?: "asan" | "msan";
+  /** add UBSan, findings are fatal (not on Windows) */
+  ubsan?: boolean;
+  /** source-based coverage build instead of a sanitizer build */
+  coverage?: boolean;
+  /** leave dav1d / zlib / brotli out even when they are built */
+  noDeps?: boolean;
+  clean?: boolean;
+};
+
+function fuzzVariant(opts: FuzzBuildOpts): string {
+  if (opts.coverage) return "cov";
+  const base = opts.sanitizer === "msan" ? "msan" : "asan";
+  return opts.ubsan ? `${base}-ubsan` : base;
+}
+
+/** Where buildFuzz puts the executable for these options. */
+export function fuzzExePath(opts: FuzzBuildOpts = {}): string {
+  const target = opts.target ?? "heic";
+  return `${FUZZ_DIR}/${fuzzVariant(opts)}/${binName(`heic_fuzz_${target}`)}`;
+}
+
+/** llvm-profdata / llvm-cov / llvm-symbolizer that match the fuzz clang. */
+export function findLlvmTool(name: string): string | null {
+  const cc = findFuzzClang();
+  const dir = cc.includes("/") ? cc.slice(0, cc.lastIndexOf("/")) : "";
+  const version = /-(\d+)$/.exec(cc)?.[1];
+  const names = version ? [`${name}-${version}`, name] : [name];
+  for (const n of names) {
+    if (dir && existsSync(`${dir}/${n}`)) return `${dir}/${n}`;
+    const found = Bun.which(n);
+    if (found) return found;
+  }
+  /* Debian/Ubuntu: only versioned names (llvm-cov-18) may be installed. */
+  for (let v = 30; v >= 12; v--) {
+    const found = Bun.which(`${name}-${v}`);
+    if (found) return found;
+  }
+  return null;
+}
+
+// libFuzzer build of one fuzz target: SRCS + test/<target>.c (+ the custom
+// mutator) with a sanitizer and -fsanitize=fuzzer (-O1 for readable traces).
+// No main() \u2014 libFuzzer provides it. Each variant (asan, asan-ubsan, msan,
+// msan-ubsan, cov) has its own directory under out/fuzz; the library objects
+// in it are shared by the targets. Links dav1d/zlib/brotli when present so
+// AVIF + unci compression paths are under coverage.
+export async function buildFuzz(opts: FuzzBuildOpts = {}): Promise<string> {
+  const target = opts.target ?? "heic";
+  const info = FUZZ_TARGETS[target];
+  const msan = !opts.coverage && opts.sanitizer === "msan";
+  const variant = fuzzVariant(opts);
+  const dir = `${FUZZ_DIR}/${variant}`;
+  const exe = fuzzExePath(opts);
+
+  if (msan && process.platform !== "linux")
+    throw new Error("MemorySanitizer fuzzing needs Linux (clang -fsanitize=memory)");
+  if (opts.ubsan && isWindows)
+    throw new Error(
+      "UBSan fuzzing is not supported on Windows (ASan+UBSan with the prebuilt /MD deps is flaky)",
+    );
+  if (info.libheif && isWindows)
+    throw new Error(`fuzz target ${target} is Linux / macOS only`);
+  if (info.libheif && msan)
+    throw new Error(`fuzz target ${target} links libheif, which MSan cannot check`);
+
+  /* MSan reports every value that passed through uninstrumented code, so the
+     prebuilt dav1d / zlib / brotli cannot be linked into that build. */
+  const noDeps = !!opts.noDeps || msan;
+  const heif = info.libheif ? libheifPaths() : null;
+  if (info.libheif && !heif)
+    throw new Error(
+      "libheif oracle not built. Run: bun cmd/build.ts -build-libheif",
+    );
+  const dav1d = noDeps && !heif ? null : dav1dPaths();
+  const zlib = noDeps ? null : zlibPaths();
+  const brotli = noDeps ? null : brotliPaths();
   const comp = compressFeatureFlags(zlib, brotli);
   let def = comp.def;
-  let inc = ` -I${ROOT}/src` + comp.inc;
+  let inc = ` -I${ROOT}/src -I${ROOT}/test` + comp.inc;
   if (dav1d) {
     def += " -DHEIC_HAVE_DAV1D";
     inc += dav1dIncFlags(dav1d);
   }
-
-  const headers = trackedHeaders();
-  const objStale = (u: { src: string; obj: string }) =>
-    needsRebuild(u.obj, u.src, ...headers);
-  const staleObj = units.some(objStale);
-  const staleExe = needsRebuild(
-    FUZZ_EXE,
-    ...units.map((u) => u.obj),
-    ...(dav1d ? [dav1d.lib] : []),
-    ...comp.libs,
-  );
-  if (!staleObj && !staleExe && existsSync(FUZZ_EXE)) {
-    if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
-    console.log("heic_fuzz up to date");
-    return FUZZ_EXE;
+  if (heif) {
+    def += " -DLIBHEIF_STATIC_BUILD -DLIBDE265_STATIC_BUILD";
+    for (const d of heif.heifInc) inc += ` -I${d}`;
   }
 
+  mkdirSync(dir, { recursive: true });
+  /* Windows: MSVC /MD deps need __imp__aligned_malloc; see fuzz_win_md_shim.c. */
+  const units: { src: string; obj: string }[] = [
+    ...SRCS.map((s) => ({
+      src: `${ROOT}/${s}`,
+      obj: `${dir}/${objBase(s)}.o`,
+    })),
+    {
+      src: `${ROOT}/test/${info.src}`,
+      obj: `${dir}/${objBase(info.src)}.o`,
+    },
+    ...(info.mutator
+      ? [{ src: `${ROOT}/test/fuzz_mutator.c`, obj: `${dir}/fuzz_mutator.o` }]
+      : []),
+    ...(isWindows
+      ? [
+          {
+            src: `${ROOT}/test/fuzz_win_md_shim.c`,
+            obj: `${dir}/fuzz_win_md_shim.o`,
+          },
+        ]
+      : []),
+  ];
+
   const cc = findFuzzClang();
-  /* HEIC_FUZZ_UBSAN=1 adds undefined sanitizer (Linux/macOS CI; Windows clang
-   * ASan+UBSan together is flaky with prebuilt /MD deps). */
-  const wantUbsan =
-    process.env.HEIC_FUZZ_UBSAN === "1" || process.env.HEIC_FUZZ_UBSAN === "true";
-  const sanitize = wantUbsan && !isWindows
-    ? "address,undefined,fuzzer"
-    : "address,fuzzer";
-  // -O1 for readable ASan traces (same as djvudec fuzz).
-  const cflags = `-fsanitize=${sanitize} ${clangCFlags("-g -O1")}${def}${inc}`;
+  const sanitize = opts.coverage
+    ? "fuzzer"
+    : [msan ? "memory" : "address", ...(opts.ubsan ? ["undefined"] : []), "fuzzer"].join(",");
+  const extra = opts.coverage
+    ? " -fprofile-instr-generate -fcoverage-mapping"
+    : (msan ? " -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer" : "") +
+      (opts.ubsan ? " -fno-sanitize-recover=undefined" : "");
+  // -O1 for readable sanitizer traces (same as djvudec fuzz).
+  const cflags = `-fsanitize=${sanitize}${extra} ${clangCFlags("-g -O1")}${def}${inc}`;
+
+  /* The library objects are shared by the targets of a variant: rebuild
+     them all when the flags they were compiled with change. */
+  const stampPath = `${dir}/.flags`;
+  const stampWant = `${cc} ${cflags}`;
+  const stampChanged =
+    !existsSync(stampPath) || readFileSync(stampPath, "utf8") !== stampWant;
+  if (opts.clean || stampChanged) {
+    for (const u of units) rmSync(u.obj, { force: true });
+    rmSync(exe, { force: true });
+  }
+
+  const headers = [...trackedHeaders(), `${ROOT}/test/fuzz_common.h`];
+  const objStale = (u: { src: string; obj: string }) =>
+    needsRebuild(u.obj, u.src, ...headers);
+  /* libheif brings its own needs: dav1d, and the brotli encoder / zlib it
+     was configured with, whether or not our side uses them. */
+  const heifBrotli = heif ? brotliPaths() : null;
+  const heifZlib = heif ? zlibPaths() : null;
+  const linkInputs = heif
+    ? [
+        heif.heifLib,
+        heif.de265Lib,
+        heif.dav1dLib,
+        ...(heifBrotli ? [heifBrotli.enc, heifBrotli.dec, heifBrotli.common] : []),
+        ...(heifZlib ? [heifZlib.lib] : []),
+      ]
+    : [...(dav1d ? [dav1d.lib] : []), ...comp.libs];
+  const stale = units.filter(objStale);
+  const name = `heic_fuzz_${target}`;
+  if (
+    !stale.length && existsSync(exe)
+    && !needsRebuild(exe, ...units.map((u) => u.obj), ...linkInputs)
+  ) {
+    if (isWindows) await copyAsanRuntimeDll(dir);
+    console.log(`${name} (${variant}) up to date`);
+    return exe;
+  }
+
   console.log(
-    `building heic_fuzz (clang+${sanitize}` +
-      `${dav1d ? "+dav1d" : ""}${zlib ? "+zlib" : ""}${brotli ? "+brotli" : ""})...`,
+    `building ${name} (clang+${sanitize}` +
+      `${opts.coverage ? "+coverage" : ""}` +
+      `${heif ? "+libheif" : ""}${dav1d ? "+dav1d" : ""}` +
+      `${zlib ? "+zlib" : ""}${brotli ? "+brotli" : ""})...`,
   );
   try {
-    for (const u of units) {
-      if (!objStale(u)) continue;
-      await $`${cc} ${{ raw: cflags }} -c -o ${u.obj} ${u.src}`.cwd(ROOT);
-    }
-    const objs = units.map((u) => u.obj);
-    const linkLibs: string[] = [];
-    if (dav1d) linkLibs.push(dav1d.lib);
-    linkLibs.push(...comp.libs);
+    await runPool(stale, 8, async (u) => {
+      await $`${cc} ${{ raw: cflags }} -c -o ${u.obj} ${u.src}`.cwd(ROOT).quiet();
+    });
+    writeFileSync(stampPath, stampWant);
+    const linkLibs: string[] = [...linkInputs];
     if (!isWindows) linkLibs.push("-lpthread", "-lm");
+    /* libheif and libde265 are C++. */
+    if (heif) linkLibs.push(isMac ? "-lc++" : "-lstdc++");
     const linkExtra = linkLibs.length ? ` ${linkLibs.join(" ")}` : "";
-    if (needsRebuild(FUZZ_EXE, ...objs, ...(dav1d ? [dav1d.lib] : []), ...comp.libs)) {
-      /* ASan inflates stack frames; Windows default 1MB is tight for nested
-       * HEVC TT/CQT + residual under fuzz REDUCE. Give the fuzzer 8MB. */
-      const stackFlag = isWindows ? " -Wl,/STACK:8388608" : "";
-      await $`${cc} -fsanitize=${sanitize} ${{ raw: objs.join(" ") }}${{ raw: linkExtra }}${{ raw: stackFlag }} -o ${FUZZ_EXE}`.cwd(
-        ROOT,
-      );
-    }
+    /* ASan inflates stack frames; Windows default 1MB is tight for nested
+     * HEVC TT/CQT + residual under fuzz REDUCE. Give the fuzzer 8MB. */
+    const stackFlag = isWindows ? " -Wl,/STACK:8388608" : "";
+    const linkSan = `-fsanitize=${sanitize}${opts.coverage ? " -fprofile-instr-generate" : ""}`;
+    const objs = units.map((u) => u.obj).join(" ");
+    await $`${cc} ${{ raw: linkSan }} ${{ raw: objs }}${{ raw: linkExtra }}${{ raw: stackFlag }} -o ${exe}`.cwd(
+      ROOT,
+    );
   } catch (e) {
     if (isMac && cc === "clang") {
       console.error("\nfuzz build failed: Apple's clang does not include libFuzzer.");
@@ -906,15 +1054,22 @@ export async function buildFuzz(clean = false): Promise<string> {
     }
     throw e;
   }
-  if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
-  console.log("built heic_fuzz");
-  return FUZZ_EXE;
+  if (isWindows) await copyAsanRuntimeDll(dir);
+  console.log(`built ${name} (${variant})`);
+  return exe;
 }
 
 /* ----- AFL++ target (driven by cmd/fuzz-afl.ts; macOS / *nix) ----- */
 
 const FUZZ_AFL_DIR = `${OUT_ROOT}/fuzz-afl`;
-export const FUZZ_AFL_EXE = `${FUZZ_AFL_DIR}/heic_afl`;
+/** Where buildAflFuzz puts the executable for these options. */
+export function aflExePath(
+  opts: { target?: FuzzTarget; asan?: boolean; cmplog?: boolean } = {},
+): string {
+  const target = opts.target ?? "heic";
+  const variant = opts.cmplog ? "cmplog" : opts.asan !== false ? "asan" : "plain";
+  return `${FUZZ_AFL_DIR}/${variant}/heic_afl_${target}`;
+}
 
 /** Prefer Homebrew AFL++ wrappers (afl-clang-fast → Homebrew LLVM). */
 export function findAflCc(): string {
@@ -947,8 +1102,15 @@ export function aflTool(name: string): string | null {
 // with afl-clang-fast -fsanitize=fuzzer (AFL++ swaps that for libAFLDriver.a
 // + persistent-mode shared-memory input). Optional ASan via AFL_USE_ASAN.
 // dav1d/zlib/brotli are linked uninstrumented (prebuilt) when present.
+// cmplog: the second binary afl-fuzz -c wants (AFL_LLVM_CMPLOG=1, no ASan);
+// it logs comparison operands so AFL++ can solve magic values and lengths.
 export async function buildAflFuzz(
-  opts: { clean?: boolean; asan?: boolean } = {},
+  opts: {
+    target?: FuzzTarget;
+    clean?: boolean;
+    asan?: boolean;
+    cmplog?: boolean;
+  } = {},
 ): Promise<string> {
   if (isWindows) {
     throw new Error(
@@ -956,8 +1118,15 @@ export async function buildAflFuzz(
     );
   }
   const clean = !!opts.clean;
-  const asan = opts.asan !== false; // default on
-  mkdirSync(FUZZ_AFL_DIR, { recursive: true });
+  const cmplog = !!opts.cmplog;
+  const asan = !cmplog && opts.asan !== false; // default on
+  const target = opts.target ?? "heic";
+  const info = FUZZ_TARGETS[target];
+  if (info.libheif)
+    throw new Error(`fuzz target ${target} is not built for AFL++ (use bun cmd/fuzz.ts)`);
+  const aflExe = aflExePath({ target, asan, cmplog });
+  const aflDir = aflExe.slice(0, aflExe.lastIndexOf("/"));
+  mkdirSync(aflDir, { recursive: true });
 
   const cc = findAflCc();
   const ccOk =
@@ -968,18 +1137,20 @@ export async function buildAflFuzz(
     cc === "afl-cc";
   if (!ccOk && !Bun.which("afl-clang-fast") && !Bun.which("afl-cc")) {
     throw new Error(
-      "afl-clang-fast not found. On macOS: brew install afl++\n" +
+      "afl-clang-fast not found. macOS: brew install afl++; Debian/Ubuntu: sudo apt install afl++\n" +
         "  (uses Homebrew LLVM for instrumentation)",
     );
   }
 
-  const testSrc = `${ROOT}/test/fuzz_target.c`;
   const units: { src: string; obj: string }[] = [
     ...SRCS.map((s) => ({
       src: `${ROOT}/${s}`,
-      obj: `${FUZZ_AFL_DIR}/${objBase(s)}.o`,
+      obj: `${aflDir}/${objBase(s)}.o`,
     })),
-    { src: testSrc, obj: `${FUZZ_AFL_DIR}/fuzz_target.o` },
+    {
+      src: `${ROOT}/test/${info.src}`,
+      obj: `${aflDir}/${objBase(info.src)}.o`,
+    },
   ];
 
   const dav1d = dav1dPaths();
@@ -987,8 +1158,8 @@ export async function buildAflFuzz(
   const brotli = brotliPaths();
   const comp = compressFeatureFlags(zlib, brotli);
   const stampWant =
-    `asan=${asan ? 1 : 0};dav1d=${dav1d ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0};cc=${cc}`;
-  const stampPath = `${FUZZ_AFL_DIR}/.afl_features`;
+    `asan=${asan ? 1 : 0};cmplog=${cmplog ? 1 : 0};dav1d=${dav1d ? 1 : 0};zlib=${zlib ? 1 : 0};brotli=${brotli ? 1 : 0};cc=${cc}`;
+  const stampPath = `${aflDir}/.afl_features`;
   const stampPrev = existsSync(stampPath)
     ? readFileSync(stampPath, "utf8").trim()
     : "";
@@ -996,29 +1167,29 @@ export async function buildAflFuzz(
 
   if (clean || stampChanged) {
     for (const u of units) rmSync(u.obj, { force: true });
-    rmSync(FUZZ_AFL_EXE, { force: true });
+    rmSync(aflExe, { force: true });
   }
 
   let def = comp.def;
-  let inc = ` -I${ROOT}/src` + comp.inc;
+  let inc = ` -I${ROOT}/src -I${ROOT}/test` + comp.inc;
   if (dav1d) {
     def += " -DHEIC_HAVE_DAV1D";
     inc += dav1dIncFlags(dav1d);
   }
 
-  const headers = trackedHeaders();
+  const headers = [...trackedHeaders(), `${ROOT}/test/fuzz_common.h`];
   const objStale = (u: { src: string; obj: string }) =>
     needsRebuild(u.obj, u.src, ...headers);
   const staleObj = units.some(objStale);
   const staleExe = needsRebuild(
-    FUZZ_AFL_EXE,
+    aflExe,
     ...units.map((u) => u.obj),
     ...(dav1d ? [dav1d.lib] : []),
     ...comp.libs,
   );
-  if (!staleObj && !staleExe && existsSync(FUZZ_AFL_EXE) && !stampChanged) {
-    console.log("heic_afl up to date");
-    return FUZZ_AFL_EXE;
+  if (!staleObj && !staleExe && existsSync(aflExe) && !stampChanged) {
+    console.log(`heic_afl_${target} up to date`);
+    return aflExe;
   }
 
   // -O1 for readable ASan traces; -fsanitize=fuzzer → AFL++ libAFLDriver.
@@ -1032,10 +1203,12 @@ export async function buildAflFuzz(
   };
   if (asan) env.AFL_USE_ASAN = "1";
   else delete env.AFL_USE_ASAN;
+  if (cmplog) env.AFL_LLVM_CMPLOG = "1";
+  else delete env.AFL_LLVM_CMPLOG;
 
   console.log(
-    `building heic_afl (afl-clang-fast+fuzzer` +
-      `${asan ? "+asan" : ""}` +
+    `building heic_afl_${target} (afl-clang-fast+fuzzer` +
+      `${asan ? "+asan" : ""}${cmplog ? "+cmplog" : ""}` +
       `${dav1d ? "+dav1d" : ""}${zlib ? "+zlib" : ""}${brotli ? "+brotli" : ""})...`,
   );
   try {
@@ -1053,21 +1226,22 @@ export async function buildAflFuzz(
     const linkExtra = ` ${linkLibs.join(" ")}`;
     if (
       needsRebuild(
-        FUZZ_AFL_EXE,
+        aflExe,
         ...objs,
         ...(dav1d ? [dav1d.lib] : []),
         ...comp.libs,
       ) ||
       stampChanged
     ) {
-      await $`${cc} -fsanitize=fuzzer ${{ raw: objs.join(" ") }}${{ raw: linkExtra }} -o ${FUZZ_AFL_EXE}`
+      await $`${cc} -fsanitize=fuzzer ${{ raw: objs.join(" ") }}${{ raw: linkExtra }} -o ${aflExe}`
         .cwd(ROOT)
         .env(env);
     }
   } catch (e) {
     console.error("\nAFL++ fuzz build failed.");
-    console.error("Install AFL++ (and LLVM) via Homebrew:");
-    console.error("  brew install afl++");
+    console.error("Install AFL++ (and LLVM):");
+    console.error("  macOS:          brew install afl++");
+    console.error("  Debian/Ubuntu:  sudo apt install afl++");
     console.error(
       "afl-clang-fast must be on PATH (or set AFL_CC=/path/to/afl-clang-fast).\n",
     );
@@ -1075,7 +1249,7 @@ export async function buildAflFuzz(
   }
   writeFileSync(stampPath, stampWant);
   console.log("built heic_afl");
-  return FUZZ_AFL_EXE;
+  return aflExe;
 }
 
 if (import.meta.main) {

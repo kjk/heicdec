@@ -138,9 +138,14 @@ jobs:
       - name: Amalgamation
         # WASM is built and verified in its own job.
         run: bun cmd/build-dist.ts -no-wasm
+      # Every fuzz target must keep compiling, also under MemorySanitizer.
+      - name: Build fuzz targets (ASan + UBSan, MSan)
+        run: |
+          bun cmd/fuzz.ts -build-only -no-deps
+          bun cmd/fuzz.ts -build-only -msan
+      # All tracked artifacts, each with the target that found it; UBSan is
+      # on by default on Linux and its findings are fatal.
       - name: Fuzz crashes (ASan + UBSan)
-        env:
-          HEIC_FUZZ_UBSAN: "1"
         run: bun cmd/fuzz.ts -check-crashes -no-deps
 
   macos:
