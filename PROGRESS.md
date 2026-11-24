@@ -176,6 +176,32 @@
   HEVC stream hashes against `HEIC_NO_SIMD`. The full libheif and reference
   stream suite finished with 386 passes, four skips, and zero failures.
 
+### NEON follow-up
+
+- Time Profiler on the M3 Pro found that CABAC and residual parsing dominated
+  still decoding. Fractional motion compensation was the largest decoder
+  hotspot in the 500-frame sequence. The share of sequence samples in
+  `apply_motion` fell from 27.1% to 20.8% after the changes.
+- Added NEON kernels for 4×4 inverse DCT and DST, horizontal angular intra
+  prediction, SAO band offsets, and diagonal SAO edges. Edge filtering now
+  shares one offset table per block. The motion filter loads the coefficients
+  once and uses separate loops for four and eight taps.
+- Median of seven alternating Apple Clang `-O3` runs against the previous
+  NEON build. Still timings are per RGB decode over 20 decodes per run.
+  Sequence timing includes frame hashing.
+
+  | Input | Previous NEON | Updated NEON | Time reduction |
+  | --- | ---: | ---: | ---: |
+  | `example.heic` | 29.91 ms | 28.57 ms | 4.5% |
+  | `hdr-sample.heic` | 22.01 ms | 20.95 ms | 4.8% |
+  | `nokia_444.heic` | 21.54 ms | 20.81 ms | 3.4% |
+  | `transform-skip-main10.heic` | 13.03 ms | 11.86 ms | 9.0% |
+  | `MVDL1ZERO_A_docomo_3.bit` (500 frames) | 1,676.00 ms | 1,520.52 ms | 9.3% |
+
+- The full suite passed 386 checks with four skips. Comparing with the
+  previous NEON build matched 200 RGB still decodes byte for byte and all
+  160 raw HEVC stream hashes. Targeted ASan and UBSan runs passed.
+
 ## Next
 
 ### Remaining priorities (ordered)

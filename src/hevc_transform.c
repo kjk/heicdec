@@ -82,6 +82,12 @@ void heic_idst4(const int16_t *coeffs, int16_t *output, int bit_depth)
     int add1 = 1 << (shift1 - 1), add2 = 1 << (shift2 - 1);
     int32_t tmp[16];
     int i, j, k;
+#if HEIC_NEON
+    if (heic_transform_clip_bits == 15) {
+        heic_neon_transform4(coeffs, output, bit_depth, 1);
+        return;
+    }
+#endif
     for (i = 0; i < 4; i++) {
         for (j = 0; j < 4; j++) {
             int32_t sum = 0;
@@ -106,6 +112,12 @@ void heic_idct4(const int16_t *coeffs, int16_t *output, int bit_depth)
     int add1 = 1 << (shift1 - 1), add2 = 1 << (shift2 - 1);
     int32_t tmp[16];
     int i, j, k;
+#if HEIC_NEON
+    if (heic_transform_clip_bits == 15) {
+        heic_neon_transform4(coeffs, output, bit_depth, 0);
+        return;
+    }
+#endif
     for (i = 0; i < 4; i++) {
         for (j = 0; j < 4; j++) {
             int32_t sum = 0;

@@ -74,11 +74,17 @@ static void apply_sao_band(uint16_t *plane, int stride, int x0, int y0, int x1,
     int16_t band_table[32];
     int k, y, x;
 
+    if (stride <= 0) return;
+#if HEIC_NEON
+    if (x1 <= x0 || y1 <= y0) return;
+    if (heic_neon_sao_band(plane + (size_t)y0 * (size_t)stride + x0, stride,
+                            x1 - x0, y1 - y0, band_pos, offs, band_shift, max_val))
+        return;
+#endif
     memset(band_table, 0, sizeof(band_table));
     for (k = 0; k < 4; k++)
         band_table[(band_pos + k) & 31] = offs[k];
 
-    if (stride <= 0) return;
     for (y = y0; y < y1; y++) {
         uint16_t *row = plane + (size_t)y * (size_t)stride;
         for (x = x0; x < x1; x++) {
@@ -184,25 +190,39 @@ static void apply_sao_edge(const uint16_t *src, uint16_t *dst, int stride,
     if (safe_x1 < safe_x0) safe_x1 = safe_x0;
     if (safe_y1 < safe_y0) safe_y1 = safe_y0;
 
-    /* Interior: no bounds checks (SIMD for pure H/V classes). */
-    for (y = safe_y0; y < safe_y1; y++) {
-        const uint16_t *srow = src + (size_t)y * (size_t)stride;
-        uint16_t *drow = dst + (size_t)y * (size_t)stride;
-        if (cls == 0 &&
-            heic_simd_sao_edge_h_row(srow, drow, safe_x0, safe_x1, offset_table, max_val))
-            continue;
-        if (cls == 1 &&
-            heic_simd_sao_edge_v_row(src, dst, stride, y, safe_x0, safe_x1, offset_table,
-                                     max_val))
-            continue;
-        for (x = safe_x0; x < safe_x1; x++) {
-            int sample = (int)srow[x];
-            int n0 = (int)src[(size_t)(y + dy0) * (size_t)stride + (size_t)(x + dx0)];
-            int n1 = (int)src[(size_t)(y + dy1) * (size_t)stride + (size_t)(x + dx1)];
-            int edge_idx = 2 + isignum(sample - n0) + isignum(sample - n1);
-            int offset = offset_table[edge_idx];
-            if (offset)
-                drow[x] = (uint16_t)heic_sao_clampi(sample + offset, 0, max_val);
+    /* Interior: all neighbors are inside the CTB and the plane. */
+#if HEIC_NEON
+    if (safe_x1 - safe_x0 >= 8 && safe_y1 > safe_y0) {
+        size_t base = (size_t)safe_y0 * (size_t)stride + safe_x0;
+        heic_neon_sao_edge(src + base,
+            src + (size_t)(safe_y0 + dy0) * (size_t)stride + (safe_x0 + dx0),
+            src + (size_t)(safe_y0 + dy1) * (size_t)stride + (safe_x0 + dx1),
+            dst + base, stride, safe_x1 - safe_x0, safe_y1 - safe_y0,
+            offset_table, max_val);
+    } else
+#endif
+    {
+        for (y = safe_y0; y < safe_y1; y++) {
+            const uint16_t *srow = src + (size_t)y * (size_t)stride;
+            uint16_t *drow = dst + (size_t)y * (size_t)stride;
+#if !HEIC_NEON
+            if (cls == 0 &&
+                heic_simd_sao_edge_h_row(srow, drow, safe_x0, safe_x1, offset_table, max_val))
+                continue;
+            if (cls == 1 &&
+                heic_simd_sao_edge_v_row(src, dst, stride, y, safe_x0, safe_x1, offset_table,
+                                         max_val))
+                continue;
+#endif
+            for (x = safe_x0; x < safe_x1; x++) {
+                int sample = (int)srow[x];
+                int n0 = (int)src[(size_t)(y + dy0) * (size_t)stride + (size_t)(x + dx0)];
+                int n1 = (int)src[(size_t)(y + dy1) * (size_t)stride + (size_t)(x + dx1)];
+                int edge_idx = 2 + isignum(sample - n0) + isignum(sample - n1);
+                int offset = offset_table[edge_idx];
+                if (offset)
+                    drow[x] = (uint16_t)heic_sao_clampi(sample + offset, 0, max_val);
+            }
         }
     }
 

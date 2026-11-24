@@ -571,6 +571,7 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
         }
     } else {
         int i;
+        uint16_t *block = plane + (size_t)y * (size_t)stride + (size_t)x;
         for (i = 0; i <= n; i++)
             ref_arr[rc + i] = border[center - i];
         if (angle < 0) {
@@ -588,22 +589,27 @@ static void predict_angular(uint16_t *plane, int stride, uint32_t x, uint32_t y,
             for (i = n + 1; i <= 2 * n; i++)
                 ref_arr[rc + i] = border[center - i];
         }
-        for (py = 0; py < n; py++) {
-            int row_base = rc + py + 1;
-            uint16_t *dst =
-                plane + ((size_t)y + (size_t)py) * (size_t)stride + (size_t)x;
-            for (px = 0; px < n; px++) {
-                int32_t i_idx = ((px + 1) * angle) >> 5;
-                int32_t i_fact = ((px + 1) * angle) & 31;
-                int idx = row_base + (int)i_idx;
-                int32_t pred;
-                if (i_fact != 0)
-                    pred = ((32 - i_fact) * ref_arr[idx] + i_fact * ref_arr[idx + 1] + 16) >> 5;
-                else
-                    pred = ref_arr[idx];
-                if (pred < 0) pred = 0;
-                if (pred > max_val) pred = max_val;
-                dst[px] = (uint16_t)pred;
+#if HEIC_NEON
+        if (!heic_neon_intra_ang_horizontal(block, stride, &ref_arr[rc + 1], n,
+                                             angle, max_val))
+#endif
+        {
+            for (py = 0; py < n; py++) {
+                int row_base = rc + py + 1;
+                uint16_t *dst = block + (size_t)py * (size_t)stride;
+                for (px = 0; px < n; px++) {
+                    int32_t i_idx = ((px + 1) * angle) >> 5;
+                    int32_t i_fact = ((px + 1) * angle) & 31;
+                    int idx = row_base + (int)i_idx;
+                    int32_t pred;
+                    if (i_fact != 0)
+                        pred = ((32 - i_fact) * ref_arr[idx] + i_fact * ref_arr[idx + 1] + 16) >> 5;
+                    else
+                        pred = ref_arr[idx];
+                    if (pred < 0) pred = 0;
+                    if (pred > max_val) pred = max_val;
+                    dst[px] = (uint16_t)pred;
+                }
             }
         }
         if (mode == 10 && c_idx == 0 && size < 32 && !disable_boundary_filter) {

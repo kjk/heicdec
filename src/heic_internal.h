@@ -18,6 +18,13 @@
 #include <stdarg.h>
 #include <limits.h>
 
+/* AArch64 targets with Advanced SIMD enabled use the NEON kernels. */
+#if !defined(HEIC_NO_SIMD) && defined(__aarch64__) && defined(__ARM_NEON)
+#define HEIC_NEON 1
+#else
+#define HEIC_NEON 0
+#endif
+
 /* ---- helpers ---- */
 
 #ifndef HEIC_MIN
@@ -1130,6 +1137,16 @@ int  heic_simd_sao_edge_h_row(const uint16_t *srow, uint16_t *drow, int x0, int 
 /* SAO edge class 1 (vertical neighbors) interior row. */
 int  heic_simd_sao_edge_v_row(const uint16_t *src, uint16_t *dst, int stride, int y,
                               int x0, int x1, const int offset_table[5], int max_val);
+#if HEIC_NEON
+void heic_neon_transform4(const int16_t *coeffs, int16_t *out, int bit_depth, int dst);
+int  heic_neon_intra_ang_horizontal(uint16_t *dst, int stride, const int32_t *ref,
+                                    int n, int angle, int max_val);
+void heic_neon_sao_edge(const uint16_t *src, const uint16_t *n0, const uint16_t *n1,
+                        uint16_t *dst, int stride, int width, int height,
+                        const int offset_table[5], int max_val);
+int  heic_neon_sao_band(uint16_t *dst, int stride, int width, int height, int band_pos,
+                        const int16_t offs[4], int band_shift, int max_val);
+#endif
 
 /* ---- intra prediction (hevc_intra.c) ---- */
 

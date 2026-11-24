@@ -19,12 +19,8 @@
 #define HEIC_X86 0
 #endif
 
-/* Use NEON when the AArch64 compiler target enables Advanced SIMD. */
-#if !defined(HEIC_NO_SIMD) && defined(__aarch64__) && defined(__ARM_NEON)
-#define HEIC_NEON 1
+#if HEIC_NEON
 #include <arm_neon.h>
-#else
-#define HEIC_NEON 0
 #endif
 
 #if HEIC_X86
